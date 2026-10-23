@@ -1,0 +1,16 @@
+.venv/
+__pycache__/
+*.py[cod]
+.env
+.env.*
+data/
+!data/models/
+!data/models/.gitkeep
+weights/
+*.pt
+*.onnx
+*.log
+*.part
+*.zip
+VAOS/
+tools/cloudflared.exe

@@ -1,0 +1,14 @@
+matplotlib>=3.3.0
+pillow>=7.1.2
+PyYAML>=5.3.1
+requests>=2.23.0
+scipy>=1.4.1
+psutil>=5.8.0
+polars>=0.20.0
+ultralytics-thop>=2.0.18
+tqdm>=4.64
+pandas>=1.1,<4.0
+seaborn>=0.11
+py-cpuinfo>=5.0
+filelock>=3.12
+packaging>=20.0

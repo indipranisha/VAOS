@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VAOS · Video Analytics - Operating System</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand-mark">VAOS</div>
+    <div>
+      <div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div>
+      <h1>VAOS</h1>
+    </div>
+    <div class="topbar-spacer"></div>
+    <a class="button button-secondary button-small topbar-settings" href="#settings">Settings</a>
+    <a class="button button-secondary button-small topbar-settings" href="/training">ML training</a>
+    <span class="status-pill"><span class="status-dot"></span> PC processing</span>
+  </header>
+
+  <main class="page-wrap">
+    <section class="intro-row">
+      <div>
+        <p class="eyebrow">CONTROL ROOM</p>
+        <h2>Observe repeat sightings.<br><span class="muted-heading">Keep the data on your PC.</span></h2>
+        <p class="lead">Add a camera link, enroll a consenting participant, and review matches as they arrive.</p>
+      </div>
+      <div class="metric-card">
+        <span class="metric-label">CURRENT MATCH THRESHOLD</span>
+        <strong id="threshold">{{ '%.2f'|format(threshold) }}</strong>
+        <small>Cosine similarity · not a probability</small>
+      </div>
+    </section>
+
+    <section class="notice notice-warn">
+      <strong>Privacy by design</strong>
+      <span>Use only with informed permission and in locations where you are authorised to operate. Profile photos and face templates for enrolled volunteers are stored locally in the database; unknown faces and camera frames are not saved.</span>
+    </section>
+
+    <section class="admin-pin-panel" aria-label="Local admin password">
+      <div>
+        <p class="eyebrow">LOCAL ADMIN PASSWORD</p>
+        <strong class="admin-pin">{{ admin_password }}</strong>
+      </div>
+      <p>Five-digit PIN · shown only on this private dashboard</p>
+    </section>
+
+    <section class="grid-two">
+      <article class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">01 / INPUT</p><h3>Add a camera</h3></div>
+          <span class="icon-circle">↗</span>
+        </div>
+        <form id="camera-form" class="stack-form">
+          <label for="camera-name">Camera label</label>
+          <input id="camera-name" name="name" placeholder="e.g. Reception phone" maxlength="80" required>
+          <label for="base-url">Public HTTPS camera URL</label>
+          <input id="base-url" type="url" inputmode="url" placeholder="Waiting for the camera tunnel…" autocomplete="off" readonly aria-readonly="true">
+          <small class="helper">This address is supplied by the Windows launcher and cannot be edited here. Do not tunnel port 8000; that is the private admin dashboard.</small>
+          <button type="submit" class="button button-primary">Create unique camera link <span>＋</span></button>
+          <div id="camera-result" class="result-box hidden" aria-live="polite"></div>
+        </form>
+      </article>
+
+      <article class="panel">
+        <div class="panel-heading">
+          <div><p class="eyebrow">02 / ENROLMENT</p><h3>Add a participant</h3></div>
+          <span class="icon-circle">◎</span>
+        </div>
+        <form id="participant-form" class="stack-form">
+          <label for="participant-name">Participant name or approved label</label>
+          <input id="participant-name" name="name" placeholder="e.g. Volunteer 01" maxlength="80" required>
+          <label for="participant-photo">Photo or live enrollment camera</label>
+          <input id="participant-photo" name="photo" type="file" accept="image/*">
+          <div class="inline-actions"><button type="button" id="enroll-camera-start" class="button button-secondary button-small">Use this device camera</button><button type="button" id="enroll-camera-capture" class="button button-secondary button-small hidden">Capture enrollment photo</button><button type="button" id="enroll-camera-stop" class="button button-secondary button-small hidden">Close camera</button></div>
+          <div class="enroll-preview hidden" id="enroll-preview-wrap"><video id="enroll-video" playsinline autoplay muted></video></div><div id="enroll-camera-note" class="helper" aria-live="polite"></div>
+          <small class="helper">The profile photo and numerical face template are stored in the local database on this PC. Enrol only people who have agreed.</small>
+          <button type="submit" class="button button-primary">Create local face template <span>＋</span></button>
+          <div id="participant-result" class="result-box hidden" aria-live="polite"></div>
+        </form>
+      </article>
+    </section>
+
+    <section class="panel section-panel">
+      <div class="section-title-row">
+        <div><p class="eyebrow">CAMERAS</p><h3>Camera links</h3></div>
+        <button class="button button-secondary button-small" id="refresh-btn">Refresh</button>
+      </div>
+      <div id="camera-list" class="empty-state">Loading camera links…</div>
+    </section>
+
+    <section class="panel section-panel">
+      <div class="section-title-row"><div><p class="eyebrow">VOLUNTEER ENROLLMENT</p><h3>Phone profile invitation</h3></div></div>
+      <p class="helper">Create a one-time QR invitation. The person can scan it on their phone, take one or more photos, or upload them. The link expires after 24 hours.</p>
+      <button class="button button-primary" id="create-enrollment-link">Create enrollment QR</button>
+      <div id="enrollment-result" class="result-box hidden" aria-live="polite"></div>
+    </section>
+
+    <section class="panel section-panel">
+      <div class="section-title-row"><div><p class="eyebrow">LIVE SYSTEM</p><h3>Camera tracking & model diagnostics</h3></div><span id="compute-device" class="subtle-tag">Checking local models…</span></div>
+      <div id="model-diagnostics" class="diagnostic-grid"></div>
+      <div id="live-cameras" class="list-table"><div class="empty-state">Waiting for camera status…</div></div>
+      <div class="section-title-row object-title"><div><p class="eyebrow">OBJECT ACTIVITY</p><h3>Recent detected objects</h3></div><span id="object-refresh-status" class="subtle-tag">Auto-refresh · every 5 sec</span></div>
+      <div id="object-events" class="list-table"><div class="empty-state">No object detections recorded yet.</div></div>
+      <p class="helper bottom-note">Camera health updates while a station is sending frames. Object labels are approximate detections, not verified facts. Camera frames are not retained; enrolled profile photos stay in the local database.</p>
+    </section>
+
+    <section class="panel section-panel" id="settings">
+      <div class="section-title-row">
+        <div><p class="eyebrow">SETTINGS · PEOPLE</p><h3>Enrolled participants</h3></div>
+        <span class="subtle-tag">Photos stored locally</span>
+      </div>
+      <div id="participant-list" class="empty-state">Loading enrolled participants…</div>
+    </section>
+
+    <section class="panel section-panel" id="system-settings">
+      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · SYSTEM</p><h3>Model and services</h3></div></div>
+      <div class="training-controls"><label for="live-model-choice">Live object model</label><select id="live-model-choice"><option value="yolo26m">Base YOLO26m</option><option value="custom">Your custom best.pt</option></select><button class="button button-primary" id="apply-model-choice">Apply model & restart</button><button class="button button-secondary" id="restart-services">Restart services</button></div>
+      <div id="system-action-status" class="result-box" aria-live="polite">Changing the model or restarting VAOS reloads its local services and keeps the current camera tunnel and public URL connected.</div>
+      <p class="helper">Your custom model is available after a training run. Switching models restarts the admin and camera services while leaving cloudflared running, so the current camera URL stays the same.</p>
+      <div class="section-title-row tunnel-control-heading"><div><p class="eyebrow">PUBLIC CAMERA LINK</p><h4>Tunnel controls</h4></div><span id="tunnel-state-badge" class="subtle-tag">Checking…</span></div>
+      <div class="training-controls tunnel-controls"><button type="button" class="button button-secondary" id="tunnel-pause">Pause public access</button><button type="button" class="button button-secondary" id="tunnel-start">Start / resume</button><button type="button" class="button button-danger" id="tunnel-stop">Stop tunnel</button><button type="button" class="button button-secondary" id="tunnel-restart">Restart tunnel</button></div>
+      <p id="tunnel-action-status" class="helper" aria-live="polite">Pause temporarily blocks camera and enrollment pages while keeping the same tunnel URL. Stop disconnects the tunnel. Start resumes or creates it; Restart creates a fresh temporary URL.</p>
+    </section>
+
+    <section class="panel section-panel">
+      <div class="section-title-row">
+        <div><p class="eyebrow">ACTIVITY</p><h3>Recent sightings</h3></div>
+        <span id="sighting-refresh-status" class="subtle-tag">Auto-refresh · every 5 sec</span>
+        <button class="button button-secondary button-small" id="clear-events-btn">Clear log</button>
+      </div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Person</th><th>Camera</th><th>Event</th><th>Similarity</th><th>Timestamp (UTC)</th></tr></thead>
+          <tbody id="event-list"><tr><td colspan="5" class="empty-state">Loading sightings…</td></tr></tbody>
+        </table>
+      </div>
+      <p class="helper bottom-note">Only matches above the configured threshold are logged. Same-camera records are rate-limited to one event every {{ cooldown }} seconds per enrolled participant.</p>
+    </section>
+
+    <footer class="footer-note">Prototype only · Local SQLite database · OpenCV YuNet + SFace · Not suitable for consequential decisions</footer>
+  </main>
+
+  <dialog id="qr-modal" class="qr-modal" aria-labelledby="qr-modal-title"><div class="qr-modal-head"><div><p class="eyebrow">CAMERA LINK</p><h3 id="qr-modal-title">Scan to open camera station</h3></div><button type="button" id="close-qr-modal" class="button button-secondary button-small" aria-label="Close QR code">Close</button></div><div class="qr-modal-body"><img id="qr-modal-image" class="camera-qr" alt="QR code for camera station"><p id="qr-modal-url" class="mono-url"></p></div></dialog>
+
+<script>
+const $ = (id) => document.getElementById(id);
+function cleanBaseUrl(value) {
+  const raw = (value || '').trim();
+  if (!raw) throw new Error('Start the camera tunnel to port 8001 and wait for its HTTPS address to appear before creating a camera link.');
+  let parsed;
+  try { parsed = new URL(raw); } catch { throw new Error('Enter the full HTTPS URL printed by your camera tunnel.'); }
+  if (parsed.protocol !== 'https:') throw new Error('Camera links must use the HTTPS URL printed by your tunnel.');
+  return parsed.origin;
+}
+function escapeHtml(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function shortDate(value) { try { return new Date(value).toLocaleString(); } catch { return value; } }
+async function api(path, options = {}) {
+  const response = await fetch(path, { credentials: 'same-origin', ...options });
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(body.detail || body.message || `Request failed (${response.status})`);
+  return body;
+}
+function setResult(id, message, good = true) {
+  const target = $(id); target.textContent = message; target.classList.remove('hidden', 'error');
+  if (!good) target.classList.add('error');
+}
+
+async function refreshTunnelUrl() {
+  try {
+    const status = await api('/api/admin/tunnel');
+    const current = $('base-url').value.trim();
+    $('base-url').value = status.url || '';
+    const state = status.status || 'stopped';
+    $('tunnel-state-badge').textContent = state.charAt(0).toUpperCase() + state.slice(1);
+    $('tunnel-state-badge').className = `subtle-tag ${state === 'running' ? 'badge-green' : state === 'paused' ? 'badge-gray' : ''}`;
+    $('tunnel-pause').textContent = state === 'paused' ? 'Resume public access' : 'Pause public access';
+    $('tunnel-pause').disabled = ['stopped','starting','stopping','restarting'].includes(state);
+    $('tunnel-start').disabled = ['running','starting','restarting'].includes(state);
+    $('tunnel-stop').disabled = ['stopped','stopping'].includes(state);
+    $('tunnel-restart').disabled = ['stopped','starting','stopping','restarting'].includes(state);
+    if (status.message && !['starting','stopping','restarting'].includes(state)) $('tunnel-action-status').textContent = status.message;
+    if (current !== $('base-url').value) await loadCameras();
+  } catch { }
+}
+let enrollmentStream = null, capturedEnrollmentPhoto = null;
+$('enroll-camera-start').addEventListener('click', async () => {
+  try {
+    enrollmentStream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'user'},audio:false});
+    $('enroll-video').srcObject = enrollmentStream; $('enroll-preview-wrap').classList.remove('hidden');
+    await $('enroll-video').play();
+    if ($('enroll-video').videoWidth && $('enroll-video').videoHeight) $('enroll-preview-wrap').style.aspectRatio = `${$('enroll-video').videoWidth} / ${$('enroll-video').videoHeight}`;
+    $('enroll-camera-start').classList.add('hidden'); $('enroll-camera-capture').classList.remove('hidden'); $('enroll-camera-stop').classList.remove('hidden');
+    $('enroll-camera-note').textContent = 'Preview is live on this device. Capture only the consenting participant.';
+  } catch (err) { $('enroll-camera-note').textContent = `Could not open camera: ${err.message}`; }
+});
+$('enroll-camera-capture').addEventListener('click', async () => {
+  const video = $('enroll-video'), canvas = document.createElement('canvas'); canvas.width = video.videoWidth; canvas.height = video.videoHeight;
+  canvas.getContext('2d').drawImage(video,0,0); capturedEnrollmentPhoto = await new Promise(resolve => canvas.toBlob(resolve,'image/jpeg',0.9));
+  $('enroll-camera-note').textContent = 'Photo captured. It will be saved with the profile in the local database.';
+});
+$('enroll-camera-stop').addEventListener('click', () => { enrollmentStream?.getTracks().forEach(track => track.stop()); enrollmentStream=null; $('enroll-video').srcObject=null; $('enroll-preview-wrap').classList.add('hidden'); $('enroll-camera-start').classList.remove('hidden'); $('enroll-camera-capture').classList.add('hidden'); $('enroll-camera-stop').classList.add('hidden'); });
+$('camera-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+  try {
+    const base = cleanBaseUrl($('base-url').value);
+    const created = await api('/api/admin/cameras', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:$('camera-name').value})});
+    const url = `${base}/c/${created.token}`;
+    const qrUrl = `/api/admin/cameras/${encodeURIComponent(created.token)}/qr?base_url=${encodeURIComponent(base)}`;
+    setResult('camera-result', `Camera link created: ${url}`);
+    $('camera-result').innerHTML = `<div class="link-text">${escapeHtml(url)}</div><div class="qr-result"><img class="camera-qr" src="${escapeHtml(qrUrl)}" alt="QR code for the public camera link"><div class="inline-actions"><button class="button button-secondary button-small" id="copy-new-link">Copy link</button><a class="button button-secondary button-small" target="_blank" rel="noopener" href="${escapeHtml(url)}">Open link</a><a class="button button-secondary button-small" href="${escapeHtml(qrUrl)}" download="camera-${escapeHtml(created.token)}.svg">Download QR</a></div></div>`;
+    $('copy-new-link').addEventListener('click', async () => { await navigator.clipboard.writeText(url); $('copy-new-link').textContent = 'Copied'; });
+    $('camera-name').value = ''; await loadCameras();
+  } catch (err) { setResult('camera-result', err.message, false); }
+  finally { button.disabled = false; }
+});
+
+$('create-enrollment-link').addEventListener('click', async (event) => {
+  const button = event.currentTarget; button.disabled = true;
+  try {
+    const base = cleanBaseUrl($('base-url').value);
+    const invitation = await api('/api/admin/enrollment-links', {method:'POST'});
+    const url = `${base}/enroll/${invitation.token}`;
+    const qrUrl = `/api/admin/enrollment-links/${encodeURIComponent(invitation.token)}/qr?base_url=${encodeURIComponent(base)}`;
+    const target = $('enrollment-result'); target.classList.remove('hidden','error');
+    target.innerHTML = `<strong>Invitation ready · expires ${escapeHtml(shortDate(invitation.expires_at))}</strong><div class="link-text">${escapeHtml(url)}</div><div class="qr-result"><img class="camera-qr" src="${escapeHtml(qrUrl)}" alt="QR code for the participant enrollment page"><div class="inline-actions"><button class="button button-secondary button-small" id="copy-enrollment-link">Copy link</button><a class="button button-secondary button-small" target="_blank" rel="noopener" href="${escapeHtml(url)}">Open page</a><a class="button button-secondary button-small" href="${escapeHtml(qrUrl)}" download="enrollment-${escapeHtml(invitation.token)}.svg">Download QR</a><button class="button button-danger button-small" id="revoke-enrollment-link">Revoke</button></div></div>`;
+    $('copy-enrollment-link').addEventListener('click', async () => { await navigator.clipboard.writeText(url); $('copy-enrollment-link').textContent = 'Copied'; });
+    $('revoke-enrollment-link').addEventListener('click', async () => { try { await api(`/api/admin/enrollment-links/${encodeURIComponent(invitation.token)}`, {method:'DELETE'}); target.textContent = 'Enrollment invitation revoked.'; } catch (err) { setResult('enrollment-result', err.message, false); } });
+  } catch (err) { setResult('enrollment-result', err.message, false); }
+  finally { button.disabled = false; }
+});
+
+$('participant-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const button = event.currentTarget.querySelector('button[type="submit"]'); button.disabled = true;
+  try {
+    const formData = new FormData(); formData.append('name', $('participant-name').value);
+    const selectedPhoto = $('participant-photo').files[0];
+    if (selectedPhoto) formData.append('photo', selectedPhoto);
+    else if (capturedEnrollmentPhoto) formData.append('photo', capturedEnrollmentPhoto, 'live-enrollment.jpg');
+    else throw new Error('Choose a photo or capture one with the enrollment camera.');
+    const result = await api('/api/admin/participants', {method:'POST', body:formData});
+    setResult('participant-result', `Enrolled ${result.name}. Their profile photo and face template are saved locally.`);
+    $('participant-name').value = ''; $('participant-photo').value = ''; capturedEnrollmentPhoto = null; await loadParticipants();
+  } catch (err) { setResult('participant-result', err.message, false); }
+  finally { button.disabled = false; }
+});
+
+async function loadCameras() {
+  const cameras = await api('/api/admin/cameras');
+  if (!cameras.length) { $('camera-list').innerHTML = '<div class="empty-state">No camera links yet. Create one above.</div>'; return; }
+  let base = '';
+  try { base = cleanBaseUrl($('base-url').value); } catch {}
+  $('camera-list').innerHTML = `<div class="list-table">${cameras.map(camera => {
+    const url = base ? `${base}/c/${camera.token}` : '';
+    const qrUrl = url ? `/api/admin/cameras/${encodeURIComponent(camera.token)}/qr?base_url=${encodeURIComponent(base)}` : '';
+    return `<div class="list-row"><div class="row-main"><strong>${escapeHtml(camera.name)}</strong><span class="mono-url">${url ? escapeHtml(url) : 'Waiting for the automatic HTTPS camera address'}</span><span class="row-subtext">Created ${escapeHtml(shortDate(camera.created_at))}</span></div><span class="badge ${camera.active ? 'badge-green' : 'badge-gray'}">${camera.active ? 'Active' : 'Revoked'}</span><div class="row-actions">${camera.active ? `${url ? `<button class="button button-secondary button-small" data-copy="${escapeHtml(url)}">Copy link</button><button type="button" class="button button-secondary button-small" data-show-qr="${escapeHtml(qrUrl)}" data-qr-url="${escapeHtml(url)}">Show QR</button><a class="button button-secondary button-small" href="${escapeHtml(qrUrl)}" download="camera-${escapeHtml(camera.token)}.svg">Download QR</a>` : ''}<button class="button button-danger button-small" data-revoke="${escapeHtml(camera.token)}">Revoke</button>` : ''}</div></div>`;
+  }).join('')}</div>`;
+  document.querySelectorAll('[data-copy]').forEach(button => button.addEventListener('click', async () => { await navigator.clipboard.writeText(button.dataset.copy); button.textContent = 'Copied'; }));
+  document.querySelectorAll('[data-show-qr]').forEach(button=>button.addEventListener('click',()=>showQr(button.dataset.showQr,button.dataset.qrUrl)));
+  document.querySelectorAll('[data-revoke]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Revoke this camera link? Devices currently using it will stop being able to send frames.')) return;
+    try { await api(`/api/admin/cameras/${button.dataset.revoke}/revoke`, {method:'POST'}); await loadCameras(); } catch (err) { alert(err.message); }
+  }));
+}
+function showQr(imageUrl,cameraUrl){$('qr-modal-image').src=imageUrl;$('qr-modal-url').textContent=cameraUrl;$('qr-modal').showModal();}
+$('close-qr-modal').addEventListener('click',()=>$('qr-modal').close());
+$('qr-modal').addEventListener('click',event=>{if(event.target===$('qr-modal'))$('qr-modal').close();});
+async function loadParticipants() {
+  const people = await api('/api/admin/participants');
+  if (!people.length) { $('participant-list').innerHTML = '<div class="empty-state">No participants enrolled yet.</div>'; return; }
+  $('participant-list').innerHTML = `<div class="list-table">${people.map(person => `<div class="list-row participant-row">${person.photos?.length ? `<div class="participant-gallery">${person.photos.map((photo,index) => `<img class="participant-profile-photo" src="${escapeHtml(photo)}" alt="Profile photo ${index+1} for ${escapeHtml(person.name)}" loading="lazy">`).join('')}</div>` : `<div class="avatar">${escapeHtml(person.name.slice(0,1).toUpperCase())}</div>`}<div class="row-main"><strong>${escapeHtml(person.name)}</strong><span class="row-subtext">Enrolled ${escapeHtml(shortDate(person.created_at))} · ${person.photos?.length || 0} profile photo${person.photos?.length === 1 ? '' : 's'}</span></div><span class="subtle-tag">${person.sightings} logged sighting${person.sightings === 1 ? '' : 's'}</span><div class="row-actions"><button class="button button-danger button-small" data-delete-person="${person.id}">Delete</button></div></div>`).join('')}</div>`;
+  document.querySelectorAll('[data-delete-person]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Delete this participant and their associated sighting history?')) return;
+    try { await api(`/api/admin/participants/${button.dataset.deletePerson}`, {method:'DELETE'}); await Promise.all([loadParticipants(), loadEvents()]); } catch (err) { alert(err.message); }
+  }));
+}
+async function loadEvents() {
+  const events = await api('/api/admin/events');
+  if (!events.length) $('event-list').innerHTML = '<tr><td colspan="5" class="empty-state">No matched sightings yet. Keep the camera page open after enrolling a consenting participant.</td></tr>';
+  else $('event-list').innerHTML = events.map(item => `<tr><td><strong>${escapeHtml(item.person_name)}</strong></td><td>${escapeHtml(item.camera_name)}</td><td><span class="event-tag ${item.kind === 'REPEAT' ? 'event-repeat' : 'event-first'}">${escapeHtml(item.kind)}</span></td><td class="numeric">${Number(item.score).toFixed(3)}</td><td class="date-cell">${escapeHtml(shortDate(item.timestamp))}</td></tr>`).join('');
+  $('sighting-refresh-status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+async function loadDiagnostics() {
+  const data = await api('/api/admin/status');
+  const device = data.device === 'not initialized' ? 'Waiting for camera frames' : data.device;
+  $('compute-device').textContent = `${device} · OpenCV ${data.opencv}`;
+  $('model-diagnostics').innerHTML = data.models.map(m => `<div class="diagnostic-card"><strong>${escapeHtml(m.name.toUpperCase())}</strong><span class="badge ${m.loaded ? 'badge-green' : m.valid ? 'badge-gray' : 'badge-gray'}">${m.loaded ? 'Loaded' : m.valid ? (m.name === 'yolo26m' ? 'Ready on disk · loads on first frame' : 'Ready on disk') : 'Missing'}</span><small title="${escapeHtml(m.path)}">${escapeHtml(m.path.split(/[\\/]/).slice(-1)[0])}</small>${m.error ? `<small class="model-error" title="${escapeHtml(m.error)}">${escapeHtml(m.error)}</small>` : ''}</div>`).join('');
+  $('live-cameras').innerHTML = data.cameras.length ? data.cameras.map(c => `<div class="list-row"><div class="row-main"><strong>${escapeHtml(c.name)}</strong><span class="row-subtext">${c.online ? 'Last frame ' + escapeHtml(shortDate(c.last_frame_at)) : c.active ? 'Waiting for camera frames' : 'Revoked'}${c.error ? ' · ' + escapeHtml(c.error) : ''}</span></div><span class="badge ${c.online ? 'badge-green' : 'badge-gray'}">${c.online ? 'Live' : 'Offline'}</span><span class="subtle-tag">${c.faces_detected || 0} faces · ${c.matched_count || 0} matches · ${Object.values(c.objects || {}).reduce((n,v)=>n+v[0],0)} objects</span></div>`).join('') : '<div class="empty-state">No camera links created yet.</div>';
+  $('object-events').innerHTML = data.objects.length ? data.objects.map(o => `<div class="list-row"><div class="row-main"><strong>${escapeHtml(o.class_name)} × ${o.count}</strong><span class="row-subtext">${escapeHtml(o.camera_name)} · average confidence ${Number(o.confidence).toFixed(2)}</span></div><span class="row-subtext">${escapeHtml(shortDate(o.timestamp))}</span></div>`).join('') : '<div class="empty-state">No object detections recorded yet.</div>';
+  $('object-refresh-status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
+}
+$('refresh-btn').addEventListener('click', async () => { try { await refreshAll(); } catch (err) { alert(err.message); } });
+$('clear-events-btn').addEventListener('click', async () => {
+  if (!confirm('Clear face and object activity logs? Enrolled participants and camera links will remain.')) return;
+  try { await api('/api/admin/events', {method:'DELETE'}); await loadEvents(); } catch (err) { alert(err.message); }
+});
+async function loadModelSelection(){const data=await api('/api/admin/model-selection');const custom=$('live-model-choice').querySelector('option[value="custom"]');custom.disabled=!data.custom_available;$('live-model-choice').value=data.selected;}
+async function restartVaosServices(skipConfirm=false){if(!skipConfirm&&!confirm('Restart the VAOS admin and camera services? The temporary camera tunnel stays connected and the public camera URL remains the same.'))return;const status=$('system-action-status');status.textContent='Restart requested. Keeping the camera tunnel connected while local services reload…';status.classList.remove('error');$('restart-services').disabled=true;$('apply-model-choice').disabled=true;try{await api('/api/admin/services/restart',{method:'POST'});let wentOffline=false;for(let attempt=0;attempt<120;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));try{const response=await fetch('/health',{cache:'no-store'});if(!response.ok)wentOffline=true;else if(wentOffline){location.reload();return;}}catch{wentOffline=true;}}throw new Error('VAOS did not return within two minutes. Check the Windows launcher window and logs.');}catch(error){status.textContent=error.message;status.classList.add('error');$('restart-services').disabled=false;$('apply-model-choice').disabled=false;}}
+$('restart-services').addEventListener('click',()=>restartVaosServices());
+$('apply-model-choice').addEventListener('click',async()=>{const button=$('apply-model-choice');button.disabled=true;try{await api('/api/admin/model-selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:$('live-model-choice').value})});await restartVaosServices(true);}catch(error){const status=$('system-action-status');status.textContent=error.message;status.classList.add('error');button.disabled=false;}});
+async function controlTunnel(action){const status=$('tunnel-action-status');for(const id of ['tunnel-pause','tunnel-start','tunnel-stop','tunnel-restart'])$(id).disabled=true;status.textContent=`Requesting tunnel ${action}…`;status.classList.remove('error');try{const result=await api(`/api/admin/tunnel/${action}`,{method:'POST'});status.textContent=result.message||`Tunnel ${action} requested.`;await refreshTunnelUrl();if(['start','stop','restart'].includes(action)){for(let attempt=0;attempt<100;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));await refreshTunnelUrl();const state=(await api('/api/admin/tunnel')).status;if((action==='stop'&&state==='stopped')||(action==='start'&&state==='running')||(action==='restart'&&state==='running'))break;}}}catch(error){status.textContent=error.message;status.classList.add('error');await refreshTunnelUrl();}}
+$('tunnel-pause').addEventListener('click',()=>controlTunnel($('tunnel-state-badge').textContent.toLowerCase()==='paused'?'start':'pause'));
+$('tunnel-start').addEventListener('click',()=>controlTunnel('start'));
+$('tunnel-stop').addEventListener('click',()=>{if(confirm('Stop the camera tunnel? Camera links will stop working and the public URL will be removed. Local VAOS services will keep running.'))controlTunnel('stop');});
+$('tunnel-restart').addEventListener('click',()=>{if(confirm('Restart the camera tunnel? The temporary public URL will change. Local VAOS services will keep running.'))controlTunnel('restart');});
+async function refreshAll() { await Promise.all([loadCameras(), loadParticipants(), loadEvents(), loadDiagnostics(), loadModelSelection()]); }
+async function bootDashboard(){await refreshTunnelUrl();await refreshAll();}
+bootDashboard().catch(err => { document.querySelectorAll('.empty-state').forEach(e => e.textContent = err.message); });
+async function refreshSightingsLoop() { try { await loadEvents(); } catch { $('sighting-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshSightingsLoop, 5000); } }
+async function refreshObjectsLoop() { try { await loadDiagnostics(); } catch { $('object-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshObjectsLoop, 5000); } }
+setTimeout(refreshSightingsLoop, 5000);
+setTimeout(refreshObjectsLoop, 5000);
+setInterval(refreshTunnelUrl, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#14243b"><title>Create your profile · VAOS</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="camera-page">
+<header class="topbar"><div class="brand-mark">VAOS</div><div><div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div><h1>VAOS</h1></div><div class="topbar-spacer"></div><span class="status-pill"><span class="status-dot"></span> Private invitation</span></header>
+<main class="camera-wrap">
+  <section class="camera-copy"><p class="eyebrow">FACE TEMPLATE ENROLLMENT</p><h2>Create your profile</h2><p class="lead">Use your phone camera to take one or more photos, or upload pictures from your device. You can use either or combine both.</p></section>
+  <section class="panel consent-panel">
+    <div class="notice notice-warn"><strong>Your privacy</strong><span>Your name, selected photos, and a numerical face template will be saved in the administrator’s local database on their PC. Photos are used to create and display your profile. Only continue if you agree and trust the person who gave you this link.</span></div>
+    <form id="enrollment-form" class="stack-form">
+      <label for="profile-name">Your name or approved label</label><input id="profile-name" name="name" autocomplete="name" maxlength="80" placeholder="Enter your name" required>
+      <div class="panel-heading"><div><p class="eyebrow">OPTION 1</p><h3>Take photos</h3></div></div>
+      <div class="camera-actions"><button class="button button-secondary" type="button" id="start-camera">Open phone camera</button><button class="button button-primary hidden" type="button" id="capture-photo">Take photo</button><button class="button button-secondary hidden" type="button" id="stop-camera">Close camera</button></div>
+      <div class="video-frame enrollment-video hidden" id="video-wrap"><video id="phone-video" playsinline autoplay muted></video></div>
+      <p id="camera-message" class="camera-message" aria-live="polite">Your browser will ask for camera permission. On phones, use the HTTPS invitation link.</p>
+      <div class="panel-heading"><div><p class="eyebrow">OPTION 2</p><h3>Upload photos</h3></div></div>
+      <label for="photo-files">Choose one or more existing photos</label><input id="photo-files" type="file" accept="image/*" multiple>
+      <small class="helper">Choose 1–10 clear photos of yourself. Each photo must be 6 MB or smaller; the combined upload limit is 30 MB.</small>
+      <div id="photo-previews" class="photo-previews" aria-live="polite"></div>
+      <label class="consent-check"><input id="consent" type="checkbox" required><span>I agree to create this profile and have my photos and face template stored in the administrator’s local database.</span></label>
+      <button class="button button-primary" id="submit-profile" type="submit">Save my profile</button>
+      <div id="submit-message" class="result-box hidden" aria-live="polite"></div>
+    </form>
+  </section>
+  <p class="camera-footnote">Invitation is single-use and expires after 24 hours. You may close this page after your profile is saved.</p>
+</main>
+<script>
+const token = location.pathname.split('/').filter(Boolean).at(-1);
+const $ = id => document.getElementById(id);
+const chosen = [];
+let stream = null;
+function message(text, error=false) { const el=$('submit-message'); el.textContent=text; el.classList.remove('hidden','error'); if(error)el.classList.add('error'); }
+function updatePreviews() {
+  const host=$('photo-previews');
+  host.innerHTML=chosen.map((item,i)=>`<div class="photo-preview"><img src="${URL.createObjectURL(item.file)}" alt="Selected photo ${i+1}"><span>${item.source} ${i+1}</span><button type="button" class="button button-danger button-small" data-remove="${i}" aria-label="Remove photo ${i+1}">Remove</button></div>`).join('');
+  host.querySelectorAll('[data-remove]').forEach(button=>button.addEventListener('click',()=>{chosen.splice(Number(button.dataset.remove),1);updatePreviews();}));
+}
+function addFiles(files, source) {
+  if(chosen.length+files.length>10) throw new Error('You can add up to 10 photos. Remove a photo before adding more.');
+  for(const file of files){ if(!file.type.startsWith('image/')) throw new Error('Please choose image files only.'); if(file.size>6*1024*1024)throw new Error('Each photo must be 6 MB or smaller.'); chosen.push({file,source}); }
+  if(chosen.reduce((n,x)=>n+x.file.size,0)>30*1024*1024){chosen.splice(chosen.length-files.length,files.length);throw new Error('Combined photos must be 30 MB or smaller.');}
+  updatePreviews();
+}
+$('photo-files').addEventListener('change',e=>{try{addFiles([...e.target.files],'Upload');$('camera-message').textContent=`${chosen.length} photo${chosen.length===1?'':'s'} selected.`;}catch(err){$('camera-message').textContent=err.message;}e.target.value='';});
+$('start-camera').addEventListener('click',async()=>{try{stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:{ideal:'user'}},audio:false});$('phone-video').srcObject=stream;$('video-wrap').classList.remove('hidden');$('start-camera').classList.add('hidden');$('capture-photo').classList.remove('hidden');$('stop-camera').classList.remove('hidden');$('camera-message').textContent='Camera is ready. Take one or more photos.';}catch(err){$('camera-message').textContent=`Could not open camera: ${err.message}. You can upload photos instead.`;}});
+$('capture-photo').addEventListener('click',async()=>{try{const v=$('phone-video');if(!v.videoWidth)throw new Error('Camera is still starting. Try again in a moment.');const canvas=document.createElement('canvas');canvas.width=v.videoWidth;canvas.height=v.videoHeight;canvas.getContext('2d').drawImage(v,0,0);const file=await new Promise((resolve,reject)=>canvas.toBlob(blob=>blob?resolve(new File([blob],`phone-photo-${Date.now()}.jpg`,{type:'image/jpeg'})):reject(new Error('Could not capture a photo.')),'image/jpeg',.9));addFiles([file],'Camera');$('camera-message').textContent=`${chosen.length} photo${chosen.length===1?'':'s'} selected.`;}catch(err){$('camera-message').textContent=err.message;}});
+$('stop-camera').addEventListener('click',()=>{stream?.getTracks().forEach(t=>t.stop());stream=null;$('phone-video').srcObject=null;$('video-wrap').classList.add('hidden');$('start-camera').classList.remove('hidden');$('capture-photo').classList.add('hidden');$('stop-camera').classList.add('hidden');});
+$('enrollment-form').addEventListener('submit',async e=>{e.preventDefault();const button=$('submit-profile');button.disabled=true;let saved=false;try{if(!chosen.length)throw new Error('Take or upload at least one photo.');if(!$('consent').checked)throw new Error('Please agree before saving your profile.');const data=new FormData();data.append('name',$('profile-name').value);data.append('consent','yes');chosen.forEach(item=>data.append('photos',item.file,item.file.name));const response=await fetch(`/api/enroll/${encodeURIComponent(token)}`,{method:'POST',body:data});const result=await response.json().catch(()=>({}));if(!response.ok)throw new Error(result.detail||'Could not save your profile. Please contact the administrator.');message(`Your profile was saved with ${result.photos_saved} photo${result.photos_saved===1?'':'s'}. You can close this page now.`);stream?.getTracks().forEach(t=>t.stop());stream=null;$('enrollment-form').querySelectorAll('input,button').forEach(el=>el.disabled=true);saved=true;}catch(err){message(err.message,true);}finally{if(!saved)button.disabled=false;}});
+</script>
+</body>
+</html>

@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Camera · {{ camera_name }}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body class="camera-page">
+  <header class="topbar camera-topbar">
+    <div class="brand-mark">VAOS</div>
+    <div><div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div><h1>{{ camera_name }}</h1></div>
+    <div class="topbar-spacer"></div><span class="status-pill"><span class="status-dot"></span> Camera station</span>
+  </header>
+  <main class="camera-wrap">
+    <section class="camera-copy">
+      <p class="eyebrow">CAMERA STATION</p>
+      <h2>Start the camera<br><span class="muted-heading">only after reviewing the notice.</span></h2>
+      <p class="lead">This page sends sampled camera frames to the computer running the app so that it can look for enrolled participants.</p>
+    </section>
+    <section class="panel consent-panel">
+      <div class="notice notice-warn"><strong>Participation and privacy notice</strong><span>Continue only if you are authorised to operate this camera and affected participants have been informed and agreed to face matching. The app processes frames in memory, saves matched-event records and face templates for enrolled participants, and does not save video or unknown-face templates. If this link is routed through a third-party HTTPS tunnel, frames pass through that provider's infrastructure in transit.</span></div>
+      <label class="consent-check"><input type="checkbox" id="consent"> <span>I understand the notice and am authorised to start this camera.</span></label>
+      <div class="camera-picker"><div class="camera-picker-heading"><label for="camera-select">Choose camera</label><button type="button" id="refresh-cameras" class="button button-secondary button-small">Refresh list</button></div><select id="camera-select" aria-describedby="camera-help"><option value="">Automatic (rear camera when available)</option></select><small id="camera-help" class="helper">Choose a camera while live to switch feeds. Allow camera access first so devices have names.</small></div>
+      <div class="camera-actions"><button id="start" class="button button-primary" disabled>Start camera <span>▶</span></button><button id="stop" class="button button-secondary" disabled>Stop camera</button><button id="flip-camera" class="button button-secondary" disabled><span aria-hidden="true">⇄</span> Flip camera</button><div class="zoom-controls"><button type="button" id="zoom-out" class="button button-secondary" disabled aria-label="Zoom out">−</button><span id="zoom-level" aria-live="polite">1.0×</span><button type="button" id="zoom-in" class="button button-secondary" disabled aria-label="Zoom in">+</button></div></div>
+      <div id="message" class="camera-message" aria-live="polite">Camera is stopped.</div>
+      <div class="video-frame"><video id="video" playsinline muted autoplay></video><canvas id="detection-overlay"></canvas><div id="video-placeholder" class="video-placeholder"><span class="camera-glyph">◉</span><strong>Camera preview</strong><span>The preview appears here after you start the camera.</span></div><span id="live-indicator" class="live-indicator hidden">● LIVE</span></div>
+      <div class="stats-row"><div><span class="metric-label">FACES IN FRAME</span><strong id="face-count">—</strong></div><div><span class="metric-label">KNOWN MATCHES</span><strong id="match-count">—</strong></div><div><span class="metric-label">VISIBLE PEOPLE</span><strong id="person-count">—</strong></div><div><span class="metric-label">OCCUPANCY</span><strong id="occupancy">—</strong></div></div>
+      <p id="analysis-rate" class="helper">Live preview follows your camera’s frame rate. Object and face analysis are limited to 2 frames per second to keep the station responsive.</p>
+      <div id="matches" class="matches-box">No matching event yet.</div>
+    </section>
+    <p class="camera-footnote">Close this page or choose Stop camera to end video capture. Browser camera permission is required.</p>
+  </main>
+<script>
+const token = {{ token|tojson }};
+const $ = id => document.getElementById(id);
+let stream = null, frameTimer = null, sending = false, switchingCamera = false, analysisFrames = 0, fpsWindowStart = performance.now(), previewZoom = 1;
+$('consent').addEventListener('change', () => $('start').disabled = !$('consent').checked || !!stream);
+function message(text, error = false) { $('message').textContent = text; $('message').classList.toggle('error-text', error); }
+async function refreshCameraList(preferredDeviceId = '') {
+  if (!navigator.mediaDevices?.enumerateDevices) return;
+  try {
+    const previous = $('camera-select').value;
+    const cameras = (await navigator.mediaDevices.enumerateDevices()).filter(device => device.kind === 'videoinput');
+    $('camera-select').replaceChildren(new Option('Automatic (rear camera when available)', ''));
+    cameras.forEach((device, index) => {
+      $('camera-select').add(new Option(device.label || `Camera ${index + 1}`, device.deviceId));
+    });
+    const availableIds = cameras.map(device => device.deviceId);
+    if (preferredDeviceId && availableIds.includes(preferredDeviceId)) $('camera-select').value = preferredDeviceId;
+    else if (previous && availableIds.includes(previous)) $('camera-select').value = previous;
+    $('refresh-cameras').disabled = false;
+  } catch { message('Could not list cameras. You can still try the automatic camera option.', true); }
+}
+function stopCamera() {
+  if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+  if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
+  $('video').srcObject = null; $('start').disabled = !$('consent').checked; $('stop').disabled = true; $('camera-select').disabled = false; $('flip-camera').disabled = true; $('zoom-in').disabled = true; $('zoom-out').disabled = true;
+  previewZoom = 1; $('video').style.transform = ''; $('detection-overlay').style.transform = ''; $('zoom-level').textContent = '1.0×';
+  $('video').closest('.video-frame').style.aspectRatio = '16 / 9';
+  $('detection-overlay').getContext('2d').clearRect(0,0,$('detection-overlay').width,$('detection-overlay').height);
+  $('face-count').textContent = '—'; $('match-count').textContent = '—'; $('person-count').textContent = '—'; $('occupancy').textContent = '—';
+  $('live-indicator').classList.add('hidden'); $('video-placeholder').classList.remove('hidden');
+  message('Camera is stopped.');
+}
+function cameraIsActive() { return !!stream; }
+function updateActiveControls(deviceId = '') {
+  previewZoom=1;$('video').style.transform='';$('detection-overlay').style.transform='';$('zoom-level').textContent='1.0×';
+  $('start').disabled = true; $('stop').disabled = false; $('flip-camera').disabled = false; $('zoom-in').disabled = false; $('zoom-out').disabled = false; $('camera-select').disabled = false;
+  $('live-indicator').classList.remove('hidden'); $('video-placeholder').classList.add('hidden');
+  refreshCameraList(deviceId);
+}
+async function switchCamera(deviceId = $('camera-select').value, facingMode = '') {
+  if (!$('consent').checked || switchingCamera) return;
+  if (!navigator.mediaDevices?.getUserMedia) { message('Camera access needs a supported browser and a secure HTTPS connection.', true); return; }
+  switchingCamera = true;
+  const oldStream = stream;
+  const oldTrack = oldStream?.getVideoTracks()[0];
+  const oldSettings = oldTrack?.getSettings() || {};
+  const oldDeviceId = oldSettings.deviceId || '';
+  const oldFacingMode = oldSettings.facingMode || '';
+  $('start').disabled = true; $('stop').disabled = true; $('camera-select').disabled = true;
+  message(oldStream ? 'Switching camera feed…' : 'Requesting camera permission…');
+  if (frameTimer) { clearTimeout(frameTimer); frameTimer = null; }
+  if (oldStream) { stream = null; oldStream.getTracks().forEach(track => track.stop()); }
+  $('video').srcObject = null;
+  let nextStream = null;
+  try {
+    const video = deviceId
+      ? {deviceId:{exact:deviceId}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}
+      : {facingMode:facingMode?{ideal:facingMode}:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}};
+    nextStream = await navigator.mediaDevices.getUserMedia({video, audio:false});
+    $('video').srcObject = nextStream;
+    await $('video').play();
+    if ($('video').videoWidth && $('video').videoHeight) $('video').closest('.video-frame').style.aspectRatio = `${$('video').videoWidth} / ${$('video').videoHeight}`;
+    stream = nextStream;
+    oldStream?.getTracks().forEach(track => track.stop());
+    const track = nextStream.getVideoTracks()[0];
+    track?.addEventListener('ended', () => {
+      if (stream === nextStream) { stopCamera(); message('Camera feed ended. Choose a camera and start again.', true); }
+    }, {once:true});
+    updateActiveControls(track?.getSettings().deviceId || '');
+    message('Live feed is active. Choose another camera to switch without leaving this page.');
+    sendFrame();
+  } catch (err) {
+    nextStream?.getTracks().forEach(track => track.stop());
+    let restored = null;
+    if (oldStream) {
+      try {
+        const restoreVideo = oldDeviceId
+          ? {deviceId:{exact:oldDeviceId}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}}
+          : {facingMode:oldFacingMode?{ideal:oldFacingMode}:{ideal:'environment'}, width:{ideal:1280}, height:{ideal:720}, frameRate:{ideal:30}};
+        restored = await navigator.mediaDevices.getUserMedia({video:restoreVideo,audio:false});
+        stream = restored; $('video').srcObject = restored; await $('video').play();
+        const track = restored.getVideoTracks()[0]; track?.addEventListener('ended',()=>{if(stream===restored){stopCamera();message('Camera feed ended. Choose a camera and start again.',true);}},{once:true});
+        updateActiveControls(track?.getSettings().deviceId||oldDeviceId); sendFrame();
+        message(`Could not switch camera: ${err.message}. The previous camera has been restored.`,true);
+      } catch { restored?.getTracks().forEach(track=>track.stop()); }
+    }
+    if (!stream) {
+      stopCamera();
+      message(oldStream?`Could not switch camera: ${err.message}. Choose another camera and try again.`:`Could not open this camera: ${err.message}. Check browser permission, HTTPS, or whether another app is using it.`,true);
+    }
+  } finally { switchingCamera = false; }
+}
+async function flipCamera() {
+  if (!stream || switchingCamera) return;
+  const track=stream.getVideoTracks()[0],settings=track?.getSettings()||{};
+  const selectedLabel=$('camera-select').selectedOptions[0]?.textContent.toLowerCase()||'';
+  const currentIsFront=settings.facingMode==='user'||/front|user|selfie/.test(selectedLabel);
+  const target=currentIsFront?'environment':'user';
+  let matching='';
+  try { const devices=(await navigator.mediaDevices.enumerateDevices()).filter(device=>device.kind==='videoinput');const terms=target==='user'?/front|user|selfie/:/back|rear|environment/;matching=devices.find(device=>terms.test(device.label.toLowerCase()))?.deviceId||''; } catch {}
+  await switchCamera(matching,target);
+}
+async function changeZoom(delta) {
+  if (!stream) return;
+  const track=stream.getVideoTracks()[0],capabilities=track?.getCapabilities?.()||{},settings=track?.getSettings?.()||{};
+  if (capabilities.zoom) {
+    const current=Number(settings.zoom||capabilities.min||1),next=Math.min(Number(capabilities.max),Math.max(Number(capabilities.min),current+delta*Math.max(.1,(Number(capabilities.max)-Number(capabilities.min))/10)));
+    try { await track.applyConstraints({advanced:[{zoom:next}]});$('zoom-level').textContent=`${next.toFixed(1)}×`;$('zoom-level').title='Camera lens zoom';return; } catch {}
+  }
+  previewZoom=Math.min(3,Math.max(1,previewZoom+delta*.2));const transform=`scale(${previewZoom.toFixed(2)})`;$('video').style.transform=transform;$('detection-overlay').style.transform=transform;$('zoom-level').textContent=`${previewZoom.toFixed(1)}×`;$('zoom-level').title='Preview zoom';
+}
+async function sendFrame() {
+  if (!stream || sending) return;
+  if ($('video').readyState < 2) { frameTimer = setTimeout(sendFrame, 100); return; }
+  sending = true;
+  try {
+    const video = $('video'), canvas = document.createElement('canvas');
+    const scale = Math.min(1, 640 / video.videoWidth); canvas.width = Math.max(1, Math.round(video.videoWidth * scale)); canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.78));
+    if (!blob) return;
+    const response = await fetch(`/api/camera/${token}/frame`, {method:'POST', headers:{'Content-Type':'image/jpeg'}, body:blob});
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.detail || `Server error (${response.status})`);
+    analysisFrames++;
+    const fpsElapsed = performance.now() - fpsWindowStart;
+    if (fpsElapsed >= 1000) {
+      $('analysis-rate').textContent = `Live preview follows your camera frame rate · analysis ${ (analysisFrames * 1000 / fpsElapsed).toFixed(1) } FPS`;
+      analysisFrames = 0; fpsWindowStart = performance.now();
+    }
+    $('face-count').textContent = data.faces_detected;
+    $('match-count').textContent = data.matched.length;
+    $('person-count').textContent = data.person_count;
+    $('occupancy').textContent = data.occupancy;
+    const overlay = $('detection-overlay'), ctx = overlay.getContext('2d');
+    overlay.width = video.videoWidth; overlay.height = video.videoHeight; ctx.clearRect(0,0,overlay.width,overlay.height);
+    const sx = overlay.width / data.frame_size[0], sy = overlay.height / data.frame_size[1];
+    (data.objects || []).forEach(obj => { const [x1,y1,x2,y2] = obj.box; ctx.strokeStyle='#43e6a1'; ctx.lineWidth=Math.max(2,overlay.width/400); ctx.strokeRect(x1*sx,y1*sy,(x2-x1)*sx,(y2-y1)*sy); ctx.font=`${Math.max(13,overlay.width/45)}px sans-serif`; const label=`${obj.label} #${obj.track_id} ${obj.score}`; const tw=ctx.measureText(label).width; ctx.fillStyle='rgba(8,25,33,.82)'; ctx.fillRect(x1*sx,y1*sy-22,tw+10,22); ctx.fillStyle='#fff'; ctx.fillText(label,x1*sx+5,y1*sy-6); });
+    if (data.matched.length) {
+      $('matches').innerHTML = data.matched.map(person => `<div class="match-chip"><span class="match-check">✓</span><strong>${String(person.name).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</strong><span>similarity ${Number(person.score).toFixed(3)}</span></div>`).join('');
+      message('Known participant match found. Review the dashboard for a logged event.');
+    } else {
+      const objectSummary = (data.objects || []).slice(0,4).map(item => item.label).join(', ');
+      $('matches').textContent = `${data.faces_detected ? 'Face detected; no enrolled participant matched.' : 'No face detected.'}${objectSummary ? ` Objects: ${objectSummary}` : ''}${data.face_analysis_error ? ` Face analysis issue: ${data.face_analysis_error}` : ''}`;
+      message(data.face_analysis_error ? 'Object detection is continuing; face analysis needs attention in Model status and diagnostics.' : data.faces_detected ? 'No enrolled match in the current frame.' : 'Camera active. Looking for faces and objects…');
+    }
+  } catch (err) { message(err.message || 'Could not send frame to the local app.', true); }
+  finally { sending = false; if (stream) frameTimer = setTimeout(sendFrame, 500); }
+}
+$('start').addEventListener('click', () => switchCamera());
+$('camera-select').addEventListener('change', () => { if (stream) switchCamera($('camera-select').value); });
+$('stop').addEventListener('click', stopCamera);
+$('flip-camera').addEventListener('click',flipCamera);
+$('zoom-in').addEventListener('click',()=>changeZoom(1));
+$('zoom-out').addEventListener('click',()=>changeZoom(-1));
+$('refresh-cameras').addEventListener('click', () => refreshCameraList());
+refreshCameraList();
+if (navigator.mediaDevices) navigator.mediaDevices.addEventListener?.('devicechange', () => refreshCameraList());
+window.addEventListener('pagehide', stopCamera);
+</script>
+</body>
+</html>
