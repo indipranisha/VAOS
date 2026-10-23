@@ -184,12 +184,12 @@ try {
   New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'data') -Force | Out-Null
   $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
   if (-not $nvidiaSmi) { $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue }
-  & $python -c 'import cv2, fastapi, jinja2, multipart, numpy, qrcode, uvicorn'
+  & $python -c 'import cv2, fastapi, jinja2, multipart, numpy, psutil, qrcode, uvicorn'
   if ($LASTEXITCODE -ne 0) {
     Write-Host 'Installing required camera and face-recognition packages (first setup only)...'
     & $python -m pip install --disable-pip-version-check --timeout 30 --retries 3 -r (Join-Path $PSScriptRoot 'requirements.txt')
     if ($LASTEXITCODE -ne 0) { throw 'Required app packages could not be installed. Check internet access and try again.' }
-    & $python -c 'import cv2, fastapi, jinja2, multipart, numpy, qrcode, uvicorn'
+    & $python -c 'import cv2, fastapi, jinja2, multipart, numpy, psutil, qrcode, uvicorn'
     if ($LASTEXITCODE -ne 0) { throw 'Required app packages were installed but could not be imported. See pip output above.' }
   }
 

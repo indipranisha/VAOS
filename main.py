@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import hmac
+import csv
 import json
 import logging
 import os
 import secrets
+import shutil
 import sqlite3
+import subprocess
 import threading
 import time
 import hashlib
@@ -70,13 +73,25 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
+APP_VERSION = "0.10.0"
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
+ENGINE_SETTING_DEFAULTS = {
+    "face_matching_enabled": "1",
+    "object_detection_enabled": "1",
+    "object_tracking_enabled": "1",
+    "match_threshold": str(MATCH_THRESHOLD),
+    "event_cooldown_seconds": str(EVENT_COOLDOWN_SECONDS),
+    "object_confidence": "0.25",
+    "object_image_size": "512",
+    "camera_frame_interval_ms": "500",
+    "camera_max_dimension": "640",
+}
 MAX_IMAGE_BYTES = 6 * 1024 * 1024
 MAX_ENROLLMENT_PHOTOS = 10
 MAX_ENROLLMENT_TOTAL_BYTES = 30 * 1024 * 1024
 
-app = FastAPI(title="VAOS (Video Analytics - Operating System)", version="0.1.0", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="VAOS (Video Analytics - Operating System)", version=APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 security = HTTPBasic(auto_error=False)
@@ -107,6 +122,8 @@ ml_dataset_import_state: dict[str, Any] = {"status": "idle", "message": "No publ
 ml_training_lock = threading.Lock()
 ml_dataset_import_lock = threading.Lock()
 ml_training_log_lock = threading.Lock()
+system_metrics_lock = threading.Lock()
+system_metrics_cache: dict[str, Any] = {"sampled_at": 0.0, "data": {}}
 
 
 def utc_now() -> str:
@@ -236,6 +253,70 @@ def db_connection():
         raise
     finally:
         connection.close()
+
+
+def get_engine_settings() -> dict[str, Any]:
+    """Load persisted, bounded runtime controls; defaults preserve legacy behavior."""
+    values = dict(ENGINE_SETTING_DEFAULTS)
+    try:
+        with db_connection() as db:
+            rows = db.execute("SELECT key,value FROM app_settings WHERE key IN (" + ",".join("?" for _ in values) + ")", tuple(values)).fetchall()
+        values.update({str(row["key"]): str(row["value"]) for row in rows})
+    except sqlite3.Error:
+        logger.exception("Could not load engine settings; using safe defaults")
+    try:
+        return {
+            "face_matching_enabled": values["face_matching_enabled"] == "1",
+            "object_detection_enabled": values["object_detection_enabled"] == "1",
+            "object_tracking_enabled": values["object_tracking_enabled"] == "1",
+            "match_threshold": min(0.85, max(0.2, float(values["match_threshold"]))),
+            "event_cooldown_seconds": min(3600, max(15, int(values["event_cooldown_seconds"]))),
+            "object_confidence": min(0.95, max(0.05, float(values["object_confidence"]))),
+            "object_image_size": int(values["object_image_size"]) if int(values["object_image_size"]) in {320, 416, 512, 640, 768} else 512,
+            "camera_frame_interval_ms": int(values["camera_frame_interval_ms"]) if int(values["camera_frame_interval_ms"]) in {250, 500, 750, 1000, 1500} else 500,
+            "camera_max_dimension": int(values["camera_max_dimension"]) if int(values["camera_max_dimension"]) in {480, 640, 800, 960, 1280} else 640,
+        }
+    except (KeyError, TypeError, ValueError):
+        logger.exception("Invalid saved engine setting; using defaults")
+        return {key: value == "1" if key.endswith("_enabled") else int(value) if value.isdigit() else float(value) for key, value in ENGINE_SETTING_DEFAULTS.items()}
+
+
+def get_system_metrics() -> dict[str, Any]:
+    """Return lightweight host telemetry, with GPU fields when NVIDIA tooling is available."""
+    now = time.monotonic()
+    with system_metrics_lock:
+        if now - float(system_metrics_cache.get("sampled_at", 0.0)) < 3:
+            return dict(system_metrics_cache.get("data", {}))
+        metrics: dict[str, Any] = {
+            "cpu_percent": None,
+            "memory_percent": None,
+            "memory_used_gb": None,
+            "memory_total_gb": None,
+            "gpu_available": False,
+            "gpu_name": "Unavailable",
+            "gpu_utilization_percent": None,
+            "gpu_memory_used_mb": None,
+            "gpu_memory_total_mb": None,
+            "gpu_temperature_c": None,
+        }
+        try:
+            import psutil
+            memory = psutil.virtual_memory()
+            metrics.update({"cpu_percent": psutil.cpu_percent(interval=None), "memory_percent": memory.percent, "memory_used_gb": round((memory.total - memory.available) / (1024 ** 3), 2), "memory_total_gb": round(memory.total / (1024 ** 3), 2)})
+        except Exception:
+            logger.debug("Host CPU/RAM metrics are unavailable", exc_info=True)
+        nvidia_smi = shutil.which("nvidia-smi")
+        if nvidia_smi:
+            try:
+                result = subprocess.run([nvidia_smi, "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.25, check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                row = next(csv.reader([result.stdout.splitlines()[0]]))
+                if len(row) >= 5:
+                    as_int = lambda value: int(value.strip()) if value.strip().isdigit() else None
+                    metrics.update({"gpu_available": True, "gpu_name": row[0].strip(), "gpu_utilization_percent": as_int(row[1]), "gpu_memory_used_mb": as_int(row[2]), "gpu_memory_total_mb": as_int(row[3]), "gpu_temperature_c": as_int(row[4])})
+            except (OSError, subprocess.SubprocessError, IndexError, csv.Error):
+                logger.debug("NVIDIA system metrics are unavailable", exc_info=True)
+        system_metrics_cache.update({"sampled_at": now, "data": metrics})
+        return dict(metrics)
 
 
 def init_db() -> None:
@@ -440,12 +521,12 @@ class YOLO26Runtime:
         self.model_path = str(Path(self.model.ckpt_path).resolve())
         logger.info("YOLO26m object model loaded from %s on %s", self.model_path, self.device_label)
 
-    def infer(self, image: np.ndarray) -> list[dict[str, Any]]:
+    def infer(self, image: np.ndarray, confidence: float = 0.25, image_size: int = 512) -> list[dict[str, Any]]:
         try:
             predictions = self.model.predict(
                 source=image,
-                imgsz=512,
-                conf=0.25,
+                imgsz=image_size,
+                conf=confidence,
                 device=self.device,
                 half=self.use_cuda,
                 verbose=False,
@@ -459,7 +540,7 @@ class YOLO26Runtime:
             self.device_label = "YOLO26m · CPU (GPU inference failed)"
             global compute_device
             compute_device = self.device_label + "; face models on CPU"
-            predictions = self.model.predict(source=image, imgsz=512, conf=0.25, device="cpu", verbose=False)
+            predictions = self.model.predict(source=image, imgsz=image_size, conf=confidence, device="cpu", verbose=False)
         if not predictions or predictions[0].boxes is None:
             return []
         boxes = predictions[0].boxes
@@ -540,7 +621,7 @@ def extract_enrollment_embedding(content: bytes) -> np.ndarray:
         return feature_for_face(image, face, recognizer)
 
 
-def find_best_match(embedding: np.ndarray) -> tuple[int, str, float] | None:
+def find_best_match(embedding: np.ndarray, threshold: float | None = None) -> tuple[int, str, float] | None:
     with db_connection() as db:
         rows = db.execute("SELECT id, name, embedding FROM participants").fetchall()
     best = None
@@ -555,24 +636,28 @@ def find_best_match(embedding: np.ndarray) -> tuple[int, str, float] | None:
             continue
         if best is None or score > best[2]:
             best = (int(row["id"]), str(row["name"]), score)
-    if best and best[2] >= MATCH_THRESHOLD:
+    if best and best[2] >= (MATCH_THRESHOLD if threshold is None else threshold):
         return best
     return None
 
 
 def process_frame(token: str, content: bytes) -> dict[str, Any]:
     image = decode_image(content)
+    engine_settings = get_engine_settings()
     # Keep object analytics independent from face-model availability.
     with recognition_lock:
         face_error = ""
-        try:
-            faces, recognizer = detect_faces(image)
-        except Exception as exc:
+        if engine_settings["face_matching_enabled"]:
+            try:
+                faces, recognizer = detect_faces(image)
+            except Exception:
+                faces, recognizer = [], None
+                face_error = "Face analysis is unavailable; object detection continues."
+                logger.exception("Face analysis failed; continuing object detection")
+        else:
             faces, recognizer = [], None
-            face_error = "Face analysis is unavailable; object detection continues."
-            logger.exception("Face analysis failed; continuing object detection")
-        detector = get_object_detector()
-        objects = detector.infer(image) if detector else []
+        detector = get_object_detector() if engine_settings["object_detection_enabled"] else None
+        objects = detector.infer(image, confidence=engine_settings["object_confidence"], image_size=engine_settings["object_image_size"]) if detector else []
         # Dataset capture is opt-in from the private ML page. Only detected object
         # crops are retained, never the full camera frame.
         with db_connection() as db:
@@ -597,31 +682,36 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
                         normalized_box = f"{(x1-left)/max(1,right-left):.6f},{(y1-top)/max(1,bottom-top):.6f},{box_width/max(1,right-left):.6f},{box_height/max(1,bottom-top):.6f}"
                         db.execute("INSERT INTO ml_samples(created_at,camera_token,suggested_label,image,bbox,confidence) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM ml_samples)<?", (utc_now(), token, obj["label"], encoded_crop.tobytes(), normalized_box, float(obj["score"]), MAX_ML_SAMPLES))
                     last_ml_capture[capture_key] = time.monotonic()
-        now_track = time.monotonic()
-        existing_tracks = [track for track in live_tracks.get(token, []) if now_track - track["seen"] <= 5.0]
-        next_track_id = max((track["id"] for track in existing_tracks), default=0) + 1
-        for obj in objects:
-            x1, y1, x2, y2 = obj["box"]
-            candidates = []
+        if engine_settings["object_tracking_enabled"]:
+            now_track = time.monotonic()
+            existing_tracks = [track for track in live_tracks.get(token, []) if now_track - track["seen"] <= 5.0]
+            next_track_id = max((track["id"] for track in existing_tracks), default=0) + 1
+            for obj in objects:
+                x1, y1, x2, y2 = obj["box"]
+                candidates = []
+                for track in existing_tracks:
+                    if track["label"] != obj["label"] or track.get("used"):
+                        continue
+                    ax1, ay1, ax2, ay2 = track["box"]
+                    intersection = max(0, min(x2, ax2) - max(x1, ax1)) * max(0, min(y2, ay2) - max(y1, ay1))
+                    union = max(1, (x2-x1)*(y2-y1) + (ax2-ax1)*(ay2-ay1) - intersection)
+                    candidates.append((intersection / union, track))
+                best = max(candidates, key=lambda item: item[0], default=(0, None))
+                if best[0] >= 0.25:
+                    track = best[1]
+                    track["box"], track["seen"], track["used"] = obj["box"], now_track, True
+                else:
+                    track = {"id": next_track_id, "label": obj["label"], "box": obj["box"], "seen": now_track, "used": True}
+                    existing_tracks.append(track)
+                    next_track_id += 1
+                obj["track_id"] = track["id"]
             for track in existing_tracks:
-                if track["label"] != obj["label"] or track.get("used"):
-                    continue
-                ax1, ay1, ax2, ay2 = track["box"]
-                intersection = max(0, min(x2, ax2) - max(x1, ax1)) * max(0, min(y2, ay2) - max(y1, ay1))
-                union = max(1, (x2-x1)*(y2-y1) + (ax2-ax1)*(ay2-ay1) - intersection)
-                candidates.append((intersection / union, track))
-            best = max(candidates, key=lambda item: item[0], default=(0, None))
-            if best[0] >= 0.25:
-                track = best[1]
-                track["box"], track["seen"], track["used"] = obj["box"], now_track, True
-            else:
-                track = {"id": next_track_id, "label": obj["label"], "box": obj["box"], "seen": now_track, "used": True}
-                existing_tracks.append(track)
-                next_track_id += 1
-            obj["track_id"] = track["id"]
-        for track in existing_tracks:
-            track.pop("used", None)
-        live_tracks[token] = existing_tracks
+                track.pop("used", None)
+            live_tracks[token] = existing_tracks
+        else:
+            live_tracks.pop(token, None)
+            for obj in objects:
+                obj["track_id"] = None
         matched: list[dict[str, Any]] = []
         for face in faces:
             if float(face[2]) < 45 or float(face[3]) < 45:
@@ -630,7 +720,7 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
                 embedding = feature_for_face(image, face, recognizer)
             except (ValueError, cv2.error):
                 continue
-            match = find_best_match(embedding)
+            match = find_best_match(embedding, engine_settings["match_threshold"])
             if not match:
                 # Unknown faces are intentionally not enrolled or stored.
                 continue
@@ -639,7 +729,7 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
             key = (token, person_id)
             now = time.monotonic()
             previous = last_emitted.get(key, 0.0)
-            if now - previous >= EVENT_COOLDOWN_SECONDS:
+            if now - previous >= engine_settings["event_cooldown_seconds"]:
                 with db_connection() as db:
                     count = db.execute(
                         "SELECT COUNT(*) AS n FROM sightings WHERE person_id = ?", (person_id,)
@@ -677,23 +767,28 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
         "frame_size": [int(image.shape[1]), int(image.shape[0])],
         "person_count": person_count,
         "occupancy": occupancy,
-        "threshold": MATCH_THRESHOLD,
+        "threshold": engine_settings["match_threshold"],
+        "face_matching_enabled": engine_settings["face_matching_enabled"],
+        "object_detection_enabled": engine_settings["object_detection_enabled"],
+        "object_tracking_enabled": engine_settings["object_tracking_enabled"],
         "note": "Similarity scores are not probabilities. Unknown faces are not saved.",
     }
 
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, _: str = Depends(require_admin)):
+    settings = get_engine_settings()
     return templates.TemplateResponse(request, "index.html", {
-        "threshold": MATCH_THRESHOLD,
-        "cooldown": EVENT_COOLDOWN_SECONDS,
+        "threshold": settings["match_threshold"],
+        "cooldown": settings["event_cooldown_seconds"],
         "admin_password": ADMIN_PASSWORD,
+        "version": APP_VERSION,
     })
 
 
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "training.html", {})
+    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION})
 
 
 @app.get("/health")
@@ -707,7 +802,8 @@ def camera_page(token: str, request: Request):
         camera = db.execute("SELECT token, name, active FROM cameras WHERE token = ?", (token,)).fetchone()
     if not camera or not camera["active"]:
         raise HTTPException(status_code=404, detail="This camera link is invalid or has been revoked.")
-    return templates.TemplateResponse(request, "camera.html", {"camera_name": camera["name"], "token": token})
+    settings = get_engine_settings()
+    return templates.TemplateResponse(request, "camera.html", {"camera_name": camera["name"], "token": token, "frame_interval_ms": settings["camera_frame_interval_ms"], "max_dimension": settings["camera_max_dimension"]})
 
 
 def public_enrollment_page(token: str, request: Request):
@@ -759,6 +855,8 @@ def diagnostics(_: str = Depends(require_admin)):
     with db_connection() as db:
         rows = db.execute("SELECT c.token,c.name,c.active,c.map_x,c.map_y,c.heading,s.last_frame_at,s.faces_detected,s.matched_count,s.objects_json,s.error FROM cameras c LEFT JOIN camera_status s ON c.token=s.camera_token ORDER BY c.created_at DESC").fetchall()
         object_rows = db.execute("SELECT o.timestamp,o.class_name,o.count,o.confidence,c.name AS camera_name FROM object_sightings o JOIN cameras c ON c.token=o.camera_token ORDER BY o.id DESC LIMIT 60").fetchall()
+        matches_today = int(db.execute("SELECT COUNT(*) FROM sightings WHERE timestamp LIKE ?", (datetime.now(timezone.utc).strftime("%Y-%m-%d") + "%",)).fetchone()[0])
+        objects_last_hour = int(db.execute("SELECT COUNT(*) FROM object_sightings WHERE timestamp >= ?", ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds"),)).fetchone()[0])
     cameras = []
     now = datetime.now(timezone.utc)
     for row in rows:
@@ -787,7 +885,57 @@ def diagnostics(_: str = Depends(require_admin)):
                 runtime = worker_status
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             pass  # Keep showing the last process-local status when the worker is unavailable.
-    return {**runtime, "cameras": cameras, "objects": [dict(r) for r in object_rows]}
+    return {**runtime, "cameras": cameras, "objects": [dict(r) for r in object_rows], "matches_today": matches_today, "objects_last_hour": objects_last_hour, "system_metrics": get_system_metrics()}
+
+
+@app.get("/api/admin/engine-settings")
+def engine_settings(_: str = Depends(require_admin)):
+    return get_engine_settings()
+
+
+@app.post("/api/admin/engine-settings")
+def update_engine_settings(payload: dict[str, Any], _: str = Depends(require_admin)):
+    booleans = {"face_matching_enabled", "object_detection_enabled", "object_tracking_enabled"}
+    enum_values = {
+        "object_image_size": {320, 416, 512, 640, 768},
+        "camera_frame_interval_ms": {250, 500, 750, 1000, 1500},
+        "camera_max_dimension": {480, 640, 800, 960, 1280},
+    }
+    updates: dict[str, str] = {}
+    try:
+        for key in booleans:
+            if key in payload:
+                if not isinstance(payload[key], bool):
+                    raise ValueError(f"{key} must be on or off")
+                updates[key] = "1" if payload[key] else "0"
+        if "match_threshold" in payload:
+            value = float(payload["match_threshold"])
+            if not 0.2 <= value <= 0.85:
+                raise ValueError("Face match threshold must be between 0.20 and 0.85")
+            updates["match_threshold"] = f"{value:.2f}"
+        if "object_confidence" in payload:
+            value = float(payload["object_confidence"])
+            if not 0.05 <= value <= 0.95:
+                raise ValueError("Object confidence must be between 0.05 and 0.95")
+            updates["object_confidence"] = f"{value:.2f}"
+        if "event_cooldown_seconds" in payload:
+            value = int(payload["event_cooldown_seconds"])
+            if not 15 <= value <= 3600:
+                raise ValueError("Event cooldown must be between 15 and 3,600 seconds")
+            updates["event_cooldown_seconds"] = str(value)
+        for key, allowed in enum_values.items():
+            if key in payload:
+                value = int(payload[key])
+                if value not in allowed:
+                    raise ValueError(f"Unsupported value for {key}")
+                updates[key] = str(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updates:
+        raise HTTPException(status_code=400, detail="No supported engine settings were provided")
+    with db_connection() as db:
+        db.executemany("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", list(updates.items()))
+    return {"settings": get_engine_settings(), "message": "Engine settings saved. Detection settings apply on the next frame; camera capture settings apply when camera pages are opened or refreshed."}
 
 
 @app.get("/api/admin/model-selection")

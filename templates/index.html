@@ -8,14 +8,13 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand-mark">VAOS</div>
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><svg class="vaos-logo" viewBox="0 0 48 48" role="img" aria-label="VAOS tricolor logo"><rect x="3" y="3" width="42" height="42" rx="14" fill="#fff"/><path d="M11 12h26v7H11z" fill="#f29c62"/><path d="M11 20h26v7H11z" fill="#fff"/><path d="M11 28h26v7H11z" fill="#68ad82"/><circle cx="24" cy="23.5" r="5.4" fill="#405b8f"/><circle cx="24" cy="23.5" r="2" fill="#fff"/></svg><span>VAOS</span></a>
     <div>
       <div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div>
       <h1>VAOS</h1>
     </div>
     <div class="topbar-spacer"></div>
-    <a class="button button-secondary button-small topbar-settings" href="#settings">Settings</a>
-    <a class="button button-secondary button-small topbar-settings" href="/training">ML training</a>
+    <nav class="primary-nav" aria-label="Main navigation"><a class="nav-link active" href="/">Dashboard</a><a class="nav-link" href="#engine-settings">Settings</a><a class="nav-link" href="/training">ML training</a><span class="version-chip">v{{ version }}</span></nav>
     <span class="status-pill"><span class="status-dot"></span> PC processing</span>
   </header>
 
@@ -31,6 +30,15 @@
         <strong id="threshold">{{ '%.2f'|format(threshold) }}</strong>
         <small>Cosine similarity · not a probability</small>
       </div>
+    </section>
+
+    <section class="dashboard-overview" aria-label="System overview">
+      <article class="overview-card overview-cameras"><div class="overview-card-top"><span class="metric-label">CAMERAS ONLINE</span><span class="stat-orb">◉</span></div><strong id="metric-cameras">—</strong><small id="metric-cameras-detail">Waiting for camera status</small><canvas class="mini-chart" id="chart-cameras" width="260" height="42" aria-label="Recent camera availability"></canvas></article>
+      <article class="overview-card overview-sightings"><div class="overview-card-top"><span class="metric-label">MATCHES TODAY</span><span class="stat-orb">⌖</span></div><strong id="metric-sightings">—</strong><small>Logged in the local database · UTC</small><canvas class="mini-chart" id="chart-sightings" width="260" height="42" aria-label="Matches today trend"></canvas></article>
+      <article class="overview-card overview-objects"><div class="overview-card-top"><span class="metric-label">OBJECT TYPES ACTIVE</span><span class="stat-orb">▦</span></div><strong id="metric-objects">—</strong><small id="metric-objects-detail">Across connected cameras</small><canvas class="mini-chart" id="chart-objects" width="260" height="42" aria-label="Recent object activity trend"></canvas></article>
+      <article class="overview-card hardware-card"><div class="hardware-heading"><div><span class="metric-label">COMPUTE · CPU</span><strong id="metric-cpu">—</strong></div><span id="cpu-chip" class="subtle-tag">Host</span></div><div class="meter-track"><span id="cpu-meter" class="meter-fill meter-lilac"></span></div><small id="cpu-detail">Usage sampling every 5 sec</small><canvas class="mini-chart" id="chart-cpu" width="260" height="36" aria-label="CPU usage history"></canvas></article>
+      <article class="overview-card hardware-card"><div class="hardware-heading"><div><span class="metric-label">MEMORY · RAM</span><strong id="metric-ram">—</strong></div><span id="ram-chip" class="subtle-tag">System</span></div><div class="meter-track"><span id="ram-meter" class="meter-fill meter-mint"></span></div><small id="ram-detail">Available and used memory</small><canvas class="mini-chart" id="chart-ram" width="260" height="36" aria-label="Memory usage history"></canvas></article>
+      <article class="overview-card hardware-card"><div class="hardware-heading"><div><span class="metric-label">GPU · DEVICE 0</span><strong id="metric-gpu">—</strong></div><span id="gpu-chip" class="subtle-tag">Checking</span></div><div class="meter-track"><span id="gpu-meter" class="meter-fill meter-peach"></span></div><small id="gpu-detail">Usage · VRAM · temperature</small><canvas class="mini-chart" id="chart-gpu" width="260" height="36" aria-label="GPU usage history"></canvas></article>
     </section>
 
     <section class="notice notice-warn">
@@ -112,6 +120,23 @@
         <span class="subtle-tag">Photos stored locally</span>
       </div>
       <div id="participant-list" class="empty-state">Loading enrolled participants…</div>
+    </section>
+
+    <section class="panel section-panel engine-settings-panel" id="engine-settings">
+      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · CORE ENGINE</p><h3>Detection and processing controls</h3></div><span class="subtle-tag">Saved locally · next frame</span></div>
+      <p class="helper">These controls tune the live engine. Turning a detector off stops that analysis path; training samples and existing profiles remain intact.</p>
+      <form id="engine-settings-form" class="engine-settings-grid">
+        <label class="engine-toggle-card"><span><strong>Face matching</strong><small>Find faces and compare enrolled profiles</small></span><input id="setting-face" type="checkbox"></label>
+        <label class="engine-toggle-card"><span><strong>Object detection</strong><small>Run the selected YOLO detector</small></span><input id="setting-objects" type="checkbox"></label>
+        <label class="engine-toggle-card"><span><strong>Object tracking</strong><small>Keep temporary IDs between frames</small></span><input id="setting-tracking" type="checkbox"></label>
+        <label class="engine-control"><span>Face match threshold <strong id="setting-threshold-label">0.42</strong></span><small>Higher is stricter · similarity, not probability</small><input id="setting-threshold" type="range" min="0.20" max="0.85" step="0.01"></label>
+        <label class="engine-control"><span>Object confidence <strong id="setting-confidence-label">0.25</strong></span><small>Raise to reduce low-confidence boxes</small><input id="setting-confidence" type="range" min="0.05" max="0.95" step="0.05"></label>
+        <label class="engine-control"><span>Event cooldown <strong>seconds</strong></span><small>Per person and camera · 15–3,600 sec</small><input id="setting-cooldown" type="number" min="15" max="3600" step="15"></label>
+        <label class="engine-control"><span>Object inference size</span><small>Larger can help detail and uses more GPU/RAM</small><select id="setting-image-size"><option value="320">320 · fastest</option><option value="416">416</option><option value="512">512 · balanced</option><option value="640">640 · more detail</option><option value="768">768 · highest load</option></select></label>
+        <label class="engine-control"><span>Analysis interval</span><small>Applies when camera page opens or refreshes</small><select id="setting-frame-interval"><option value="250">250 ms · higher rate</option><option value="500">500 ms · balanced</option><option value="750">750 ms</option><option value="1000">1 sec · lower load</option><option value="1500">1.5 sec · lowest load</option></select></label>
+        <label class="engine-control"><span>Camera frame size</span><small>Maximum image width sent for analysis</small><select id="setting-frame-size"><option value="480">480 px · lower load</option><option value="640">640 px · balanced</option><option value="800">800 px</option><option value="960">960 px · more detail</option><option value="1280">1280 px · highest load</option></select></label>
+        <div class="engine-settings-actions"><button class="button button-primary" type="submit">Save engine controls</button><button class="button button-secondary" type="button" id="engine-settings-reset">Restore defaults</button><span id="engine-settings-status" class="helper" aria-live="polite">Loading saved settings…</span></div>
+      </form>
     </section>
 
     <section class="panel section-panel" id="system-settings">
@@ -283,8 +308,21 @@ async function loadEvents() {
   else $('event-list').innerHTML = events.map(item => `<tr><td><strong>${escapeHtml(item.person_name)}</strong></td><td>${escapeHtml(item.camera_name)}</td><td><span class="event-tag ${item.kind === 'REPEAT' ? 'event-repeat' : 'event-first'}">${escapeHtml(item.kind)}</span></td><td class="numeric">${Number(item.score).toFixed(3)}</td><td class="date-cell">${escapeHtml(shortDate(item.timestamp))}</td></tr>`).join('');
   $('sighting-refresh-status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
+const dashboardHistory={cameras:[],sightings:[],objects:[],cpu:[],ram:[],gpu:[]};
+function drawMiniChart(id,values,color){const canvas=$(id),ctx=canvas?.getContext('2d');if(!ctx)return;const width=canvas.width,height=canvas.height;ctx.clearRect(0,0,width,height);if(values.length<2)return;const min=Math.min(...values),max=Math.max(...values),range=Math.max(1,max-min);const points=values.map((value,index)=>({x:index*(width/(values.length-1)),y:height-4-((value-min)/range)*(height-11)}));ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);points.slice(1).forEach(point=>ctx.lineTo(point.x,point.y));ctx.lineTo(width,height);ctx.lineTo(0,height);ctx.closePath();const fill=ctx.createLinearGradient(0,0,0,height);fill.addColorStop(0,`${color}33`);fill.addColorStop(1,`${color}00`);ctx.fillStyle=fill;ctx.fill();ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);points.slice(1).forEach(point=>ctx.lineTo(point.x,point.y));ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineCap='round';ctx.lineJoin='round';ctx.stroke();}
+function addHistory(key,value,id,color){if(!Number.isFinite(Number(value)))return;const list=dashboardHistory[key];list.push(Number(value));if(list.length>18)list.shift();drawMiniChart(id,list,color);}
+function updateDashboardMetrics(data){const cameras=data.cameras||[],online=cameras.filter(item=>item.online).length,objectTypes=new Set(cameras.flatMap(camera=>Object.entries(camera.objects||{}).filter(([,entry])=>Number(entry?.[0]||0)>0).map(([label])=>label)));$('metric-cameras').textContent=`${online} / ${cameras.filter(item=>item.active).length}`;$('metric-cameras-detail').textContent=online?'Live camera stations':'No live camera frames';$('metric-sightings').textContent=Number(data.matches_today||0).toLocaleString();$('metric-objects').textContent=objectTypes.size.toLocaleString();$('metric-objects-detail').textContent=`${Number(data.objects_last_hour||0).toLocaleString()} activity records · last hour`;addHistory('cameras',online,'chart-cameras','#8f8bd8');addHistory('sightings',Number(data.matches_today||0),'chart-sightings','#e8a284');addHistory('objects',Number(data.objects_last_hour||0),'chart-objects','#68ad82');const metrics=data.system_metrics||{};const cpu=metrics.cpu_percent===null||metrics.cpu_percent===undefined?NaN:Number(metrics.cpu_percent),ram=metrics.memory_percent===null||metrics.memory_percent===undefined?NaN:Number(metrics.memory_percent),gpu=metrics.gpu_utilization_percent===null||metrics.gpu_utilization_percent===undefined?NaN:Number(metrics.gpu_utilization_percent);$('metric-cpu').textContent=Number.isFinite(cpu)?`${cpu.toFixed(0)}%`:'N/A';$('cpu-meter').style.width=`${Math.min(100,Math.max(0,cpu||0))}%`;$('cpu-detail').textContent=Number.isFinite(cpu)?`${Math.round(cpu)}% host processor load`:'CPU monitor unavailable';$('metric-ram').textContent=Number.isFinite(ram)?`${ram.toFixed(0)}%`:'N/A';$('ram-meter').style.width=`${Math.min(100,Math.max(0,ram||0))}%`;$('ram-detail').textContent=Number.isFinite(Number(metrics.memory_used_gb))?`${metrics.memory_used_gb} / ${metrics.memory_total_gb} GB in use`:'Memory monitor unavailable';$('metric-gpu').textContent=metrics.gpu_available&&Number.isFinite(gpu)?`${gpu}%`:'N/A';$('gpu-chip').textContent=metrics.gpu_available?(metrics.gpu_name||'GPU 0'):'Not detected';$('gpu-detail').textContent=metrics.gpu_available?`${metrics.gpu_memory_used_mb??'—'} / ${metrics.gpu_memory_total_mb??'—'} MB VRAM${metrics.gpu_temperature_c===null?'':` · ${metrics.gpu_temperature_c}°C`}`:'Install an NVIDIA driver to show GPU telemetry';$('gpu-meter').style.width=`${Math.min(100,Math.max(0,gpu||0))}%`;addHistory('cpu',cpu,'chart-cpu','#8f8bd8');addHistory('ram',ram,'chart-ram','#68ad82');addHistory('gpu',gpu,'chart-gpu','#e8a284');}
+async function loadEngineSettings(){const settings=await api('/api/admin/engine-settings');$('setting-face').checked=settings.face_matching_enabled;$('setting-objects').checked=settings.object_detection_enabled;$('setting-tracking').checked=settings.object_tracking_enabled;$('setting-threshold').value=settings.match_threshold;$('setting-threshold-label').textContent=Number(settings.match_threshold).toFixed(2);$('threshold').textContent=Number(settings.match_threshold).toFixed(2);$('setting-confidence').value=settings.object_confidence;$('setting-confidence-label').textContent=Number(settings.object_confidence).toFixed(2);$('setting-cooldown').value=settings.event_cooldown_seconds;$('setting-image-size').value=settings.object_image_size;$('setting-frame-interval').value=settings.camera_frame_interval_ms;$('setting-frame-size').value=settings.camera_max_dimension;$('engine-settings-status').textContent='Saved controls loaded from this PC.';}
+const defaultEngineSettings={face_matching_enabled:true,object_detection_enabled:true,object_tracking_enabled:true,match_threshold:Number('{{ threshold }}'),event_cooldown_seconds:Number('{{ cooldown }}'),object_confidence:0.25,object_image_size:512,camera_frame_interval_ms:500,camera_max_dimension:640};
+function engineSettingsPayload(){return{face_matching_enabled:$('setting-face').checked,object_detection_enabled:$('setting-objects').checked,object_tracking_enabled:$('setting-tracking').checked,match_threshold:Number($('setting-threshold').value),event_cooldown_seconds:Number($('setting-cooldown').value),object_confidence:Number($('setting-confidence').value),object_image_size:Number($('setting-image-size').value),camera_frame_interval_ms:Number($('setting-frame-interval').value),camera_max_dimension:Number($('setting-frame-size').value)};}
+async function saveEngineSettings(payload=engineSettingsPayload()){const button=document.querySelector('#engine-settings-form button[type="submit"]'),status=$('engine-settings-status');button.disabled=true;status.textContent='Saving core engine settings…';status.classList.remove('error');try{const result=await api('/api/admin/engine-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadEngineSettings();status.textContent=result.message;}catch(error){status.textContent=error.message;status.classList.add('error');}finally{button.disabled=false;}}
+$('setting-threshold').addEventListener('input',event=>$('setting-threshold-label').textContent=Number(event.target.value).toFixed(2));
+$('setting-confidence').addEventListener('input',event=>$('setting-confidence-label').textContent=Number(event.target.value).toFixed(2));
+$('engine-settings-form').addEventListener('submit',event=>{event.preventDefault();saveEngineSettings();});
+$('engine-settings-reset').addEventListener('click',()=>{if(!confirm('Restore VAOS core controls to the current default behavior?'))return;saveEngineSettings(defaultEngineSettings);});
 async function loadDiagnostics() {
   const data = await api('/api/admin/status');
+  updateDashboardMetrics(data);
   const device = data.device === 'not initialized' ? 'Waiting for camera frames' : data.device;
   $('compute-device').textContent = `${device} · OpenCV ${data.opencv}`;
   $('model-diagnostics').innerHTML = data.models.map(m => `<div class="diagnostic-card"><strong>${escapeHtml(m.name.toUpperCase())}</strong><span class="badge ${m.loaded ? 'badge-green' : m.valid ? 'badge-gray' : 'badge-gray'}">${m.loaded ? 'Loaded' : m.valid ? (m.name === 'yolo26m' ? 'Ready on disk · loads on first frame' : 'Ready on disk') : 'Missing'}</span><small title="${escapeHtml(m.path)}">${escapeHtml(m.path.split(/[\\/]/).slice(-1)[0])}</small>${m.error ? `<small class="model-error" title="${escapeHtml(m.error)}">${escapeHtml(m.error)}</small>` : ''}</div>`).join('');
@@ -306,7 +344,7 @@ $('tunnel-pause').addEventListener('click',()=>controlTunnel($('tunnel-state-bad
 $('tunnel-start').addEventListener('click',()=>controlTunnel('start'));
 $('tunnel-stop').addEventListener('click',()=>{if(confirm('Stop the camera tunnel? Camera links will stop working and the public URL will be removed. Local VAOS services will keep running.'))controlTunnel('stop');});
 $('tunnel-restart').addEventListener('click',()=>{if(confirm('Restart the camera tunnel? The temporary public URL will change. Local VAOS services will keep running.'))controlTunnel('restart');});
-async function refreshAll() { await Promise.all([loadCameras(), loadParticipants(), loadEvents(), loadDiagnostics(), loadModelSelection()]); }
+async function refreshAll() { await Promise.all([loadCameras(), loadParticipants(), loadEvents(), loadDiagnostics(), loadModelSelection(), loadEngineSettings()]); }
 async function bootDashboard(){await refreshTunnelUrl();await refreshAll();}
 bootDashboard().catch(err => { document.querySelectorAll('.empty-state').forEach(e => e.textContent = err.message); });
 async function refreshSightingsLoop() { try { await loadEvents(); } catch { $('sighting-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshSightingsLoop, 5000); } }

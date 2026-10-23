@@ -8,7 +8,7 @@
 </head>
 <body class="camera-page">
   <header class="topbar camera-topbar">
-    <div class="brand-mark">VAOS</div>
+    <div class="brand-lockup" aria-label="VAOS"><svg class="vaos-logo" viewBox="0 0 48 48" role="img" aria-label="VAOS tricolor logo"><rect x="3" y="3" width="42" height="42" rx="14" fill="#fff"/><path d="M11 12h26v7H11z" fill="#f29c62"/><path d="M11 20h26v7H11z" fill="#fff"/><path d="M11 28h26v7H11z" fill="#68ad82"/><circle cx="24" cy="23.5" r="5.4" fill="#405b8f"/><circle cx="24" cy="23.5" r="2" fill="#fff"/></svg><span>VAOS</span></div>
     <div><div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div><h1>{{ camera_name }}</h1></div>
     <div class="topbar-spacer"></div><span class="status-pill"><span class="status-dot"></span> Camera station</span>
   </header>
@@ -33,6 +33,8 @@
   </main>
 <script>
 const token = {{ token|tojson }};
+const FRAME_INTERVAL_MS = {{ frame_interval_ms|int }};
+const MAX_FRAME_DIMENSION = {{ max_dimension|int }};
 const $ = id => document.getElementById(id);
 let stream = null, frameTimer = null, sending = false, switchingCamera = false, analysisFrames = 0, fpsWindowStart = performance.now(), previewZoom = 1;
 $('consent').addEventListener('change', () => $('start').disabled = !$('consent').checked || !!stream);
@@ -148,7 +150,7 @@ async function sendFrame() {
   sending = true;
   try {
     const video = $('video'), canvas = document.createElement('canvas');
-    const scale = Math.min(1, 640 / video.videoWidth); canvas.width = Math.max(1, Math.round(video.videoWidth * scale)); canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
+    const scale = Math.min(1, MAX_FRAME_DIMENSION / Math.max(video.videoWidth, video.videoHeight)); canvas.width = Math.max(1, Math.round(video.videoWidth * scale)); canvas.height = Math.max(1, Math.round(video.videoHeight * scale));
     canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
     const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', 0.78));
     if (!blob) return;
@@ -168,17 +170,19 @@ async function sendFrame() {
     const overlay = $('detection-overlay'), ctx = overlay.getContext('2d');
     overlay.width = video.videoWidth; overlay.height = video.videoHeight; ctx.clearRect(0,0,overlay.width,overlay.height);
     const sx = overlay.width / data.frame_size[0], sy = overlay.height / data.frame_size[1];
-    (data.objects || []).forEach(obj => { const [x1,y1,x2,y2] = obj.box; ctx.strokeStyle='#43e6a1'; ctx.lineWidth=Math.max(2,overlay.width/400); ctx.strokeRect(x1*sx,y1*sy,(x2-x1)*sx,(y2-y1)*sy); ctx.font=`${Math.max(13,overlay.width/45)}px sans-serif`; const label=`${obj.label} #${obj.track_id} ${obj.score}`; const tw=ctx.measureText(label).width; ctx.fillStyle='rgba(8,25,33,.82)'; ctx.fillRect(x1*sx,y1*sy-22,tw+10,22); ctx.fillStyle='#fff'; ctx.fillText(label,x1*sx+5,y1*sy-6); });
+    (data.objects || []).forEach(obj => { const [x1,y1,x2,y2] = obj.box; ctx.strokeStyle='#43e6a1'; ctx.lineWidth=Math.max(2,overlay.width/400); ctx.strokeRect(x1*sx,y1*sy,(x2-x1)*sx,(y2-y1)*sy); ctx.font=`${Math.max(13,overlay.width/45)}px sans-serif`; const label=`${obj.label}${obj.track_id ? ` #${obj.track_id}` : ''} ${obj.score}`; const tw=ctx.measureText(label).width; ctx.fillStyle='rgba(8,25,33,.82)'; ctx.fillRect(x1*sx,y1*sy-22,tw+10,22); ctx.fillStyle='#fff'; ctx.fillText(label,x1*sx+5,y1*sy-6); });
     if (data.matched.length) {
       $('matches').innerHTML = data.matched.map(person => `<div class="match-chip"><span class="match-check">✓</span><strong>${String(person.name).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</strong><span>similarity ${Number(person.score).toFixed(3)}</span></div>`).join('');
       message('Known participant match found. Review the dashboard for a logged event.');
     } else {
       const objectSummary = (data.objects || []).slice(0,4).map(item => item.label).join(', ');
-      $('matches').textContent = `${data.faces_detected ? 'Face detected; no enrolled participant matched.' : 'No face detected.'}${objectSummary ? ` Objects: ${objectSummary}` : ''}${data.face_analysis_error ? ` Face analysis issue: ${data.face_analysis_error}` : ''}`;
-      message(data.face_analysis_error ? 'Object detection is continuing; face analysis needs attention in Model status and diagnostics.' : data.faces_detected ? 'No enrolled match in the current frame.' : 'Camera active. Looking for faces and objects…');
+      const faceStatus=data.face_matching_enabled===false?'Face matching is paused in admin Settings.':data.faces_detected?'Face detected; no enrolled participant matched.':'No face detected.';
+      const objectStatus=data.object_detection_enabled===false?'Object detection is paused in admin Settings.':objectSummary?` Objects: ${objectSummary}`:'';
+      $('matches').textContent = `${faceStatus}${objectStatus}${data.face_analysis_error ? ` Face analysis issue: ${data.face_analysis_error}` : ''}`;
+      message(data.face_analysis_error ? 'Object detection is continuing; face analysis needs attention in Model status and diagnostics.' : data.face_matching_enabled===false&&data.object_detection_enabled===false?'Camera active. Face and object analysis are paused in Settings.':data.face_matching_enabled===false?'Camera active. Object analysis is running; face matching is paused in Settings.':data.faces_detected ? 'No enrolled match in the current frame.' : 'Camera active. Looking for faces and objects…');
     }
   } catch (err) { message(err.message || 'Could not send frame to the local app.', true); }
-  finally { sending = false; if (stream) frameTimer = setTimeout(sendFrame, 500); }
+  finally { sending = false; if (stream) frameTimer = setTimeout(sendFrame, FRAME_INTERVAL_MS); }
 }
 $('start').addEventListener('click', () => switchCamera());
 $('camera-select').addEventListener('change', () => { if (stream) switchCamera($('camera-select').value); });
