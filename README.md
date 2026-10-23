@@ -1,5 +1,7 @@
 # VAOS (Video Analytics - Operating System)
 
+Video Analytics Operating System
+
 A beginner-oriented proof of concept for receiving sample frames from mobile browser cameras, comparing faces against **explicitly enrolled participants**, and recording repeat sightings. The web app and inference run on the PC that starts the server.
 
 > **Use only with informed permission and appropriate authorisation.** Face templates are biometric data. This is an experiment, not a production surveillance or access-control system. Do not use results as the sole basis for consequential decisions.
