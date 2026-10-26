@@ -1575,18 +1575,21 @@ def review_ml_sample(sample_id: int, payload: dict[str, Any], _: str = Depends(r
 @app.post("/api/admin/ml/samples/batch-review")
 def batch_review_ml_samples(payload: dict[str, Any], _: str = Depends(require_admin)):
     choice = str(payload.get("choice", ""))
-    state_by_choice = {"approve": "confirmed", "reject": "rejected"}
+    state_by_choice = {"approve": "confirmed", "reject": "rejected", "change_label": "corrected"}
+    label = str(payload.get("label", "")).strip().lower()
     sample_ids = payload.get("ids")
     if choice not in state_by_choice or not isinstance(sample_ids, list) or not sample_ids or len(sample_ids) > 100:
-        raise HTTPException(status_code=400, detail="Choose approve or reject and provide up to 100 sample IDs")
+        raise HTTPException(status_code=400, detail="Choose approve, reject, or change_label and provide up to 100 sample IDs")
+    if choice == "change_label" and (not label or len(label) > 48 or not all(ch.isalnum() or ch in " _-" for ch in label)):
+        raise HTTPException(status_code=400, detail="Enter a short corrected object name using letters, numbers, spaces, underscores, or hyphens")
     try:
         ids = sorted({int(sample_id) for sample_id in sample_ids})
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Sample IDs must be whole numbers")
     placeholders = ",".join("?" for _ in ids)
     with db_connection() as db:
-        cur = db.execute(f"UPDATE ml_samples SET review_state=?,confirmed_label=NULL WHERE id IN ({placeholders}) AND review_state IN ('pending','later')", [state_by_choice[choice], *ids])
-    return {"ok": True, "updated": cur.rowcount}
+        cur = db.execute(f"UPDATE ml_samples SET review_state=?,confirmed_label=? WHERE id IN ({placeholders}) AND review_state IN ('pending','later')", [state_by_choice[choice], label if choice == "change_label" else None, *ids])
+    return {"ok": True, "updated": cur.rowcount, "label": label if choice == "change_label" else None}
 
 
 def run_ml_training(device_choice: str, dataset_source: str) -> None:
