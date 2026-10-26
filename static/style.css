@@ -348,3 +348,100 @@ th { color: #78839a; background: #f5f6fb; }
 .crop-zoom-modal { padding-right: 12px; padding-left: 12px; }
 @media (max-width: 620px) { .maturity-signals { grid-template-columns: repeat(2, minmax(0, 1fr)); } .maturity-main { grid-template-columns: 1fr; } .maturity-main > div { white-space: normal; } }
 .enrollment-video { margin-top: 12px; }
+
+/* Compact ML training workspace: fit the workflow and model summary on one desktop screen. */
+.training-page { width: min(1540px, calc(100% - 40px)); height: calc(100dvh - 76px); min-height: 0; padding: 12px 0 8px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: 10px; overflow: hidden; }
+.ml-dashboard-top { min-width: 0; display: grid; grid-template-columns: minmax(250px, .8fr) minmax(500px, 1.7fr); align-items: stretch; gap: 12px; }
+.ml-intro { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-content: center; align-items: center; column-gap: 16px; padding: 8px 4px; }
+.ml-intro > .eyebrow, .ml-intro h2, .ml-intro .lead { grid-column: 1; }
+.ml-intro h2 { font-size: clamp(22px, 2.2vw, 30px); }
+.ml-intro .lead { margin: 6px 0 0; font-size: 11px; }
+.ml-review-total { grid-column: 2; grid-row: 1 / span 3; display: flex; min-width: 110px; flex-direction: column; align-items: center; justify-content: center; padding: 10px; border: 1px solid var(--line); border-radius: 13px; background: #fff; }
+.ml-review-total strong { color: #4c568f; font-size: 28px; line-height: 1.1; }
+.ml-review-total span, .ml-review-total small { color: var(--muted); font-size: 10px; }
+.training-page .maturity-panel { min-width: 0; margin: 0; padding: 12px 15px; overflow: hidden; }
+.training-page .maturity-panel .section-title-row { margin-bottom: 7px; }
+.training-page .maturity-panel h3 { font-size: 15px; }
+.training-page .maturity-main { grid-template-columns: auto minmax(100px, .6fr) minmax(160px, 1.3fr); gap: 5px 12px; }
+.training-page .maturity-main > div strong { font-size: 23px; }
+.training-page .maturity-main progress { height: 9px; }
+.training-page .maturity-main .helper { grid-column: auto; font-size: 9px; line-height: 1.3; }
+.training-page .maturity-signals { gap: 6px; margin-top: 7px; }
+.training-page .maturity-signals > div { padding: 5px 7px; }
+.training-page .maturity-signals span { font-size: 8px; }
+.training-page .maturity-signals strong { margin-top: 1px; font-size: 10px; }
+.ml-workspace { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(240px, .72fr) minmax(0, 2.1fr); gap: 10px; }
+.training-page .section-panel { min-height: 0; margin: 0; padding: 13px; }
+.ml-coco { overflow-y: auto; }
+.training-page .ml-coco { align-self: start; min-height: 0; max-height: 190px; padding: 10px 12px; }
+.ml-coco .section-title-row { margin-bottom: 5px; }
+.ml-coco > .helper { margin-bottom: 6px; }
+.ml-coco > .button { min-height: 31px; padding: 6px 10px; }
+.ml-coco #dataset-import-message { margin: 5px 0 0; font-size: 9px; }
+.ml-coco .training-progress-wrap { margin-top: 6px; padding: 7px; }
+.ml-model { min-height: 0; }
+.ml-model .model-about { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: 18px; }
+.ml-model .model-about-row { align-content: start; grid-template-columns: minmax(95px, .38fr) minmax(0, 1fr); }
+.training-page .maturity-disclaimer { margin: 4px 0 0; font-size: 8px; }
+.ml-coco .section-title-row, .ml-step .section-title-row { margin-bottom: 8px; }
+.ml-coco .helper, .ml-step .helper { font-size: 10px; line-height: 1.4; }
+.ml-coco > .button { width: 100%; }
+.ml-steps { min-width: 0; min-height: 0; display: grid; grid-template-columns: minmax(180px, .75fr) minmax(255px, 1.08fr) minmax(320px, 1.35fr); gap: 10px; }
+.ml-step { display: flex; flex-direction: column; overflow: hidden; }
+.ml-collect .sample-counts { margin-top: 9px; padding-top: 8px; font-size: 9px; }
+.ml-collect .toggle-label { margin-top: 8px; font-size: 11px; }
+.ml-confirm { min-width: 0; }
+.ml-confirm .section-title-row { align-items: flex-start; }
+.ml-confirm .section-title-row .inline-actions { justify-content: flex-end; }
+.ml-confirm .zoom-toggle { font-size: 9px; }
+.ml-confirm .button-small { min-height: 27px; padding: 4px 7px; font-size: 9px; }
+.ml-confirm > .helper { flex: 0 0 auto; }
+.ml-confirm #sample-list { min-height: 60px; flex: 1; overflow-y: auto; overscroll-behavior: contain; padding-right: 4px; }
+.ml-confirm .training-groups { gap: 8px; }
+.ml-confirm .training-group { padding: 8px; }
+.ml-confirm .training-group-head { align-items: flex-start; flex-direction: column; gap: 6px; margin-bottom: 7px; }
+.ml-confirm .training-group-head .inline-actions { gap: 4px; }
+.ml-confirm .training-group-head strong { font-size: 12px; }
+.ml-confirm .training-samples { grid-template-columns: 1fr; gap: 6px; }
+.ml-confirm .training-sample { gap: 8px; padding: 7px; }
+.ml-confirm .training-sample img { flex-basis: 64px; width: 64px; height: 64px; }
+.ml-confirm .training-sample-info { gap: 4px; }
+.ml-confirm .training-sample-info .inline-actions { gap: 3px; }
+.ml-confirm .training-sample-info .button-small { min-height: 24px; padding: 3px 6px; font-size: 8px; }
+.ml-train { overflow-y: auto; }
+.ml-train .training-controls { display: grid; grid-template-columns: 1fr; gap: 4px; }
+.ml-train-controls > label { color: #475467; font-size: 9px; font-weight: 700; }
+.ml-train-controls select { width: 100%; min-height: 30px; padding: 4px 7px; border: 1px solid #d9e0ea; border-radius: 7px; color: var(--ink); background: #fff; font-size: 10px; }
+.ml-train-controls .inline-actions { margin-top: 4px; }
+.ml-train-controls .button { min-height: 30px; margin: 0; padding: 6px 9px; font-size: 10px; }
+.ml-train #training-readiness { margin: 6px 0 0; font-size: 9px; }
+.ml-train .result-box { margin-top: 4px; padding: 6px 8px; font-size: 9px; }
+.ml-train .training-progress-wrap { margin-top: 7px; padding: 7px; }
+.ml-train .training-live-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 4px; margin-top: 6px; }
+.ml-train .training-live-stats > div { padding: 5px 6px; }
+.ml-train .training-live-stats span { font-size: 7px; }
+.ml-train .training-live-stats strong { margin-top: 2px; font-size: 9px; }
+.ml-train #training-stat-note { margin-top: 4px; font-size: 8px; }
+.ml-train .training-log-panel { margin-top: 6px; padding-top: 5px; }
+.ml-train .training-log-panel summary { font-size: 10px; }
+.ml-model { min-height: 0; padding: 9px 13px !important; overflow: auto; }
+.ml-model .section-title-row { margin-bottom: 3px; }
+.ml-model h3 { font-size: 13px; }
+.ml-model .model-about-row { grid-template-columns: 135px minmax(0, 1fr); gap: 8px; padding: 4px 0; font-size: 9px; }
+.ml-footer { margin: -8px 0 0; padding: 0; font-size: 8px; }
+@media (max-width: 1200px) {
+  .training-page { height: auto; min-height: calc(100dvh - 76px); overflow: visible; }
+  .ml-dashboard-top { grid-template-columns: minmax(220px, .7fr) minmax(0, 1.3fr); }
+  .ml-workspace { grid-template-columns: 1fr; }
+  .ml-coco { overflow: visible; }
+  .ml-steps { grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.1fr) minmax(320px, 1.3fr); }
+  .ml-confirm #sample-list { max-height: 500px; }
+}
+@media (max-width: 850px) {
+  .ml-dashboard-top { grid-template-columns: 1fr; }
+  .ml-steps { grid-template-columns: 1fr; }
+  .ml-step { min-height: 250px !important; }
+  .ml-train { overflow: visible; }
+  .ml-confirm #sample-list { max-height: 430px; }
+  .ml-model { min-height: 110px; }
+}

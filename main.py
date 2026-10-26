@@ -124,6 +124,29 @@ ml_dataset_import_lock = threading.Lock()
 ml_training_log_lock = threading.Lock()
 system_metrics_lock = threading.Lock()
 system_metrics_cache: dict[str, Any] = {"sampled_at": 0.0, "data": {}}
+training_devices_cache: dict[str, Any] = {"sampled_at": 0.0, "data": {}}
+
+
+def training_device_inventory() -> dict[str, Any]:
+    """List usable CPU thread counts and NVIDIA devices without importing torch."""
+    if time.monotonic() - float(training_devices_cache["sampled_at"]) < 30:
+        return training_devices_cache["data"]
+    cpu_threads = max(1, os.cpu_count() or 1)
+    gpus: list[dict[str, Any]] = []
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
+            capture_output=True, text=True, check=True, timeout=2,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        for line in result.stdout.splitlines():
+            parts = [part.strip() for part in line.split(",", 1)]
+            if len(parts) == 2 and parts[0].isdigit():
+                gpus.append({"index": int(parts[0]), "name": parts[1]})
+    except (OSError, subprocess.SubprocessError):
+        pass
+    training_devices_cache.update({"sampled_at": time.monotonic(), "data": {"cpu_threads": cpu_threads, "gpus": gpus}})
+    return training_devices_cache["data"]
 
 
 def utc_now() -> str:
@@ -1317,6 +1340,46 @@ def build_coco_dataset_yaml() -> tuple[Path, list[str]]:
     return yaml_path, classes
 
 
+def coco_dataset_layout_ready() -> bool:
+    root = ML_DATASETS_DIR / "coco2017"
+    required = (
+        root / "dataset.yaml", root / "train2017.txt", root / "val2017.txt",
+        root / "images" / "train2017", root / "images" / "val2017",
+        root / "labels" / "train2017", root / "labels" / "val2017",
+    )
+    return all(path.exists() for path in required)
+
+
+def repair_coco_dataset_layout() -> None:
+    """Index existing COCO images and reuse extracted label files in the expected layout."""
+    root = ML_DATASETS_DIR / "coco2017"
+    source_labels = ML_DATASETS_DIR / "coco" / "labels"
+    for split in ("train2017", "val2017"):
+        images_dir = root / "images" / split
+        labels_source = source_labels / split
+        if not images_dir.is_dir() or not labels_source.is_dir():
+            raise RuntimeError(f"Existing COCO {split} images or labels are missing. The import is incomplete; retry COCO preparation to download only missing files.")
+        image_files = sorted(images_dir.glob("*.jpg"))
+        label_files = list(labels_source.glob("*.txt"))
+        if not image_files or not label_files:
+            raise RuntimeError(f"Existing COCO {split} folder is empty. Retry the dataset import to fetch missing files.")
+        labels_target = root / "labels" / split
+        labels_target.mkdir(parents=True, exist_ok=True)
+        for index, label_path in enumerate(label_files, 1):
+            target = labels_target / label_path.name
+            if not target.exists():
+                try:
+                    os.link(label_path, target)
+                except OSError:
+                    shutil.copy2(label_path, target)
+            if index % 5000 == 0:
+                ml_dataset_import_state.update({"status": "preparing", "phase": "repairing", "progress": min(99, int(index * 100 / len(label_files))), "message": f"Reusing existing COCO {split} labels · {index:,} of {len(label_files):,}. No image download is running."})
+        listing = root / f"{split}.txt"
+        temporary = listing.with_suffix(".txt.new")
+        temporary.write_text("".join(f"./images/{split}/{image.name}\n" for image in image_files), encoding="utf-8")
+        temporary.replace(listing)
+
+
 def import_coco2017_dataset() -> None:
     global ml_dataset_import_state
     monitor_stop = threading.Event()
@@ -1325,7 +1388,16 @@ def import_coco2017_dataset() -> None:
         dataset_id = "coco2017"
         ml_dataset_import_state = {"status": "preparing", "dataset": dataset_id, "message": "Preparing COCO 2017 configuration."}
         yaml_path, classes = build_coco_dataset_yaml()
-        ml_dataset_import_state = {"status": "downloading", "phase": "connecting", "dataset": dataset_id, "progress": 0, "downloaded_bytes": 0, "expected_bytes": 20_300_000_000, "speed_bytes_per_second": 0, "message": "Connecting to COCO 2017 download sources…"}
+        can_repair_without_download = all(
+            (ML_DATASETS_DIR / "coco2017" / "images" / split).is_dir()
+            and (ML_DATASETS_DIR / "coco" / "labels" / split).is_dir()
+            for split in ("train2017", "val2017")
+        )
+        if can_repair_without_download:
+            ml_dataset_import_state = {"status": "preparing", "phase": "repairing", "dataset": dataset_id, "progress": 0, "downloaded_bytes": 0, "expected_bytes": 0, "speed_bytes_per_second": 0, "message": "Reusing COCO images and labels already saved on this PC. No image download is running."}
+            repair_coco_dataset_layout()
+        layout_ready = coco_dataset_layout_ready()
+        ml_dataset_import_state = {"status": "preparing", "phase": "validating" if layout_ready else "connecting", "dataset": dataset_id, "progress": 0, "downloaded_bytes": 0, "expected_bytes": 0 if layout_ready else 20_300_000_000, "speed_bytes_per_second": 0, "message": "Validating COCO files already saved on this PC. No image download is running." if layout_ready else "Connecting to COCO 2017 download sources…"}
         expected_bytes = 20_300_000_000
         archive_names = ("train2017.zip", "val2017.zip", "coco2017labels-segments.zip", "coco2017labels.zip")
 
@@ -1380,12 +1452,16 @@ def import_coco2017_dataset() -> None:
                     phase, message = "waiting", "Waiting for the first download bytes. Check internet access if this message remains."
                 ml_dataset_import_state.update({"status": "downloading", "phase": phase, "progress": percent, "downloaded_bytes": downloaded, "expected_bytes": expected_bytes, "speed_bytes_per_second": speed, "active_archive": active_archive, "message": message})
 
-        monitor_thread = threading.Thread(target=monitor_download, name="vaos-coco-progress", daemon=True)
-        monitor_thread.start()
+        if not layout_ready:
+            ml_dataset_import_state["status"] = "downloading"
+            monitor_thread = threading.Thread(target=monitor_download, name="vaos-coco-progress", daemon=True)
+            monitor_thread.start()
         from ultralytics.data.utils import check_det_dataset
         check_det_dataset(str(yaml_path))
+        repair_coco_dataset_layout()
         monitor_stop.set()
-        monitor_thread.join(timeout=2)
+        if monitor_thread:
+            monitor_thread.join(timeout=2)
         imports = load_public_dataset_imports()
         imports[dataset_id] = {"id": dataset_id, "name": "COCO 2017", "data_yaml": str(yaml_path), "classes": classes, "train_limit": 118287, "imported_at": utc_now(), "size_note": "about 20.3 GB; 118,287 training and 5,000 validation images"}
         write_public_dataset_imports(imports)
@@ -1453,13 +1529,19 @@ def list_ml_samples(_: str = Depends(require_admin)):
     else:
         maturity_level = "Validation measured"
     maturity = {"score": maturity_score, "level": maturity_level, "reviewed_samples": reviewed_total, "class_count": class_total, "class_balance": round(class_balance, 3), "map50_95": map_score_value, "components": {"sample_volume": round(volume_score), "class_coverage": round(coverage_score), "class_balance": round(balance_score), "trained_model": round(model_score), "validation": round(validation_score)}}
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": dict(ml_training_state), "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": dict(ml_training_state), "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.post("/api/admin/ml/datasets/import")
 def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(require_admin)):
     if str(payload.get("dataset", "")) != "coco2017":
         raise HTTPException(status_code=400, detail="Only COCO 2017 is available as a public dataset")
+    imported = load_public_dataset_imports().get("coco2017")
+    if imported and coco_dataset_layout_ready():
+        existing_yaml = Path(str(imported.get("data_yaml", "")))
+        if existing_yaml.is_file():
+            ml_dataset_import_state.update({"status": "complete", "dataset": "coco2017", "message": "COCO 2017 is already imported on this PC. No download is needed."})
+            return {"status": "complete", "message": "COCO 2017 is already imported on this PC. No download is needed."}
     if not ml_dataset_import_lock.acquire(blocking=False):
         raise HTTPException(status_code=409, detail="A public dataset import is already running")
     ml_dataset_import_state.update({"status": "preparing", "message": "Starting dataset preparation."})
@@ -1658,8 +1740,21 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
         custom_checkpoint = ML_DATA_DIR / "active" / "best.pt"
         base_checkpoint = MODEL_DIR / "yolo26m.pt"
         model_file = str(custom_checkpoint if custom_checkpoint.is_file() else base_checkpoint if base_checkpoint.is_file() else "yolo26m.pt")
-        train_device = "0" if device_choice == "gpu" and torch.cuda.is_available() else "cpu"
-        ml_training_state = {"status": "running", "message": f"Training on {'GPU 0' if train_device == '0' else 'CPU'} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": "GPU 0" if train_device == "0" else "CPU"}
+        device_kind, _, device_value = device_choice.partition(":")
+        device_index = int(device_value or 0)
+        if device_kind == "gpu":
+            if not torch.cuda.is_available():
+                raise RuntimeError("The selected NVIDIA GPU is visible to Windows but CUDA is unavailable in this Python environment. Choose a CPU thread option or install the CUDA-enabled PyTorch support from the launcher.")
+            if device_index >= torch.cuda.device_count():
+                raise RuntimeError(f"GPU {device_index} is not available to the training runtime. Refresh the device list and choose an available device.")
+            train_device = str(device_index)
+            device_label = f"GPU {device_index} · {torch.cuda.get_device_name(device_index)}"
+        else:
+            cpu_threads = max(1, min(device_index, os.cpu_count() or 1))
+            torch.set_num_threads(cpu_threads)
+            train_device = "cpu"
+            device_label = f"CPU · {cpu_threads} thread{'s' if cpu_threads != 1 else ''}"
+        ml_training_state = {"status": "running", "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
         model = YOLO(model_file)
         def scalar(value: Any) -> float | None:
             try:
@@ -1701,9 +1796,9 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
                 parsed = scalar(max(learning_rates.values()))
                 if parsed is not None:
                     stats["learning_rate"] = parsed
-            if train_device == "0":
+            if device_kind == "gpu":
                 try:
-                    stats["gpu_memory_gb"] = round(torch.cuda.memory_reserved(0) / (1024 ** 3), 2)
+                    stats["gpu_memory_gb"] = round(torch.cuda.memory_reserved(device_index) / (1024 ** 3), 2)
                 except (RuntimeError, AttributeError):
                     pass
             try:
@@ -1757,11 +1852,11 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
         temp_model.replace(active / "best.pt")
         result_metrics = getattr(result, "results_dict", {}) or {}
         final_metrics = {str(key): round(float(value), 4) for key, value in result_metrics.items() if isinstance(value, (int, float))}
-        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "device": "GPU 0" if train_device == "0" else "CPU", "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": "Existing custom best.pt" if custom_checkpoint.is_file() else "YOLO26m"}
+        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": "Existing custom best.pt" if custom_checkpoint.is_file() else "YOLO26m"}
         metadata_tmp = active / "metadata.json.new"
         metadata_tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         metadata_tmp.replace(active / "metadata.json")
-        ml_training_state = {"status": "stopped" if stopped_early else "complete", "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": "GPU 0" if train_device == "0" else "CPU", "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
+        ml_training_state = {"status": "stopped" if stopped_early else "complete", "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
         write_training_log("INFO", "Training finished", status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=int(time.monotonic() - job_started))
     except Exception as exc:
         logger.exception("VAOS object model training failed")
@@ -1774,14 +1869,21 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
 
 @app.post("/api/admin/ml/train")
 def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
-    device_choice = "gpu" if payload.get("device") == "gpu" else "cpu"
+    device_choice = str(payload.get("device", "cpu:1"))
+    if not (device_choice.startswith("cpu:") and device_choice.split(":", 1)[1].isdigit()) and not (device_choice.startswith("gpu:") and device_choice.split(":", 1)[1].isdigit()):
+        raise HTTPException(status_code=400, detail="Choose an available CPU thread count or GPU from the device list")
+    inventory = training_device_inventory()
+    if device_choice.startswith("cpu:") and int(device_choice.split(":", 1)[1]) > inventory["cpu_threads"]:
+        raise HTTPException(status_code=400, detail=f"This PC has {inventory['cpu_threads']} logical CPU threads available")
+    if device_choice.startswith("gpu:") and int(device_choice.split(":", 1)[1]) not in {item["index"] for item in inventory["gpus"]}:
+        raise HTTPException(status_code=400, detail="That GPU is not available. Refresh the page and choose one listed in the device menu.")
     dataset_source = str(payload.get("source", "reviewed"))
     if dataset_source not in {"reviewed", "coco2017", "combined"}:
         write_training_log("WARNING", "Training request rejected", reason="Unsupported dataset source", source=dataset_source)
         raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, or combined training")
-    if dataset_source in {"coco2017", "combined"} and "coco2017" not in load_public_dataset_imports():
+    if dataset_source in {"coco2017", "combined"} and ("coco2017" not in load_public_dataset_imports() or not coco_dataset_layout_ready()):
         write_training_log("WARNING", "Training request rejected", reason="COCO 2017 is not imported", source=dataset_source)
-        raise HTTPException(status_code=409, detail="Import COCO 2017 before starting this training run")
+        raise HTTPException(status_code=409, detail="Prepare COCO 2017 first. Existing image and label files will be reused; missing files are identified before a download starts.")
     if dataset_source in {"coco2017", "combined"} and ml_dataset_import_state.get("status") in {"preparing", "downloading"}:
         reason = "COCO 2017 is still downloading. Wait for the import to finish before using COCO-based training. You can switch to Reviewed camera samples to train from confirmed samples now."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
@@ -1790,8 +1892,8 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
         reason = "A model training job is already active. Wait for it to finish before starting another."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
         raise HTTPException(status_code=409, detail=reason)
-    ml_training_state.update({"status": "preparing", "message": "Preparing the selected training data.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": "GPU 0" if device_choice == "gpu" else "CPU", "elapsed_seconds": 0, "eta_seconds": None})
-    write_training_log("INFO", "Training requested", source=dataset_source, device=device_choice.upper())
+    ml_training_state.update({"status": "preparing", "message": "Training request accepted. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
+    write_training_log("INFO", "Training requested", source=dataset_source, device=device_choice)
     try:
         threading.Thread(target=run_ml_training, args=(device_choice, dataset_source), name="vaos-ml-training", daemon=True).start()
     except Exception as exc:
