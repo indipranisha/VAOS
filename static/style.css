@@ -349,6 +349,179 @@ th { color: #78839a; background: #f5f6fb; }
 @media (max-width: 620px) { .maturity-signals { grid-template-columns: repeat(2, minmax(0, 1fr)); } .maturity-main { grid-template-columns: 1fr; } .maturity-main > div { white-space: normal; } }
 .enrollment-video { margin-top: 12px; }
 
+/* Approved dark operations-dashboard direction for the ML training workspace. */
+.training-shell {
+  --ml-bg: #0b121c;
+  --ml-panel: #111c29;
+  --ml-panel-raised: #172433;
+  --ml-border: #263747;
+  --ml-text: #ecf3fb;
+  --ml-muted: #9aabbd;
+  --ml-cyan: #12c9df;
+  --ml-blue: #3998ff;
+  --ml-violet: #9860f5;
+  display: grid;
+  width: 100%;
+  height: 100dvh;
+  grid-template-columns: 224px minmax(0, 1fr);
+  overflow: hidden;
+  color: var(--ml-text);
+  background: var(--ml-bg);
+}
+.training-sidebar {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  height: 100dvh;
+  min-height: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+  padding: 22px 14px 16px;
+  border-right: 1px solid var(--ml-border);
+  background: #101a27;
+  box-shadow: 8px 0 30px rgb(0 0 0 / 12%);
+}
+.training-sidebar .brand-lockup { gap: 10px; padding: 2px 8px; font-size: 21px; }
+.training-sidebar .vaos-logo { flex: 0 0 39px; width: 39px; height: 39px; }
+.training-sidebar .sidebar-subtitle { margin: 5px 0 28px 57px; color: #8093a8; font-size: 9px; font-weight: 700; letter-spacing: .08em; }
+.training-sidebar .topbar-spacer { display: none; }
+.training-sidebar .primary-nav { display: flex; flex-direction: column; align-items: stretch; gap: 5px; padding: 0; border: 0; background: transparent; }
+.training-sidebar .nav-link { min-height: 44px; gap: 12px; padding: 0 12px; border: 1px solid transparent; color: #a9bacb; font-size: 12px; }
+.training-sidebar .nav-link:hover { color: var(--ml-text); background: #192838; }
+.training-sidebar .nav-link.active { color: #eafaff; border-color: #284155; background: linear-gradient(90deg, rgb(18 201 223 / 14%), rgb(57 152 255 / 9%)); box-shadow: inset 2px 0 var(--ml-cyan); }
+.training-sidebar .nav-icon { display: inline-grid; width: 22px; place-items: center; color: #87a0b8; font-size: 18px; line-height: 1; }
+.training-sidebar .nav-link.active .nav-icon { color: var(--ml-cyan); }
+.sidebar-bottom { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 13px 7px 0; border-top: 1px solid var(--ml-border); color: #94a6b9; font-size: 9px; }
+.sidebar-bottom .status-dot { flex: 0 0 7px; }
+.sidebar-bottom .version-chip { margin-left: auto; padding: 4px 7px; border-color: #33475a; color: #b9c8d7; font-size: 9px; }
+.training-page {
+  width: auto;
+  height: 100dvh;
+  min-height: 0;
+  margin: 0;
+  padding: 20px 22px 12px;
+  grid-column: 2;
+  grid-row: 1;
+  grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+  gap: 12px;
+  overflow: auto;
+  background: radial-gradient(ellipse at 78% 0%, rgb(34 72 103 / 13%), transparent 44%), var(--ml-bg);
+}
+.ml-page-heading { display: flex; align-items: center; justify-content: space-between; gap: 20px; min-width: 0; }
+.ml-page-heading .eyebrow { margin-bottom: 5px; color: #7e95aa; }
+.ml-page-heading h2 { color: #f2f7fc; font-size: clamp(23px, 2vw, 30px); letter-spacing: -.035em; }
+.ml-page-heading .lead { margin: 4px 0 0; color: var(--ml-muted); font-size: 11px; }
+.engine-status { display: inline-flex; align-items: center; gap: 8px; padding: 8px 11px; border: 1px solid var(--ml-border); border-radius: 9px; color: #b8c9d8; background: rgb(17 28 41 / 78%); font-size: 10px; white-space: nowrap; }
+.engine-status .status-dot { background: #31d2a0; }
+.ml-dashboard-top { grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.training-page .panel { border-color: var(--ml-border); color: var(--ml-text); background: linear-gradient(145deg, rgb(20 33 48 / 98%), rgb(15 25 38 / 98%)); box-shadow: 0 8px 22px rgb(0 0 0 / 13%); }
+.training-page .summary-card { position: relative; min-height: 142px; margin: 0; padding: 14px 15px; overflow: hidden; }
+.training-page .summary-card .eyebrow { margin-bottom: 8px; color: #91a3b5; font-size: 8px; }
+.training-page .summary-card h3 { color: #f0f6fc; font-size: 15px; }
+.training-page .summary-card .section-title-row { margin-bottom: 7px; }
+.training-page .maturity-panel .subtle-tag { color: #91f1dd; background: rgb(16 170 136 / 14%); }
+.training-page .maturity-main { grid-template-columns: auto minmax(80px, .55fr) minmax(100px, 1fr); gap: 4px 9px; }
+.training-page .maturity-main > div strong { color: #f4f8fd; font-size: 23px; }
+.training-page .maturity-main > div span { color: #9fb0c0; }
+.training-page .maturity-main progress { height: 8px; accent-color: var(--ml-cyan); }
+.training-page .maturity-main .helper { color: #a0b2c4; font-size: 8px; line-height: 1.3; }
+.training-page .maturity-signals { gap: 5px; margin-top: 6px; }
+.training-page .maturity-signals > div { padding: 4px 6px; border: 1px solid #26394a; border-radius: 6px; background: #142130; }
+.training-page .maturity-signals span { color: #8fa2b4; font-size: 7px; }
+.training-page .maturity-signals strong { color: #e2edf6; font-size: 9px; }
+.training-page .maturity-disclaimer { display: none; }
+.training-page .dataset-summary .subtle-tag { margin-top: 9px; color: #7ce4b9; background: rgb(31 179 121 / 15%); }
+.training-page .summary-detail { display: block; margin-top: 11px; color: #d5e1ed; font-size: 10px; }
+.training-page .summary-footnote { display: block; margin-top: 7px; color: #8195a9; font-size: 9px; }
+.training-page .samples-summary > strong { display: block; margin: -1px 0 1px; color: #f2f7fc; font-size: 27px; line-height: 1.1; }
+.training-page .samples-summary > span:not(.eyebrow) { color: #a8bacb; font-size: 9px; }
+.training-page .samples-summary .summary-footnote { margin-top: 5px; }
+.training-page .sample-accent { height: 4px; margin-top: 9px; border-radius: 5px; background: linear-gradient(90deg, var(--ml-cyan), var(--ml-blue), var(--ml-violet)); opacity: .85; }
+.training-page .gpu-summary h3 { max-width: 80%; margin-top: 14px; overflow-wrap: anywhere; font-size: 13px; }
+.training-page .gpu-summary .summary-detail { max-width: 78%; margin-top: 8px; color: #9db0c3; font-size: 9px; }
+.training-page .compute-mark { position: absolute; right: 16px; bottom: 19px; display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid #2b4357; border-radius: 10px; color: var(--ml-cyan); background: #172b3a; font-size: 22px; }
+.ml-workspace { grid-template-columns: minmax(200px, .68fr) minmax(0, 2.32fr); gap: 10px; }
+.training-page .section-panel { padding: 12px; }
+.training-page .ml-coco { align-self: stretch; max-height: none; overflow-y: auto; }
+.training-page .ml-coco h3, .training-page .ml-step h3, .training-page .ml-model h3 { color: #eef5fc; }
+.training-page .ml-coco .helper, .training-page .ml-step .helper { color: #9dafc0; font-size: 9px; }
+.training-page .ml-coco .section-title-row { margin-bottom: 9px; }
+.data-source-icon { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid #2d465b; border-radius: 8px; color: var(--ml-cyan); background: #172b3c; font-size: 18px; }
+.training-page .ml-steps { grid-template-columns: minmax(150px, .76fr) minmax(230px, 1.1fr) minmax(290px, 1.25fr); gap: 10px; }
+.training-page .ml-step { border-top: 2px solid #2b4559; }
+.training-page .ml-collect { border-top-color: var(--ml-cyan); }
+.training-page .ml-confirm { border-top-color: var(--ml-blue); }
+.training-page .ml-train { border-top-color: var(--ml-violet); }
+.training-page .ml-step .section-title-row .eyebrow { color: #8298ac; }
+.training-page .capture-status, #capture-status { color: #a9bbcc; }
+.training-page .toggle-label { color: #cfdae5; }
+.training-page .sample-counts { border-color: #263747; color: #9dafc0; }
+.training-page .training-group { border-color: #293a4a; background: #142130; }
+.training-page .training-group-head span, .training-page .training-sample-info > span { color: #94a9bc; }
+.training-page .training-sample { border-color: #2a3a49; background: #101b28; }
+.training-page .training-sample-info strong { color: #e2edf6; }
+.training-page .training-sample img { background: #1a2a39; }
+.training-page .confidence-pill { color: #9cdbff; background: #183348; }
+.training-page .button-primary { color: #06151e; background: linear-gradient(100deg, #10cadf, #398eff 62%, #925af3); }
+.training-page .button-primary:hover { filter: brightness(1.12); }
+.training-page .button-secondary { color: #c7d6e4; border-color: #32475a; background: #172536; }
+.training-page .button-secondary:hover { background: #203247; }
+.training-page .button-danger { color: #ffb8b5; border-color: #5d343d; background: #2a1c27; }
+.training-page .subtle-tag { color: #aebdcb; background: #1b2a39; }
+.training-page .ml-train-controls > label { color: #adbdcc; }
+.training-page .ml-train-controls select { color: #e1ebf4; border-color: #304456; background: #101b28; }
+.training-page .training-progress-wrap { border-color: #293c4e; background: #101b28; }
+.training-page .training-progress-label { color: #a0b2c4; }
+.training-page .training-progress-label strong { color: #e1ebf4; }
+.training-page .training-progress-wrap progress { accent-color: var(--ml-cyan); }
+.training-page .training-live-stats > div { border-color: #2a3b4a; background: #152332; }
+.training-page .training-live-stats span { color: #8fa3b6; }
+.training-page .training-live-stats strong { color: #e3edf6; }
+.training-page .training-log-panel { border-color: #29394a; }
+.training-page .training-log-panel summary { color: #dbe7f0; }
+.training-page .ml-model { padding: 10px 14px !important; }
+.training-page .ml-model .model-about-row { border-color: #293a49; color: #a9bbca; }
+.training-page .ml-model .model-about-row strong { color: #dfe9f2; }
+.training-page .ml-model .model-about-row span { color: #9eb0c1; }
+.training-page .ml-footer { color: #7f93a7; }
+.training-page .result-box { color: #8be9c2; border-color: #295746; background: #122c29; }
+.training-page .result-box.error { color: #ffb9b4; border-color: #633741; background: #301d29; }
+.training-page .empty-state { color: #91a4b6; }
+@media (max-width: 1200px) {
+  .training-shell { grid-template-columns: 190px minmax(0, 1fr); }
+  .training-page { height: 100dvh; grid-template-rows: auto auto auto auto auto; overflow-y: auto; }
+  .ml-dashboard-top { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ml-workspace { grid-template-columns: 1fr; }
+  .training-page .ml-coco { min-height: auto; }
+  .training-page .ml-steps { grid-template-columns: minmax(180px, .8fr) minmax(260px, 1.1fr) minmax(320px, 1.3fr); }
+}
+@media (max-width: 850px) {
+  .training-shell { display: block; height: auto; min-height: 100dvh; overflow: visible; }
+  .training-sidebar { height: auto; min-height: 66px; flex-direction: row; align-items: center; gap: 12px; padding: 10px 14px; border-right: 0; border-bottom: 1px solid var(--ml-border); }
+  .training-sidebar .brand-lockup { padding: 0; font-size: 17px; }
+  .training-sidebar .vaos-logo { width: 34px; height: 34px; flex-basis: 34px; }
+  .training-sidebar .sidebar-subtitle, .training-sidebar .sidebar-bottom { display: none; }
+  .training-sidebar .primary-nav { margin-left: auto; flex-direction: row; gap: 2px; }
+  .training-sidebar .nav-link { min-height: 38px; gap: 6px; padding: 0 9px; font-size: 10px; }
+  .training-sidebar .nav-icon { width: 16px; font-size: 15px; }
+  .training-page { width: auto; height: auto; min-height: calc(100dvh - 66px); margin: 0; padding: 16px 14px 22px; grid-template-rows: auto; overflow: visible; }
+  .training-page .ml-steps { grid-template-columns: 1fr; }
+  .training-page .ml-step { min-height: 220px; }
+  .training-page .ml-train, .training-page .ml-coco { overflow: visible; }
+}
+@media (max-width: 560px) {
+  .training-sidebar { align-items: flex-start; flex-wrap: wrap; }
+  .training-sidebar .primary-nav { width: 100%; margin: 0; order: 3; }
+  .training-sidebar .nav-link { flex: 1; justify-content: center; }
+  .training-page .ml-dashboard-top { grid-template-columns: 1fr 1fr; }
+  .training-page .summary-card { min-height: 132px; padding: 11px; }
+  .training-page .maturity-panel { grid-column: span 2; }
+  .training-page .ml-page-heading { align-items: flex-start; }
+  .training-page .engine-status { padding: 6px 8px; font-size: 8px; }
+  .training-page .ml-model .model-about { grid-template-columns: 1fr; }
+}
+
 /* Compact ML training workspace: fit the workflow and model summary on one desktop screen. */
 .training-page { width: min(1540px, calc(100% - 40px)); height: calc(100dvh - 76px); min-height: 0; padding: 12px 0 8px; display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; gap: 10px; overflow: hidden; }
 .ml-dashboard-top { min-width: 0; display: grid; grid-template-columns: minmax(250px, .8fr) minmax(500px, 1.7fr); align-items: stretch; gap: 12px; }
