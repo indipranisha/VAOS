@@ -1408,6 +1408,7 @@ def list_ml_samples(_: str = Depends(require_admin)):
         collection_stats = db.execute("SELECT COUNT(*) AS total,MAX(created_at) AS latest FROM ml_samples").fetchone()
         setting = db.execute("SELECT value FROM app_settings WHERE key='ml_capture_enabled'").fetchone()
         confirmed_labels = db.execute("SELECT DISTINCT COALESCE(confirmed_label,suggested_label) AS label FROM ml_samples WHERE review_state IN ('confirmed','corrected')").fetchall()
+        confirmed_class_counts = db.execute("SELECT COALESCE(confirmed_label,suggested_label) AS label,COUNT(*) AS n FROM ml_samples WHERE review_state IN ('confirmed','corrected') GROUP BY COALESCE(confirmed_label,suggested_label)").fetchall()
         recent_camera_stats = db.execute("SELECT objects_json FROM camera_status WHERE last_frame_at >= ? AND error=''", ((datetime.now(timezone.utc)-timedelta(seconds=45)).isoformat(timespec="seconds"),)).fetchall()
         live_camera_count = len(recent_camera_stats)
         live_object_types = sorted({label for row in recent_camera_stats for label, values in json.loads(row["objects_json"] or "{}").items() if values and int(values[0]) > 0})
@@ -1428,7 +1429,31 @@ def list_ml_samples(_: str = Depends(require_admin)):
         training_info = json.loads(metadata_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         training_info = {}
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": dict(ml_training_state), "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "trained_model": {"installed": trained_path.is_file(), "path": str(trained_path) if trained_path.is_file() else "", "metadata": training_info}, "live_model": live_model}
+    class_counts = {str(row["label"]): int(row["n"]) for row in confirmed_class_counts}
+    reviewed_total = sum(class_counts.values())
+    class_total = len(class_counts)
+    class_balance = min(class_counts.values()) / max(class_counts.values()) if class_counts else 0.0
+    volume_score = min(1.0, reviewed_total / 500) * 35
+    coverage_score = min(1.0, class_total / 8) * 25
+    balance_score = min(1.0, class_balance / 0.25) * 20 if class_counts else 0.0
+    model_installed = trained_path.is_file()
+    model_score = 10.0 if model_installed else 0.0
+    model_metrics = training_info.get("metrics", {}) if isinstance(training_info.get("metrics", {}), dict) else {}
+    map_score_value = next((float(value) for key, value in model_metrics.items() if "map50-95" in str(key).lower() and isinstance(value, (int, float))), None)
+    validation_score = min(1.0, max(0.0, map_score_value / 0.5)) * 10 if map_score_value is not None else 0.0
+    maturity_score = round(min(100.0, volume_score + coverage_score + balance_score + model_score + validation_score))
+    if reviewed_total < 20 or class_total < 2:
+        maturity_level = "Foundation"
+    elif reviewed_total < 100 or class_total < 3:
+        maturity_level = "Developing"
+    elif not model_installed:
+        maturity_level = "Training-ready"
+    elif map_score_value is None:
+        maturity_level = "Trained · no validation metric"
+    else:
+        maturity_level = "Validation measured"
+    maturity = {"score": maturity_score, "level": maturity_level, "reviewed_samples": reviewed_total, "class_count": class_total, "class_balance": round(class_balance, 3), "map50_95": map_score_value, "components": {"sample_volume": round(volume_score), "class_coverage": round(coverage_score), "class_balance": round(balance_score), "trained_model": round(model_score), "validation": round(validation_score)}}
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": dict(ml_training_state), "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.post("/api/admin/ml/datasets/import")
