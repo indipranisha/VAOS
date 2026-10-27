@@ -15,6 +15,7 @@ import time
 import hashlib
 import urllib.error
 import urllib.request
+import zipfile
 from io import BytesIO
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -74,7 +75,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "0.10.1"
+APP_VERSION = "0.10.2"
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
 ENGINE_SETTING_DEFAULTS = {
@@ -124,6 +125,7 @@ ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 ML_TRAINING_LOG_PATH = ML_DATA_DIR / "training.log"
 ml_training_state: dict[str, Any] = {"status": "idle", "message": "No training job has been started."}
 ml_dataset_import_state: dict[str, Any] = {"status": "idle", "message": "No public dataset import is running."}
+ml_sama_import_state: dict[str, Any] = {"status": "idle", "dataset": "sama-coco", "message": "SAMA-COCO annotations are not prepared yet."}
 ml_training_lock = threading.Lock()
 ml_dataset_import_lock = threading.Lock()
 ml_training_log_lock = threading.Lock()
@@ -1449,6 +1451,175 @@ def coco_dataset_layout_ready() -> bool:
     return all(path.exists() for path in required)
 
 
+def sama_dataset_root() -> Path:
+    return ML_DATASETS_DIR / "sama-coco" / "dataset"
+
+
+def sama_dataset_layout_ready() -> bool:
+    root = sama_dataset_root()
+    required = (root / "dataset.yaml", root / "train2017.txt", root / "val2017.txt", root / "images" / "train2017", root / "images" / "val2017", root / "labels" / "train2017", root / "labels" / "val2017")
+    if not all(path.exists() for path in required):
+        return False
+    try:
+        return any((root / "labels" / "train2017").glob("*.txt")) and any((root / "labels" / "val2017").glob("*.txt"))
+    except OSError:
+        return False
+
+
+def _ensure_image_junction(source: Path, target: Path) -> None:
+    source = source.resolve(strict=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if os.path.lexists(target):
+        if target.resolve(strict=True) == source:
+            return
+        if target.is_dir() and sum(1 for _ in target.glob("*.jpg")) == sum(1 for _ in source.glob("*.jpg")):
+            return
+        raise RuntimeError(f"SAMA image path already exists with different contents: {target}")
+    try:
+        os.symlink(source, target, target_is_directory=True)
+    except OSError:
+        # Windows junctions reuse the existing 20 GB COCO image folders without copying them.
+        command = f'mklink /J "{target}" "{source}"'
+        result = subprocess.run(["cmd.exe", "/d", "/c", command], capture_output=True, text=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        if result.returncode != 0 or not target.is_dir():
+            raise RuntimeError("Could not link SAMA-COCO to the existing COCO images; no image copy or download was started.")
+
+
+def import_sama_coco_dataset() -> None:
+    """Convert official SAMA-COCO COCO-format annotations to YOLO labels, reusing local COCO images."""
+    global ml_sama_import_state
+    source_root = ML_DATASETS_DIR / "sama-coco"
+    downloads = source_root / "downloads"
+    root = sama_dataset_root()
+    image_source = ML_DATASETS_DIR / "coco2017" / "images"
+    archive_specs = (
+        ("sama-coco-train.zip", "https://sama-documentation-assets.s3.amazonaws.com/sama-coco/sama-coco-train.zip", 154_437_504, "train"),
+        ("sama-coco-val.zip", "https://sama-documentation-assets.s3.amazonaws.com/sama-coco/sama-coco-val.zip", 5_744_782, "val"),
+    )
+    try:
+        if not coco_dataset_layout_ready():
+            raise RuntimeError("Prepare the already-downloaded COCO 2017 image files first. SAMA-COCO reuses those images and does not download them again.")
+        imports = load_public_dataset_imports()
+        if imports.get("sama-coco") and sama_dataset_layout_ready():
+            ml_sama_import_state = {"status": "complete", "dataset": "sama-coco", "progress": 100, "message": "SAMA-COCO annotations are already prepared and ready. COCO images are reused locally."}
+            return
+        downloads.mkdir(parents=True, exist_ok=True)
+        archives: list[tuple[Path, str]] = []
+        expected_total = sum(spec[2] for spec in archive_specs)
+        downloaded_total = 0
+        for filename, url, expected_size, _split in archive_specs:
+            archive_path = downloads / filename
+            if not archive_path.is_file() or archive_path.stat().st_size != expected_size:
+                temporary = archive_path.with_suffix(archive_path.suffix + ".part")
+                temporary.unlink(missing_ok=True)
+                ml_sama_import_state = {"status": "downloading", "dataset": "sama-coco", "phase": "downloading", "progress": int(downloaded_total * 100 / expected_total), "downloaded_bytes": downloaded_total, "expected_bytes": expected_total, "message": f"Downloading official annotation archive {filename}. COCO images remain local."}
+                request = urllib.request.Request(url, headers={"User-Agent": "VAOS-Dataset-Importer/1.0"})
+                started = time.monotonic()
+                received = 0
+                with urllib.request.urlopen(request, timeout=45) as response, temporary.open("wb") as target_file:
+                    while chunk := response.read(1024 * 1024):
+                        target_file.write(chunk)
+                        received += len(chunk)
+                        ml_sama_import_state.update({"status": "downloading", "phase": "downloading", "progress": min(99, int((downloaded_total + received) * 100 / expected_total)), "downloaded_bytes": downloaded_total + received, "expected_bytes": expected_total, "speed_bytes_per_second": int(received / max(0.1, time.monotonic() - started)), "message": f"Downloading {filename} · {received:,} bytes. Existing COCO images will be reused."})
+                if received != expected_size:
+                    temporary.unlink(missing_ok=True)
+                    raise RuntimeError(f"SAMA-COCO archive size check failed for {filename}; expected {expected_size:,} bytes, got {received:,}.")
+                temporary.replace(archive_path)
+            with zipfile.ZipFile(archive_path) as archive:
+                bad_member = archive.testzip()
+                if bad_member:
+                    raise RuntimeError(f"SAMA-COCO archive failed integrity validation: {filename} · {bad_member}")
+                if not any(name.lower().endswith(".json") for name in archive.namelist()):
+                    raise RuntimeError(f"SAMA-COCO archive contains no annotation JSON files: {filename}")
+            downloaded_total += expected_size
+            archives.append((archive_path, _split))
+        for split in ("train", "val"):
+            source_images = image_source / ("train2017" if split == "train" else "val2017")
+            target_images = root / "images" / ("train2017" if split == "train" else "val2017")
+            _ensure_image_junction(source_images, target_images)
+            (root / "labels" / ("train2017" if split == "train" else "val2017")).mkdir(parents=True, exist_ok=True)
+        import yaml
+        import ultralytics
+        ultralytics_config = Path(ultralytics.__file__).resolve().parent / "cfg" / "datasets" / "coco.yaml"
+        config = yaml.safe_load(ultralytics_config.read_text(encoding="utf-8"))
+        classes = [str(name) for _, name in sorted(config["names"].items())]
+        class_ids = {name.casefold(): index for index, name in enumerate(classes)}
+        json_shards: list[tuple[Path, str, str]] = []
+        for archive_path, split in archives:
+            with zipfile.ZipFile(archive_path) as archive:
+                json_shards.extend((archive_path, split, member) for member in archive.namelist() if member.lower().endswith(".json"))
+        total_shards = len(json_shards)
+        processed_images = 0
+        ml_sama_import_state = {"status": "preparing", "dataset": "sama-coco", "phase": "converting", "progress": 0, "processed_images": 0, "total_images": 123_287, "message": f"Converting official SAMA-COCO annotations · 0 of {total_shards} shards. Reusing local COCO images."}
+        for shard_index, (archive_path, split, member) in enumerate(json_shards, 1):
+            image_split = "train2017" if split == "train" else "val2017"
+            labels_dir = root / "labels" / image_split
+            with zipfile.ZipFile(archive_path) as archive, archive.open(member) as raw:
+                document = json.loads(raw.read().decode("utf-8"))
+            categories = {int(item["id"]): class_ids.get(str(item.get("name", "")).casefold()) for item in document.get("categories", []) if isinstance(item, dict) and str(item.get("id", "")).isdigit()}
+            annotations_by_image: dict[int, list[str]] = {}
+            images_by_id = {int(item["id"]): item for item in document.get("images", []) if isinstance(item, dict) and str(item.get("id", "")).isdigit()}
+            for annotation in document.get("annotations", []):
+                if not isinstance(annotation, dict):
+                    continue
+                image_id = int(annotation.get("image_id", -1))
+                category_id = int(annotation.get("category_id", -1))
+                label_id = categories.get(category_id)
+                image = images_by_id.get(image_id)
+                bbox = annotation.get("bbox")
+                if label_id is None or image is None or not isinstance(bbox, list) or len(bbox) < 4:
+                    continue
+                try:
+                    width, height = float(image["width"]), float(image["height"])
+                    x, y, box_width, box_height = map(float, bbox[:4])
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if width <= 0 or height <= 0 or box_width <= 0 or box_height <= 0:
+                    continue
+                x1, y1 = max(0.0, x), max(0.0, y)
+                x2, y2 = min(width, x + box_width), min(height, y + box_height)
+                if x2 <= x1 or y2 <= y1:
+                    continue
+                cx, cy, bw, bh = ((x1 + x2) / (2 * width), (y1 + y2) / (2 * height), (x2 - x1) / width, (y2 - y1) / height)
+                annotations_by_image.setdefault(image_id, []).append(f"{label_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
+            for image_id, image in images_by_id.items():
+                image_name = Path(str(image.get("file_name", ""))).name
+                if not image_name.lower().endswith(".jpg") or not image_name:
+                    continue
+                label_path = labels_dir / f"{Path(image_name).stem}.txt"
+                lines = annotations_by_image.get(image_id, [])
+                if lines:
+                    label_path.write_text("\n".join(lines) + "\n", encoding="ascii")
+                else:
+                    label_path.unlink(missing_ok=True)
+                processed_images += 1
+            ml_sama_import_state.update({"status": "preparing", "dataset": "sama-coco", "phase": "converting", "progress": min(99, int(shard_index * 100 / total_shards)), "processed_images": processed_images, "total_images": 123_287, "message": f"Converting SAMA-COCO labels · shard {shard_index} of {total_shards} · {processed_images:,} images. No image files are being copied."})
+        for split, image_split in (("train", "train2017"), ("val", "val2017")):
+            image_dir = root / "images" / image_split
+            listing = root / f"{split}2017.txt"
+            images = sorted(image_dir.glob("*.jpg"))
+            if not images:
+                raise RuntimeError(f"No existing COCO {image_split} images were found for SAMA-COCO.")
+            listing.write_text("".join(f"./images/{image_split}/{path.name}\n" for path in images), encoding="utf-8")
+        dataset_config = {"path": str(root.resolve()), "train": "train2017.txt", "val": "val2017.txt", "names": {index: name for index, name in enumerate(classes)}}
+        yaml_path = root / "dataset.yaml"
+        yaml_path.write_text(yaml.safe_dump(dataset_config, sort_keys=False, allow_unicode=True), encoding="utf-8")
+        from ultralytics.data.utils import check_det_dataset
+        check_det_dataset(str(yaml_path))
+        metadata = {"id": "sama-coco", "name": "SAMA-COCO", "data_yaml": str(yaml_path), "classes": classes, "train_limit": 118_287, "validation_images": 5_000, "imported_at": utc_now(), "license": "CC BY 4.0", "source": "https://www.sama.com/sama-coco-dataset", "annotation_archives": [str(path) for path, _ in archives], "image_source": "Existing local COCO 2017 images; reused via directory junctions"}
+        imports = load_public_dataset_imports()
+        imports["sama-coco"] = metadata
+        write_public_dataset_imports(imports)
+        ml_sama_import_state = {"status": "complete", "dataset": "sama-coco", "phase": "complete", "progress": 100, "processed_images": processed_images, "total_images": processed_images, "message": f"SAMA-COCO ready · {processed_images:,} images indexed across {len(classes)} classes. Existing COCO images are reused; no image copy or download was done."}
+        write_training_log("INFO", "SAMA-COCO prepared", images=processed_images, classes=len(classes), license="CC BY 4.0", reused_coco_images=True)
+    except Exception as exc:
+        logger.exception("VAOS SAMA-COCO preparation failed")
+        ml_sama_import_state = {"status": "error", "dataset": "sama-coco", "message": str(exc)[:500]}
+        write_training_log("ERROR", "SAMA-COCO preparation failed", error=str(exc)[:400])
+    finally:
+        ml_dataset_import_lock.release()
+
+
 def repair_coco_dataset_layout() -> None:
     """Index existing COCO images and reuse extracted label files in the expected layout."""
     root = ML_DATASETS_DIR / "coco2017"
@@ -1636,7 +1807,7 @@ def list_ml_samples(_: str = Depends(require_admin)):
         if launcher_progress["batch"] >= current_batch and launcher_progress["batches"] >= current_total:
             training_state.update(launcher_progress)
             training_state["progress_source"] = "launcher_output"
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "sama_dataset_import": dict(ml_sama_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "sama_dataset_ready": sama_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.get("/api/admin/ml/logs")
@@ -1715,8 +1886,25 @@ def list_ml_training_history(run_id: str | None = None, _: str = Depends(require
 
 @app.post("/api/admin/ml/datasets/import")
 def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(require_admin)):
-    if str(payload.get("dataset", "")) != "coco2017":
-        raise HTTPException(status_code=400, detail="Only COCO 2017 is available as a public dataset")
+    dataset_id = str(payload.get("dataset", ""))
+    if dataset_id == "sama-coco":
+        imported = load_public_dataset_imports().get("sama-coco")
+        if imported and sama_dataset_layout_ready():
+            ml_sama_import_state.update({"status": "complete", "dataset": "sama-coco", "progress": 100, "message": "SAMA-COCO is already prepared. Existing COCO images are reused."})
+            return {"status": "complete", "message": "SAMA-COCO is already prepared. Existing COCO images are reused."}
+        if not ml_dataset_import_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="Another public dataset preparation is already running")
+        ml_sama_import_state.update({"status": "preparing", "dataset": "sama-coco", "phase": "starting", "progress": 0, "message": "Starting SAMA-COCO annotation preparation. Existing COCO images will be reused."})
+        try:
+            threading.Thread(target=import_sama_coco_dataset, name="vaos-sama-coco-import", daemon=True).start()
+        except Exception as exc:
+            ml_dataset_import_lock.release()
+            logger.exception("Could not launch the SAMA-COCO preparation worker")
+            ml_sama_import_state.update({"status": "error", "dataset": "sama-coco", "message": "Could not start SAMA-COCO preparation. Check the admin service log."})
+            raise HTTPException(status_code=503, detail="Could not start SAMA-COCO preparation. Check the admin service error log.") from exc
+        return {"status": "preparing", "message": "SAMA-COCO preparation started. COCO images are reused locally."}
+    if dataset_id != "coco2017":
+        raise HTTPException(status_code=400, detail="Choose COCO 2017 or SAMA-COCO")
     imported = load_public_dataset_imports().get("coco2017")
     if imported and coco_dataset_layout_ready():
         existing_yaml = Path(str(imported.get("data_yaml", "")))
@@ -1860,7 +2048,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
     job_started = time.monotonic()
     write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
     try:
-        epochs_total = 10 if dataset_source in {"coco2017", "combined"} else 30
+        epochs_total = 10 if dataset_source in {"coco2017", "combined", "sama_coco", "sama_combined"} else 30
         if dataset_source == "coco2017":
             imported = load_public_dataset_imports().get("coco2017")
             if not imported or not Path(imported.get("data_yaml", "")).is_file():
@@ -1883,6 +2071,26 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             yaml_path, labels = build_combined_coco_reviewed_yaml(base_yaml, labeled, coco_classes)
             sample_count = 118287 + len(labeled)
             dataset_name = "COCO 2017 + human-reviewed samples"
+        elif dataset_source in {"sama_coco", "sama_combined"}:
+            imported = load_public_dataset_imports().get("sama-coco")
+            if not imported or not Path(imported.get("data_yaml", "")).is_file() or not sama_dataset_layout_ready():
+                raise RuntimeError("Prepare SAMA-COCO annotations before selecting this dataset. Existing COCO images will be reused.")
+            base_yaml = Path(imported["data_yaml"])
+            labels = list(imported.get("classes", []))
+            if dataset_source == "sama_coco":
+                yaml_path = base_yaml
+                sample_count = 118287
+                dataset_name = "SAMA-COCO"
+            else:
+                with db_connection() as db:
+                    rows = db.execute("SELECT id,image,bbox,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
+                labeled = [(row["id"], bytes(row["image"]), row["confirmed_label"] or row["suggested_label"], row["bbox"]) for row in rows]
+                reviewed_labels = {item[2] for item in labeled}
+                if len(labeled) < 20 or len(reviewed_labels) < 2:
+                    raise RuntimeError("SAMA-COCO + reviewed training needs at least 20 confirmed crops across at least 2 object types.")
+                yaml_path, labels = build_combined_coco_reviewed_yaml(base_yaml, labeled, labels)
+                sample_count = 118287 + len(labeled)
+                dataset_name = "SAMA-COCO + human-reviewed samples"
         elif dataset_source == "reviewed":
             with db_connection() as db:
                 rows = db.execute("SELECT id,image,bbox,review_state,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
@@ -1907,7 +2115,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             sample_count = len(labeled)
             dataset_name = "Human-reviewed camera samples"
         else:
-            raise RuntimeError("Choose reviewed camera samples or imported COCO 2017.")
+            raise RuntimeError("Choose reviewed camera samples, COCO 2017, or prepared SAMA-COCO.")
         write_training_log("INFO", "Training data prepared", dataset=dataset_name, images=sample_count, classes=len(labels))
         if ml_training_state.get("stop_requested"):
             ml_training_state = {"status": "stopped", "progress": 0, "epoch": 0, "epochs": epochs_total, "stop_requested": False, "message": "Training was stopped safely before the first epoch; no new model was installed."}
@@ -1951,7 +2159,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             train_device = str(device_index)
             device_label = f"GPU {device_index} · {torch.cuda.get_device_name(device_index)}"
         else:
-            cpu_threads = max(1, min(device_index, os.cpu_count() or 1))
+            cpu_threads = max(1, (os.cpu_count() or 1) - 1) if device_value == "all" and resource_mode else max(1, min(device_index, os.cpu_count() or 1))
             torch.set_num_threads(cpu_threads)
             train_device = "cpu"
             device_label = f"CPU · {cpu_threads} thread{'s' if cpu_threads != 1 else ''}"
@@ -2009,9 +2217,23 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
                 stats["cpu_percent"] = round(psutil.cpu_percent(interval=None), 1)
             except Exception:
                 pass
+            host_metrics = get_system_metrics()
+            if host_metrics.get("gpu_utilization_percent") is not None:
+                stats["gpu_utilization_percent"] = host_metrics["gpu_utilization_percent"]
+            if host_metrics.get("gpu_memory_used_mb") is not None:
+                stats["gpu_memory_used_mb"] = host_metrics["gpu_memory_used_mb"]
+                stats["gpu_memory_total_mb"] = host_metrics.get("gpu_memory_total_mb")
+            if host_metrics.get("memory_percent") is not None:
+                stats["system_memory_percent"] = host_metrics["memory_percent"]
             return stats
 
+        batch_speed_ema = 0.0
+        image_speed_ema = 0.0
+        last_batch_time: float | None = None
+        last_persisted_progress = last_batch_time
+
         def update_batch(trainer):
+            nonlocal batch_speed_ema, image_speed_ema, last_batch_time, last_persisted_progress
             epoch_index = int(getattr(trainer, "epoch", 0))
             batch_index = int(getattr(trainer, "batch_i", -1)) + 1
             train_loader = getattr(trainer, "train_loader", None)
@@ -2022,7 +2244,27 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             overall_progress = min(99, max(0, int(((epoch_index + fraction) / epochs_total) * 100)))
             completed_epochs = min(float(epochs_total), max(0.0, float(epoch_index)) + fraction)
             stats = current_stats(trainer)
-            ml_training_state.update({"status": "running", "epoch": epoch, "epochs": epochs_total, "batch": min(batch_index, total_batches), "batches": total_batches, "progress": overall_progress, "elapsed_seconds": int(elapsed), "eta_seconds": estimate_training_eta(elapsed, completed_epochs, epochs_total), "stats": stats})
+            now = time.monotonic()
+            sample = getattr(trainer, "batch", None)
+            image_count = 0
+            try:
+                image_tensor = sample.get("img") if isinstance(sample, dict) else sample[0]
+                image_count = int(image_tensor.shape[0])
+            except (TypeError, IndexError, AttributeError, KeyError):
+                image_count = int(getattr(getattr(trainer, "args", None), "batch", 1) or 1)
+            delta = max(0.001, now - last_batch_time) if last_batch_time is not None else 0.0
+            instant_batches = 1.0 / delta if delta else 0.0
+            instant_images = image_count / delta if delta else 0.0
+            if delta:
+                batch_speed_ema = instant_batches if batch_speed_ema <= 0 else batch_speed_ema * 0.8 + instant_batches * 0.2
+                image_speed_ema = instant_images if image_speed_ema <= 0 else image_speed_ema * 0.8 + instant_images * 0.2
+            last_batch_time = now
+            epoch_eta = int(max(0, total_batches - batch_index) / max(0.001, batch_speed_ema))
+            stats.update({"batches_per_second": round(batch_speed_ema, 3), "images_per_second": round(image_speed_ema, 2), "processed_images": max(0, epoch_index) * total_batches * image_count + batch_index * image_count, "batch_size": image_count})
+            ml_training_state.update({"status": "running", "epoch": epoch, "epochs": epochs_total, "batch": min(batch_index, total_batches), "batches": total_batches, "progress": overall_progress, "epoch_progress": round(fraction * 100, 2), "elapsed_seconds": int(elapsed), "epoch_eta_seconds": epoch_eta, "eta_seconds": estimate_training_eta(elapsed, completed_epochs, epochs_total), "stats": stats})
+            if now - last_persisted_progress >= 10:
+                write_training_log("INFO", "Training progress update", epoch=epoch, epochs=epochs_total, batch=batch_index, batches=total_batches, epoch_progress=round(fraction * 100, 2), progress=overall_progress, epoch_eta_seconds=epoch_eta, eta_seconds=ml_training_state.get("eta_seconds"), images_per_second=round(image_speed_ema, 2), batches_per_second=round(batch_speed_ema, 3), stats=stats, elapsed_seconds=int(elapsed))
+                last_persisted_progress = now
 
         def update_epoch(trainer):
             epoch = min(epochs_total, int(getattr(trainer, "epoch", -1)) + 1)
@@ -2038,9 +2280,18 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         model.add_callback("on_train_epoch_end", update_epoch)
         write_training_log("INFO", "Model fit started", model=Path(model_file).name, device=ml_training_state["device"], images=sample_count, epochs=epochs_total)
         run_name = f"vaos_objects_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        cpu_worker_budget = max(0, (os.cpu_count() or 1) - 1)
-        training_workers = max(0, cpu_worker_budget // max(1, len(train_device))) if resource_mode and isinstance(train_device, list) else 0
-        training_batch = max(4, 4 * len(train_device)) if resource_mode and isinstance(train_device, list) else 4
+        cpu_worker_budget = max(0, (os.cpu_count() or 1) - 2)
+        try:
+            import psutil
+            memory_worker_budget = max(1, int(max(0.0, psutil.virtual_memory().available / (1024 ** 3) - 8) / 1.5))
+        except Exception:
+            memory_worker_budget = 4
+        training_workers = min(8, cpu_worker_budget, memory_worker_budget) if resource_mode else min(4, cpu_worker_budget)
+        if resource_mode and device_kind == "gpu" and torch.cuda.is_available():
+            training_batch = -1 if torch.cuda.device_count() == 1 else max(8, 8 * len(train_device))
+        else:
+            training_batch = 16 if resource_mode and device_kind == "cpu" else 4
+        write_training_log("INFO", "Training resources configured", device=device_label, gpu_count=torch.cuda.device_count() if torch.cuda.is_available() else 0, batch="auto" if training_batch == -1 else training_batch, workers=training_workers, cpu_threads=os.cpu_count(), memory_available_gb=round((__import__("psutil").virtual_memory().available / (1024 ** 3)), 2) if resource_mode else None)
         result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=640, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False)
         best = Path(result.save_dir) / "weights" / "best.pt"
         stopped_early = bool(ml_training_state.get("stop_requested"))
@@ -2080,17 +2331,20 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
 @app.post("/api/admin/ml/train")
 def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     device_choice = str(payload.get("device", "cpu:1"))
-    if not (device_choice.startswith("cpu:") and device_choice.split(":", 1)[1].isdigit()) and not (device_choice.startswith("gpu:") and device_choice.split(":", 1)[1].isdigit()):
+    resource_mode = bool(payload.get("resource_mode", False))
+    if not (device_choice.startswith("cpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and not (device_choice.startswith("gpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))):
         raise HTTPException(status_code=400, detail="Choose an available CPU thread count or GPU from the device list")
     inventory = training_device_inventory()
-    if device_choice.startswith("cpu:") and int(device_choice.split(":", 1)[1]) > inventory["cpu_threads"]:
+    if device_choice.startswith("cpu:") and device_choice.split(":", 1)[1].isdigit() and int(device_choice.split(":", 1)[1]) > inventory["cpu_threads"]:
         raise HTTPException(status_code=400, detail=f"This PC has {inventory['cpu_threads']} logical CPU threads available")
-    if device_choice.startswith("gpu:") and int(device_choice.split(":", 1)[1]) not in {item["index"] for item in inventory["gpus"]}:
+    if device_choice == "gpu:all" and not inventory["gpus"]:
+        raise HTTPException(status_code=400, detail="No NVIDIA GPU is available to the training runtime. Choose an all-CPU option instead.")
+    if device_choice.startswith("gpu:") and device_choice.split(":", 1)[1].isdigit() and int(device_choice.split(":", 1)[1]) not in {item["index"] for item in inventory["gpus"]}:
         raise HTTPException(status_code=400, detail="That GPU is not available. Refresh the page and choose one listed in the device menu.")
     dataset_source = str(payload.get("source", "reviewed"))
-    if dataset_source not in {"reviewed", "coco2017", "combined"}:
+    if dataset_source not in {"reviewed", "coco2017", "combined", "sama_coco", "sama_combined"}:
         write_training_log("WARNING", "Training request rejected", reason="Unsupported dataset source", source=dataset_source)
-        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, or combined training")
+        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, or SAMA-COCO training")
     if dataset_source in {"coco2017", "combined"} and ("coco2017" not in load_public_dataset_imports() or not coco_dataset_layout_ready()):
         write_training_log("WARNING", "Training request rejected", reason="COCO 2017 is not imported", source=dataset_source)
         raise HTTPException(status_code=409, detail="Prepare COCO 2017 first. Existing image and label files will be reused; missing files are identified before a download starts.")
@@ -2098,14 +2352,22 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
         reason = "COCO 2017 is still downloading. Wait for the import to finish before using COCO-based training. You can switch to Reviewed camera samples to train from confirmed samples now."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
         raise HTTPException(status_code=409, detail=reason)
+    if dataset_source in {"sama_coco", "sama_combined"} and ("sama-coco" not in load_public_dataset_imports() or not sama_dataset_layout_ready()):
+        write_training_log("WARNING", "Training request rejected", reason="SAMA-COCO annotations are not prepared", source=dataset_source)
+        raise HTTPException(status_code=409, detail="Prepare SAMA-COCO first. Its annotations will reuse your local COCO images without downloading them again.")
+    if dataset_source in {"sama_coco", "sama_combined"} and ml_sama_import_state.get("status") in {"preparing", "downloading"}:
+        raise HTTPException(status_code=409, detail="SAMA-COCO preparation is still running. Wait for it to finish before starting training.")
     if not ml_training_lock.acquire(blocking=False):
         reason = "A model training job is already active. Wait for it to finish before starting another."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
         raise HTTPException(status_code=409, detail=reason)
+    initial_model = str(payload.get("initial_model", "auto"))
+    if initial_model not in {"auto", "best.pt", "yolo26m"}:
+        raise HTTPException(status_code=400, detail="Choose best.pt or YOLO26m as the starting model.")
     ml_training_state.update({"status": "preparing", "message": "Training request accepted. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
-    write_training_log("INFO", "Training requested", source=dataset_source, device=device_choice)
+    write_training_log("INFO", "Training requested", source=dataset_source, device=device_choice, checkpoint=initial_model, resource_mode=resource_mode)
     try:
-        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source), name="vaos-ml-training", daemon=True).start()
+        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode), name="vaos-ml-training", daemon=True).start()
     except Exception as exc:
         ml_training_lock.release()
         ml_training_state.update({"status": "error", "message": f"Could not launch the training worker: {exc}"})
@@ -2129,7 +2391,7 @@ def list_ml_model_sources(_: str = Depends(require_admin)):
     with db_connection() as db:
         reviewed_count = int(db.execute("SELECT COUNT(*) FROM ml_samples WHERE review_state IN ('confirmed','corrected')").fetchone()[0])
         reviewed_types = int(db.execute("SELECT COUNT(DISTINCT COALESCE(confirmed_label,suggested_label)) FROM ml_samples WHERE review_state IN ('confirmed','corrected') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL").fetchone()[0])
-    return {"sources": sources, "dataset": {"coco2017_ready": coco_dataset_layout_ready(), "reviewed_count": reviewed_count, "reviewed_types": reviewed_types}, "training": {"status": ml_training_state.get("status", "idle")}, "devices": training_device_inventory()}
+    return {"sources": sources, "dataset": {"coco2017_ready": coco_dataset_layout_ready(), "sama_coco_ready": sama_dataset_layout_ready(), "reviewed_count": reviewed_count, "reviewed_types": reviewed_types}, "training": {"status": ml_training_state.get("status", "idle")}, "devices": training_device_inventory()}
 
 
 def get_huggingface_yolo_models() -> list[dict[str, Any]]:
@@ -2242,23 +2504,29 @@ def start_ml_enrichment(payload: dict[str, Any], _: str = Depends(require_admin)
     lock_acquired = False
     try:
         checkpoint = str(payload.get("checkpoint", "yolo26m"))
+        dataset_source = str(payload.get("dataset_source", "sama_combined"))
+        if dataset_source not in {"combined", "sama_combined"}:
+            raise HTTPException(status_code=400, detail="Choose COCO 2017 + reviewed samples or SAMA-COCO + reviewed samples.")
         source_list = list_ml_model_sources(_).get("sources", [])
         source_ids = {item["id"] for item in source_list if isinstance(item, dict) and item.get("id")}
         if checkpoint not in source_ids:
             raise HTTPException(status_code=400, detail="Choose a model source that appears in the available model list.")
-        if not coco_dataset_layout_ready():
+        if dataset_source == "sama_combined" and (not sama_dataset_layout_ready() or "sama-coco" not in load_public_dataset_imports()):
+            raise HTTPException(status_code=409, detail="Prepare SAMA-COCO first. It reuses the COCO images already saved on this PC.")
+        if dataset_source == "combined" and (not coco_dataset_layout_ready() or "coco2017" not in load_public_dataset_imports()):
             raise HTTPException(status_code=409, detail="Prepare COCO 2017 before enrichment. Your local COCO files will be reused.")
-        if ml_dataset_import_state.get("status") in {"preparing", "downloading"}:
-            raise HTTPException(status_code=409, detail="Wait for COCO 2017 preparation to finish before enriching the model.")
+        if dataset_source == "sama_combined" and ml_sama_import_state.get("status") in {"preparing", "downloading"}:
+            raise HTTPException(status_code=409, detail="Wait for SAMA-COCO preparation to finish before enriching the model.")
         if not ml_training_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="A training run is already active. Wait for it to finish before starting enrichment.")
         lock_acquired = True
         inventory = training_device_inventory()
         device_choice = "gpu:all" if inventory["gpus"] else f"cpu:{inventory['cpu_threads']}"
         device_summary = "all available CUDA GPUs" if inventory["gpus"] else f"CPU · {inventory['cpu_threads']} threads (no NVIDIA GPU detected)"
-        ml_training_state.update({"status": "preparing", "message": f"Model enrichment queued · using {device_summary} and preparing COCO 2017 with reviewed live samples.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_summary, "elapsed_seconds": 0, "eta_seconds": None, "job_kind": "enrichment"})
-        write_training_log("INFO", "Model enrichment requested", checkpoint=checkpoint, dataset="COCO 2017 + human-reviewed camera samples", resources="all CUDA GPUs, CPU data workers, managed system memory")
-        threading.Thread(target=run_ml_training, args=(device_choice, "combined", checkpoint, True), name="vaos-ml-enrichment", daemon=True).start()
+        dataset_name = "SAMA-COCO + human-reviewed camera samples" if dataset_source == "sama_combined" else "COCO 2017 + human-reviewed camera samples"
+        ml_training_state.update({"status": "preparing", "message": f"Model update queued · {dataset_name} · {device_summary}.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_summary, "elapsed_seconds": 0, "eta_seconds": None, "job_kind": "enrichment"})
+        write_training_log("INFO", "Model enrichment requested", checkpoint=checkpoint, dataset=dataset_name, resources="all CUDA GPUs, bounded CPU data workers, managed system memory")
+        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, checkpoint, True), name="vaos-ml-enrichment", daemon=True).start()
         lock_acquired = False  # The worker releases the lock in its finally block.
     except HTTPException:
         if lock_acquired:
@@ -2272,7 +2540,7 @@ def start_ml_enrichment(payload: dict[str, Any], _: str = Depends(require_admin)
         ml_training_state.update({"status": "error", "job_kind": "enrichment", "message": message})
         write_training_log("ERROR", "Model enrichment request failed before the worker started", error=str(exc)[:400])
         raise HTTPException(status_code=503, detail=message) from exc
-    return {"status": "preparing", "message": "Model enrichment started. The existing best.pt will be backed up before any replacement."}
+    return {"status": "preparing", "message": f"Model update started with {dataset_name}. The existing best.pt will be backed up before replacement."}
 
 
 @app.post("/api/admin/ml/train/stop")

@@ -980,3 +980,46 @@ body.vaos-dark .training-log-open { border-color: #34485b; color: #8dd1de; }
 #history-metric-note { margin:8px 0 0; }
 @media(max-width:900px) { .activity-history-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 @media(max-width:560px) { .activity-history-grid { grid-template-columns:1fr; } .activity-history-toolbar { flex-direction:column; } .activity-run-picker { width:100%; } }
+
+/* VAOS 0.10.2: make the model workspace and live training progress easier to scan. */
+.training-page > .ml-workspace { grid-template-columns: minmax(280px, .82fr) minmax(0, 2.45fr); align-items: stretch; }
+.training-page .ml-workspace > .ml-model { min-height: 0; max-height: none; padding: 14px !important; overflow: auto; }
+.training-page .ml-workspace > .ml-model .model-about { grid-template-columns: 1fr; }
+.training-page .ml-workspace > .ml-model .model-about-row { grid-template-columns: minmax(100px, .42fr) minmax(0, 1fr); }
+.training-page .ml-steps { grid-template-columns: minmax(190px, .72fr) minmax(290px, 1.1fr) minmax(360px, 1.38fr); }
+.training-page .ml-train { overflow-y: auto; }
+.training-page .dataset-prepare-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:2px 0 6px; padding:7px 8px; border:1px solid var(--ml-border); border-radius:9px; background:var(--ml-panel-raised); }
+.training-page .dataset-prepare-row > div { min-width:0; }
+.training-page .dataset-prepare-row strong { color:var(--ml-text); font-size:9px; }
+.training-page .dataset-prepare-row .helper { margin:2px 0 0; font-size:8px; }
+.training-page .dataset-prepare-row .button { flex:0 0 auto; }
+.training-page .epoch-progress-wrap { margin-top:8px; padding-top:7px; border-top:1px solid var(--ml-border); }
+.training-activity-page .activity-summary-grid { grid-template-columns:repeat(4,minmax(0,1fr)); }
+.activity-summary-card > strong { font-size:14px; }
+.activity-table-pagination { display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:9px; padding-top:8px; border-top:1px solid var(--line); color:var(--muted); font-size:10px; }
+.activity-table-pagination .inline-actions { align-items:center; gap:6px; }
+.activity-table-pagination select { min-height:28px; width:68px; padding:3px 6px; border:1px solid var(--line); border-radius:7px; color:var(--ink); background:var(--panel); font:inherit; }
+body.vaos-dark .activity-table-pagination { border-color:#2a3c4d; color:#9aabbd; }
+body.vaos-dark .activity-table-pagination select { border-color:#34485b; color:#e8f0f8; background:#142130; }
+body.vaos-dark .training-page .dataset-prepare-row { border-color:var(--ml-border); background:#111d2a; }
+body.vaos-dark .training-page .dataset-prepare-row strong { color:var(--ml-text); }
+@media(max-width:1450px) {
+  .training-page > .ml-workspace { grid-template-columns:1fr; }
+  .training-page .ml-workspace > .ml-model .model-about { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .training-page .ml-steps { grid-template-columns:minmax(190px,.72fr) minmax(290px,1.1fr) minmax(360px,1.38fr); }
+}
+@media(max-width:1050px) {
+  .training-page .ml-steps { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .training-page .ml-train { grid-column:1/-1; }
+  .training-activity-page .activity-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+}
+@media(max-width:760px) {
+  .training-page .ml-steps { grid-template-columns:1fr; }
+  .training-page .ml-train { grid-column:auto; }
+  .training-page .ml-workspace > .ml-model .model-about { grid-template-columns:1fr; }
+  .training-page .ml-train { overflow:visible; }
+}
+@media(max-width:560px) {
+  .training-activity-page .activity-summary-grid { grid-template-columns:1fr 1fr; }
+  .training-page .dataset-prepare-row { align-items:flex-start; flex-direction:column; }
+}
