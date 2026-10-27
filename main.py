@@ -2236,7 +2236,9 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         batch_speed_ema = 0.0
         image_speed_ema = 0.0
         last_batch_time: float | None = None
-        last_persisted_progress = last_batch_time
+        # Seed the persistence clock before the first batch callback; keeping it
+        # as None makes ``now - last_persisted_progress`` fail on batch one.
+        last_persisted_progress = job_started
 
         def update_batch(trainer):
             nonlocal batch_speed_ema, image_speed_ema, last_batch_time, last_persisted_progress
