@@ -1479,10 +1479,16 @@ def _ensure_image_junction(source: Path, target: Path) -> None:
         os.symlink(source, target, target_is_directory=True)
     except OSError:
         # Windows junctions reuse the existing 20 GB COCO image folders without copying them.
-        command = f'mklink /J "{target}" "{source}"'
-        result = subprocess.run(["cmd.exe", "/d", "/c", command], capture_output=True, text=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        # Use paths relative to the app root and set cwd explicitly. Passing an
+        # absolute command string as a single cmd.exe argument double-quotes it
+        # on Windows when it contains spaces, so mklink fails despite valid paths.
+        target_relative = target.relative_to(BASE_DIR).as_posix()
+        source_relative = source.relative_to(BASE_DIR).as_posix()
+        command = f'mklink /J "{target_relative}" "{source_relative}"'
+        result = subprocess.run(command, shell=True, cwd=BASE_DIR, capture_output=True, text=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         if result.returncode != 0 or not target.is_dir():
-            raise RuntimeError("Could not link SAMA-COCO to the existing COCO images; no image copy or download was started.")
+            reason = (result.stderr or result.stdout or "unknown Windows junction error").strip()
+            raise RuntimeError(f"Could not link SAMA-COCO to the existing COCO images ({reason[:240]}); no image copy or download was started.")
 
 
 def import_sama_coco_dataset() -> None:
