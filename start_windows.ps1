@@ -30,6 +30,10 @@ $publicUrl = $null
 $adminHealthy = $false
 $cameraHealthy = $false
 $normalizedRoot = [System.IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\','/').ToLowerInvariant()
+$mainSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'main.py') -Raw
+$versionMatch = [regex]::Match($mainSource, '(?m)^APP_VERSION\s*=\s*["'']([^"'']+)["'']\s*$')
+if (-not $versionMatch.Success) { throw 'Could not read APP_VERSION from main.py; refusing to reuse a possibly stale VAOS service.' }
+$expectedAppVersion = $versionMatch.Groups[1].Value
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 $instanceBytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedRoot)
 $instanceId = ([System.BitConverter]::ToString($sha256.ComputeHash($instanceBytes))).Replace('-','').ToLowerInvariant().Substring(0,16)
@@ -38,8 +42,8 @@ $adminStatus = $null
 $cameraStatus = $null
 try { $adminStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2; $adminHealthy = $adminStatus.app -in @('vaos-admin','local-camera-recognition-poc') } catch { }
 try { $cameraStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health' -TimeoutSec 2; $cameraHealthy = $cameraStatus.app -eq 'camera-station' } catch { }
-$adminThisFolder = $adminHealthy -and $adminStatus.instance_id -eq $instanceId
-$cameraThisFolder = $cameraHealthy -and $cameraStatus.instance_id -eq $instanceId
+$adminThisFolder = $adminHealthy -and $adminStatus.instance_id -eq $instanceId -and $adminStatus.version -eq $expectedAppVersion
+$cameraThisFolder = $cameraHealthy -and $cameraStatus.instance_id -eq $instanceId -and $cameraStatus.version -eq $expectedAppVersion
 if ($adminThisFolder -and $cameraThisFolder) {
   Write-Host 'This copy of the camera app is already running. Opening its dashboard.' -ForegroundColor Yellow
   Start-Process 'http://127.0.0.1:8000'

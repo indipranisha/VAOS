@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <g id="vaos-mark">
+    <rect x="2" y="2" width="60" height="60" rx="19" fill="#132332"/>
+    <path d="M15 17 27 47 39 17" fill="none" stroke="#56c7cf" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M43 18c5 0 8 3 8 7v15c0 5-3 8-8 8s-8-3-8-8V25c0-4 3-7 8-7Z" fill="none" stroke="#56c7cf" stroke-width="5.5" stroke-linecap="round"/>
+  </g>
+</svg>

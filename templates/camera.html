@@ -4,13 +4,14 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Camera · {{ camera_name }}</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-0.10.1">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
 </head>
 <body class="camera-page">
   <header class="topbar camera-topbar">
-    <div class="brand-lockup" aria-label="VAOS"><svg class="vaos-logo" viewBox="0 0 48 48" role="img" aria-label="VAOS three-color logo"><rect x="3" y="3" width="42" height="42" rx="14" fill="#fff"/><path d="M11 12h26v7H11z" fill="#F28C7F"/><path d="M11 20h26v7H11z" fill="#5DBFB0"/><path d="M11 28h26v7H11z" fill="#8D85D8"/><circle cx="24" cy="23.5" r="5.4" fill="#344054"/><circle cx="24" cy="23.5" r="2" fill="#fff"/></svg><span>VAOS</span></div>
+    <div class="brand-lockup" aria-label="VAOS"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></div>
     <div><div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div><h1>{{ camera_name }}</h1></div>
-    <div class="topbar-spacer"></div><span class="status-pill"><span class="status-dot"></span> Camera station</span>
+    <div class="topbar-spacer"></div><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button><span class="status-pill"><span class="status-dot"></span> Camera station</span>
   </header>
   <main class="camera-wrap">
     <section class="camera-copy">
@@ -31,6 +32,7 @@
     </section>
     <p class="camera-footnote">Close this page or choose Stop camera to end video capture. Browser camera permission is required.</p>
   </main>
+<script src="/static/theme.js?v=4"></script>
 <script>
 const token = {{ token|tojson }};
 const FRAME_INTERVAL_MS = {{ frame_interval_ms|int }};

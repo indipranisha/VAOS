@@ -30,7 +30,7 @@ async def pause_public_camera_access(request: Request, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "camera-station", "instance_id": core.INSTANCE_ID}
+    return {"status": "ok", "app": "camera-station", "instance_id": core.INSTANCE_ID, "version": core.APP_VERSION}
 
 
 @app.get("/internal/model-status")

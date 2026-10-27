@@ -5,6 +5,7 @@ import csv
 import json
 import logging
 import os
+import re
 import secrets
 import shutil
 import sqlite3
@@ -73,7 +74,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.10.1"
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
 ENGINE_SETTING_DEFAULTS = {
@@ -113,6 +114,10 @@ OBJECT_CLASSES = ("person", "bicycle", "car", "motorcycle", "airplane", "bus", "
 OBJECT_EVENTS_COOLDOWN = 60
 ML_DATA_DIR = DATA_DIR / "ml_training"
 ML_DATA_DIR.mkdir(parents=True, exist_ok=True)
+ML_MODEL_SOURCES_DIR = ML_DATA_DIR / "model_sources"
+ML_MODEL_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
+HF_YOLO_REPO_ID = "Ultralytics/YOLO26"
+HF_YOLO_FILES = {f"yolo26{size}.pt" for size in "nsmlx"}
 MAX_ML_SAMPLES = 5000
 ML_DATASETS_DIR = ML_DATA_DIR / "public_datasets"
 ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
@@ -178,6 +183,61 @@ def read_training_log() -> list[dict[str, Any]]:
     except (OSError, json.JSONDecodeError):
         logger.exception("Could not read the VAOS local training log")
         return []
+
+
+def estimate_training_eta(elapsed_seconds: float, completed_epochs: float, total_epochs: int) -> int | None:
+    """Estimate remaining time from real completed epoch fractions, ignoring warmup noise."""
+    total = max(1, int(total_epochs))
+    completed = min(float(total), max(0.0, float(completed_epochs)))
+    if completed < 0.05:
+        return None
+    return int(max(0.0, float(elapsed_seconds) * (total - completed) / completed))
+
+
+def read_launcher_training_progress() -> dict[str, Any] | None:
+    """Recover live batch progress from the launcher's captured Ultralytics output.
+
+    Ultralytics can keep advancing its console progress bar even when its Python
+    callback stops updating the in-memory training state. The launcher log is
+    the durable fallback for the training page and its stall warning.
+    """
+    logs_dir = DATA_DIR / "logs"
+    try:
+        candidates = list(logs_dir.glob("*/admin_service.log"))
+        if not candidates:
+            return None
+        log_path = max(candidates, key=lambda path: path.stat().st_mtime)
+        modified_at = log_path.stat().st_mtime
+        if time.time() - modified_at > 180:
+            return None
+        with log_path.open("rb") as log_file:
+            log_file.seek(max(0, log_path.stat().st_size - 128_000))
+            output = log_file.read().decode("utf-8", errors="replace")
+        output = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output)
+        progress_pattern = re.compile(
+            r"\b(\d{1,3})\s*/\s*(\d{1,3})\b.*?\b(\d{1,3})%.*?"
+            r"\b(\d+)\s*/\s*(\d+)\s+([\d.]+)\s*it/s",
+            re.IGNORECASE,
+        )
+        matches = [match for line in re.split(r"[\r\n]+", output) if (match := progress_pattern.search(line))]
+        if not matches:
+            return None
+        epoch, epochs, percent, batch, batches, rate = matches[-1].groups()
+        epoch, epochs, batch, batches = int(epoch), int(epochs), int(batch), int(batches)
+        if epochs < 1 or batches < 1 or batch > batches:
+            return None
+        return {
+            "epoch": epoch,
+            "epochs": epochs,
+            "batch": batch,
+            "batches": batches,
+            "progress": min(99, max(0, int(percent))),
+            "output_rate": float(rate),
+            "output_updated_at": modified_at,
+        }
+    except (OSError, ValueError):
+        logger.debug("Could not read launcher training progress", exc_info=True)
+        return None
 
 
 def model_runtime_status() -> dict[str, Any]:
@@ -811,12 +871,22 @@ def dashboard(request: Request, _: str = Depends(require_admin)):
 
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION})
+    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+
+
+@app.get("/training/activity", response_class=HTMLResponse)
+def ml_training_activity_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "training_activity.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+
+
+@app.get("/live-system", response_class=HTMLResponse)
+def live_system_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "live_system.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "vaos-admin", "instance_id": INSTANCE_ID, "model_loaded": face_detector is not None}
+    return {"status": "ok", "app": "vaos-admin", "instance_id": INSTANCE_ID, "version": APP_VERSION, "model_loaded": face_detector is not None}
 
 
 @app.get("/c/{token}", response_class=HTMLResponse)
@@ -896,6 +966,7 @@ def diagnostics(_: str = Depends(require_admin)):
         cameras.append(item)
     runtime = model_runtime_status()
     internal_token = os.getenv("VAOS_INTERNAL_STATUS_TOKEN", "")
+    camera_service_running = False
     if internal_token:
         request = urllib.request.Request(
             "http://127.0.0.1:8001/internal/model-status",
@@ -906,9 +977,37 @@ def diagnostics(_: str = Depends(require_admin)):
                 worker_status = json.loads(response.read().decode("utf-8"))
             if isinstance(worker_status, dict) and isinstance(worker_status.get("models"), list):
                 runtime = worker_status
+                camera_service_running = True
         except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
             pass  # Keep showing the last process-local status when the worker is unavailable.
-    return {**runtime, "cameras": cameras, "objects": [dict(r) for r in object_rows], "matches_today": matches_today, "objects_last_hour": objects_last_hour, "system_metrics": get_system_metrics()}
+    settings = get_engine_settings()
+    model_map = {str(item.get("name")): item for item in runtime.get("models", [])}
+    def engine_state(enabled: bool, model_names: tuple[str, ...] = ()) -> str:
+        if not enabled:
+            return "stopped"
+        if not camera_service_running:
+            return "starting"
+        if model_names and not all(bool(model_map.get(name, {}).get("loaded")) for name in model_names):
+            return "starting"
+        return "running"
+    service_status = {
+        "admin": "running",
+        "camera": "running" if camera_service_running else "stopped",
+        "tunnel": read_tunnel_state().get("status", "stopped"),
+        "training": "stopping" if ml_training_state.get("stop_requested") else str(ml_training_state.get("status", "idle")),
+        "face_matching": engine_state(bool(settings.get("face_matching_enabled")), ("yunet", "sface")),
+        "object_detection": engine_state(bool(settings.get("object_detection_enabled")), ("yolo26m",)),
+        "object_tracking": engine_state(bool(settings.get("object_tracking_enabled")), ("yolo26m",)),
+    }
+    if LAUNCHER_COMMAND_PATH.exists():
+        try:
+            command = json.loads(LAUNCHER_COMMAND_PATH.read_text(encoding="utf-8")).get("command", "")
+            if command in {"services_restart", "restart"}:
+                service_status["admin"] = "stopping"
+                service_status["camera"] = "stopping"
+        except (OSError, json.JSONDecodeError, AttributeError):
+            service_status["admin"] = "starting"
+    return {**runtime, "services": service_status, "cameras": cameras, "objects": [dict(r) for r in object_rows], "matches_today": matches_today, "objects_last_hour": objects_last_hour, "system_metrics": get_system_metrics()}
 
 
 @app.get("/api/admin/engine-settings")
@@ -1529,8 +1628,90 @@ def list_ml_samples(_: str = Depends(require_admin)):
     else:
         maturity_level = "Validation measured"
     maturity = {"score": maturity_score, "level": maturity_level, "reviewed_samples": reviewed_total, "class_count": class_total, "class_balance": round(class_balance, 3), "map50_95": map_score_value, "components": {"sample_volume": round(volume_score), "class_coverage": round(coverage_score), "class_balance": round(balance_score), "trained_model": round(model_score), "validation": round(validation_score)}}
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": dict(ml_training_state), "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    training_state = dict(ml_training_state)
+    launcher_progress = read_launcher_training_progress() if training_state.get("status") == "running" else None
+    if launcher_progress:
+        current_batch = int(training_state.get("batch") or 0)
+        current_total = int(training_state.get("batches") or 0)
+        if launcher_progress["batch"] >= current_batch and launcher_progress["batches"] >= current_total:
+            training_state.update(launcher_progress)
+            training_state["progress_source"] = "launcher_output"
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
+
+@app.get("/api/admin/ml/logs")
+def list_ml_training_logs(_: str = Depends(require_admin)):
+    return {"entries": read_training_log(), "training": dict(ml_training_state), "updated_at": utc_now()}
+
+
+
+@app.get("/api/admin/ml/history")
+def list_ml_training_history(run_id: str | None = None, _: str = Depends(require_admin)):
+    """Read epoch metrics from completed Ultralytics results.csv files."""
+    runs_dir = ML_DATA_DIR / "runs"
+    runs: list[dict[str, Any]] = []
+    if runs_dir.is_dir():
+        for result_path in runs_dir.glob("*/results.csv"):
+            try:
+                if result_path.is_symlink() or result_path.stat().st_size > 5 * 1024 * 1024:
+                    continue
+                run_path = result_path.parent
+                if run_path.resolve().parent != runs_dir.resolve():
+                    continue
+                with result_path.open("r", encoding="utf-8-sig", newline="") as source:
+                    rows = list(csv.DictReader(source))
+                if not rows:
+                    continue
+                newest_epoch = max(int(float(row.get("epoch") or 0)) for row in rows)
+                runs.append({"id": run_path.name, "epochs": len(rows), "last_epoch": newest_epoch, "updated_at": datetime.fromtimestamp(result_path.stat().st_mtime, timezone.utc).isoformat()})
+            except (OSError, UnicodeDecodeError, ValueError, csv.Error):
+                logger.debug("Skipping unreadable training history file %s", result_path, exc_info=True)
+    runs.sort(key=lambda item: item["updated_at"], reverse=True)
+    selected = next((item for item in runs if item["id"] == run_id), None) if run_id else (runs[0] if runs else None)
+    metric_columns = {
+        "box_loss": ("train/box_loss", "Box loss"),
+        "class_loss": ("train/cls_loss", "Class loss"),
+        "l1_loss": ("train/l1_loss", "L1 regression loss"),
+        "dfl_loss": ("train/dfl_loss", "DFL loss"),
+        "precision": ("metrics/precision(B)", "Precision"),
+        "recall": ("metrics/recall(B)", "Recall"),
+        "map50": ("metrics/mAP50(B)", "mAP50"),
+        "map50_95": ("metrics/mAP50-95(B)", "mAP50–95"),
+        "learning_rate": ("lr/pg0", "Learning rate"),
+    }
+    metrics: dict[str, dict[str, Any]] = {
+        key: {"label": label, "points": []} for key, (_, label) in metric_columns.items()
+    }
+    if selected:
+        results_path = runs_dir / selected["id"] / "results.csv"
+        try:
+            with results_path.open("r", encoding="utf-8-sig", newline="") as source:
+                for row in csv.DictReader(source):
+                    try:
+                        epoch = int(float(row.get("epoch") or 0))
+                    except (TypeError, ValueError):
+                        continue
+                    if epoch < 1:
+                        continue
+                    for key, (column, _) in metric_columns.items():
+                        raw_value = row.get(column)
+                        if raw_value in (None, ""):
+                            continue
+                        try:
+                            value = float(raw_value)
+                        except (TypeError, ValueError):
+                            continue
+                        if value == value and abs(value) != float("inf"):
+                            metrics[key]["points"].append({"epoch": epoch, "value": value})
+        except (OSError, UnicodeDecodeError, csv.Error):
+            logger.exception("Could not load metrics for training run %s", selected["id"])
+    return {
+        "runs": runs,
+        "selected_run": selected["id"] if selected else None,
+        "metrics": metrics,
+        "dfl_available": bool(metrics["dfl_loss"]["points"]),
+        "regression_note": "This run records L1 regression loss rather than DFL loss." if metrics["l1_loss"]["points"] and not metrics["dfl_loss"]["points"] else "",
+    }
 
 @app.post("/api/admin/ml/datasets/import")
 def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(require_admin)):
@@ -1674,7 +1855,7 @@ def batch_review_ml_samples(payload: dict[str, Any], _: str = Depends(require_ad
     return {"ok": True, "updated": cur.rowcount, "label": label if choice == "change_label" else None}
 
 
-def run_ml_training(device_choice: str, dataset_source: str) -> None:
+def run_ml_training(device_choice: str, dataset_source: str, initial_model: str = "auto", resource_mode: bool = False) -> None:
     global ml_training_state
     job_started = time.monotonic()
     write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
@@ -1739,10 +1920,30 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
             raise RuntimeError("Training packages are not installed. Enable optional YOLO/GPU support in the Windows launcher first.") from exc
         custom_checkpoint = ML_DATA_DIR / "active" / "best.pt"
         base_checkpoint = MODEL_DIR / "yolo26m.pt"
-        model_file = str(custom_checkpoint if custom_checkpoint.is_file() else base_checkpoint if base_checkpoint.is_file() else "yolo26m.pt")
+        if initial_model == "yolo26m":
+            model_path = base_checkpoint if base_checkpoint.is_file() else Path("yolo26m.pt")
+        elif initial_model == "best.pt":
+            if not custom_checkpoint.is_file():
+                raise RuntimeError("Your custom best.pt is not available. Train a custom model first.")
+            model_path = custom_checkpoint
+        elif initial_model.startswith("source:"):
+            source_name = Path(initial_model.split(":", 1)[1]).name
+            model_path = (ML_MODEL_SOURCES_DIR / source_name).resolve()
+            if model_path.parent != ML_MODEL_SOURCES_DIR.resolve() or not model_path.is_file() or model_path.suffix.lower() != ".pt":
+                raise RuntimeError("The selected imported model is missing or invalid. Refresh model sources and try again.")
+        else:
+            model_path = custom_checkpoint if custom_checkpoint.is_file() else base_checkpoint if base_checkpoint.is_file() else Path("yolo26m.pt")
+        model_file = str(model_path)
         device_kind, _, device_value = device_choice.partition(":")
-        device_index = int(device_value or 0)
-        if device_kind == "gpu":
+        device_index = int(device_value or 0) if device_value.isdigit() else 0
+        if device_kind == "gpu" and device_value == "all":
+            if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
+                raise RuntimeError("CUDA GPUs are not available to the training runtime. Select a CPU option or install CUDA-enabled PyTorch support.")
+            gpu_ids = list(range(torch.cuda.device_count()))
+            train_device = gpu_ids
+            device_label = "All NVIDIA GPUs · " + ", ".join(f"GPU {index} {torch.cuda.get_device_name(index)}" for index in gpu_ids)
+            torch.set_num_threads(max(1, (os.cpu_count() or 1) - 1))
+        elif device_kind == "gpu":
             if not torch.cuda.is_available():
                 raise RuntimeError("The selected NVIDIA GPU is visible to Windows but CUDA is unavailable in this Python environment. Choose a CPU thread option or install the CUDA-enabled PyTorch support from the launcher.")
             if device_index >= torch.cuda.device_count():
@@ -1754,7 +1955,8 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
             torch.set_num_threads(cpu_threads)
             train_device = "cpu"
             device_label = f"CPU · {cpu_threads} thread{'s' if cpu_threads != 1 else ''}"
-        ml_training_state = {"status": "running", "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
+        job_kind = "enrichment" if resource_mode else "training"
+        ml_training_state = {"status": "running", "job_kind": job_kind, "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
         model = YOLO(model_file)
         def scalar(value: Any) -> float | None:
             try:
@@ -1818,9 +2020,9 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
             elapsed = time.monotonic() - job_started
             epoch = min(epochs_total, epoch_index + 1)
             overall_progress = min(99, max(0, int(((epoch_index + fraction) / epochs_total) * 100)))
-            avg_epoch = elapsed / max(0.05, epoch_index + fraction)
+            completed_epochs = min(float(epochs_total), max(0.0, float(epoch_index)) + fraction)
             stats = current_stats(trainer)
-            ml_training_state.update({"status": "running", "epoch": epoch, "epochs": epochs_total, "batch": min(batch_index, total_batches), "batches": total_batches, "progress": overall_progress, "elapsed_seconds": int(elapsed), "eta_seconds": int(max(0, avg_epoch * epochs_total - elapsed)), "stats": stats})
+            ml_training_state.update({"status": "running", "epoch": epoch, "epochs": epochs_total, "batch": min(batch_index, total_batches), "batches": total_batches, "progress": overall_progress, "elapsed_seconds": int(elapsed), "eta_seconds": estimate_training_eta(elapsed, completed_epochs, epochs_total), "stats": stats})
 
         def update_epoch(trainer):
             epoch = min(epochs_total, int(getattr(trainer, "epoch", -1)) + 1)
@@ -1828,8 +2030,7 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
             summaries = [f"{name} {value:.3f}" for name, value in (("mAP50", stats.get("map50")), ("precision", stats.get("precision")), ("recall", stats.get("recall"))) if value is not None]
             stop_requested = bool(ml_training_state.get("stop_requested"))
             elapsed = time.monotonic() - job_started
-            avg_epoch = elapsed / max(1, epoch)
-            ml_training_state.update({"status": "running", "epoch": epoch, "epochs": epochs_total, "batch": ml_training_state.get("batches", 0), "progress": int(epoch / epochs_total * 100), "elapsed_seconds": int(elapsed), "eta_seconds": int(max(0, avg_epoch * epochs_total - elapsed)), "stats": stats, "message": "Stop requested · finishing this epoch and saving the checkpoint." if stop_requested else f"Epoch {epoch}/{epochs_total} · {', '.join(summaries) if summaries else 'model is updating'}"})
+            ml_training_state.update({"status": "running", "epoch": epoch, "epochs": epochs_total, "batch": ml_training_state.get("batches", 0), "progress": int(epoch / epochs_total * 100), "elapsed_seconds": int(elapsed), "eta_seconds": estimate_training_eta(elapsed, epoch, epochs_total), "stats": stats, "message": "Stop requested · finishing this epoch and saving the checkpoint." if stop_requested else f"Epoch {epoch}/{epochs_total} · {', '.join(summaries) if summaries else 'model is updating'}"})
             write_training_log("INFO", "Training epoch completed", epoch=epoch, epochs=epochs_total, stats=stats, elapsed_seconds=int(elapsed))
             if stop_requested:
                 trainer.stop = True
@@ -1837,7 +2038,10 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
         model.add_callback("on_train_epoch_end", update_epoch)
         write_training_log("INFO", "Model fit started", model=Path(model_file).name, device=ml_training_state["device"], images=sample_count, epochs=epochs_total)
         run_name = f"vaos_objects_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=640, batch=4, device=train_device, workers=0, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False)
+        cpu_worker_budget = max(0, (os.cpu_count() or 1) - 1)
+        training_workers = max(0, cpu_worker_budget // max(1, len(train_device))) if resource_mode and isinstance(train_device, list) else 0
+        training_batch = max(4, 4 * len(train_device)) if resource_mode and isinstance(train_device, list) else 4
+        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=640, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False)
         best = Path(result.save_dir) / "weights" / "best.pt"
         stopped_early = bool(ml_training_state.get("stop_requested"))
         if stopped_early and not best.is_file():
@@ -1847,22 +2051,28 @@ def run_ml_training(device_choice: str, dataset_source: str) -> None:
         active = ML_DATA_DIR / "active"
         active.mkdir(parents=True, exist_ok=True)
         import shutil
+        if (active / "best.pt").is_file():
+            backup_dir = active / "backups"
+            backup_dir.mkdir(parents=True, exist_ok=True)
+            backup_path = backup_dir / f"best_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}.pt"
+            shutil.copy2(active / "best.pt", backup_path)
+            write_training_log("INFO", "Previous custom model backed up", backup=str(backup_path))
         temp_model = active / "best.pt.new"
         shutil.copy2(best, temp_model)
         temp_model.replace(active / "best.pt")
         result_metrics = getattr(result, "results_dict", {}) or {}
         final_metrics = {str(key): round(float(value), 4) for key, value in result_metrics.items() if isinstance(value, (int, float))}
-        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": "Existing custom best.pt" if custom_checkpoint.is_file() else "YOLO26m"}
+        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": Path(model_file).name, "resource_mode": bool(resource_mode), "workers": training_workers, "batch": training_batch}
         metadata_tmp = active / "metadata.json.new"
         metadata_tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         metadata_tmp.replace(active / "metadata.json")
-        ml_training_state = {"status": "stopped" if stopped_early else "complete", "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
+        ml_training_state = {"status": "stopped" if stopped_early else "complete", "job_kind": job_kind, "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
         write_training_log("INFO", "Training finished", status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=int(time.monotonic() - job_started))
     except Exception as exc:
         logger.exception("VAOS object model training failed")
         error_message = str(exc)[:400] or exc.__class__.__name__
         write_training_log("ERROR", "Training failed", error=error_message, elapsed_seconds=int(time.monotonic() - job_started))
-        ml_training_state = {"status": "error", "message": error_message, "progress": int(ml_training_state.get("progress", 0)), "epoch": ml_training_state.get("epoch", 0), "epochs": ml_training_state.get("epochs", 0), "stats": ml_training_state.get("stats", {}), "device": ml_training_state.get("device", device_choice.upper())}
+        ml_training_state = {"status": "error", "job_kind": "enrichment" if resource_mode else "training", "message": error_message, "progress": int(ml_training_state.get("progress", 0)), "epoch": ml_training_state.get("epoch", 0), "epochs": ml_training_state.get("epochs", 0), "stats": ml_training_state.get("stats", {}), "device": ml_training_state.get("device", device_choice.upper())}
     finally:
         ml_training_lock.release()
 
@@ -1903,6 +2113,166 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
         write_training_log("ERROR", "Training worker could not be launched", error=str(exc)[:400])
         raise HTTPException(status_code=503, detail="VAOS could not start its background training worker. See the Training activity log and admin service error log.") from exc
     return {"status": "preparing", "message": "Training setup started."}
+
+
+@app.get("/api/admin/ml/model-sources")
+def list_ml_model_sources(_: str = Depends(require_admin)):
+    sources = []
+    base = MODEL_DIR / "yolo26m.pt"
+    if base.is_file():
+        sources.append({"id": "yolo26m", "name": "YOLO26m base model", "path": str(base), "kind": "built-in"})
+    custom = ML_DATA_DIR / "active" / "best.pt"
+    if custom.is_file():
+        sources.append({"id": "best.pt", "name": "Current best.pt", "path": str(custom), "kind": "custom"})
+    for path in sorted(ML_MODEL_SOURCES_DIR.glob("*.pt"), key=lambda item: item.name.casefold()):
+        sources.append({"id": f"source:{path.name}", "name": path.stem, "path": str(path), "kind": "imported"})
+    with db_connection() as db:
+        reviewed_count = int(db.execute("SELECT COUNT(*) FROM ml_samples WHERE review_state IN ('confirmed','corrected')").fetchone()[0])
+        reviewed_types = int(db.execute("SELECT COUNT(DISTINCT COALESCE(confirmed_label,suggested_label)) FROM ml_samples WHERE review_state IN ('confirmed','corrected') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL").fetchone()[0])
+    return {"sources": sources, "dataset": {"coco2017_ready": coco_dataset_layout_ready(), "reviewed_count": reviewed_count, "reviewed_types": reviewed_types}, "training": {"status": ml_training_state.get("status", "idle")}, "devices": training_device_inventory()}
+
+
+def get_huggingface_yolo_models() -> list[dict[str, Any]]:
+    """Return only official YOLO26 detection checkpoints from the Ultralytics Hub repo."""
+    api_url = f"https://huggingface.co/api/models/{HF_YOLO_REPO_ID}"
+    request = urllib.request.Request(api_url, headers={"User-Agent": "VAOS-ModelPicker/1.0", "Accept": "application/json"})
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            repository = json.loads(response.read(2_000_000).decode("utf-8"))
+    except (OSError, urllib.error.URLError, TimeoutError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail="Could not reach Hugging Face to load the official YOLO26 model list. Check internet access and retry.") from exc
+    available = {item.get("rfilename") for item in repository.get("siblings", []) if isinstance(item, dict)}
+    return [{"id": filename, "name": f"YOLO26{Path(filename).stem[-1].upper()} · {filename}", "repo": HF_YOLO_REPO_ID, "filename": filename} for filename in sorted(HF_YOLO_FILES & available, key=lambda name: "nsmlx".index(name[6]))]
+
+
+@app.get("/api/admin/ml/huggingface-models")
+def list_huggingface_yolo_models(_: str = Depends(require_admin)):
+    return {"models": get_huggingface_yolo_models(), "repository": HF_YOLO_REPO_ID}
+
+
+@app.post("/api/admin/ml/huggingface-models")
+def download_huggingface_yolo_model(payload: dict[str, Any], _: str = Depends(require_admin)):
+    filename = str(payload.get("filename", ""))
+    available = {model["filename"] for model in get_huggingface_yolo_models()}
+    if filename not in available or filename not in HF_YOLO_FILES:
+        raise HTTPException(status_code=400, detail="Choose an official YOLO26 detection checkpoint from the available Hugging Face list.")
+    if ml_training_lock.locked():
+        raise HTTPException(status_code=409, detail="Wait for the current training run to finish before downloading another model.")
+    destination = ML_MODEL_SOURCES_DIR / f"hf_{filename}"
+    if destination.is_file() and destination.stat().st_size >= 1_000_000:
+        return {"id": f"source:{destination.name}", "name": destination.stem, "bytes": destination.stat().st_size, "reused": True}
+    temporary = ML_MODEL_SOURCES_DIR / f"{destination.name}.part"
+    model_url = f"https://huggingface.co/{HF_YOLO_REPO_ID}/resolve/main/{filename}?download=true"
+    request = urllib.request.Request(model_url, headers={"User-Agent": "VAOS-ModelPicker/1.0", "Accept": "application/octet-stream"})
+    total = 0
+    prefix = bytearray()
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response, temporary.open("wb") as output:
+            content_type = response.headers.get("Content-Type", "").lower()
+            if "text/html" in content_type:
+                raise RuntimeError("Hugging Face returned a web page instead of model weights.")
+            while chunk := response.read(8 * 1024 * 1024):
+                if len(prefix) < 512:
+                    prefix.extend(chunk[:512 - len(prefix)])
+                total += len(chunk)
+                if total > 2 * 1024 * 1024 * 1024:
+                    raise RuntimeError("This model is larger than VAOS's 2 GB download limit.")
+                output.write(chunk)
+        if total < 1_000_000 or bytes(prefix).lstrip().lower().startswith((b"<!doctype html", b"<html")):
+            raise RuntimeError("The download was too small or was not a model file.")
+        if not bytes(prefix).startswith((b"PK\x03\x04", b"\x80")):
+            raise RuntimeError("The downloaded file does not have a recognized PyTorch checkpoint signature.")
+        temporary.replace(destination)
+        write_training_log("INFO", "Official Hugging Face model downloaded", repository=HF_YOLO_REPO_ID, filename=filename, bytes=total)
+        return {"id": f"source:{destination.name}", "name": destination.stem, "bytes": total, "reused": False}
+    except HTTPException:
+        temporary.unlink(missing_ok=True)
+        raise
+    except (OSError, urllib.error.URLError, TimeoutError, RuntimeError) as exc:
+        temporary.unlink(missing_ok=True)
+        logger.exception("Could not download official Hugging Face model %s", filename)
+        raise HTTPException(status_code=503, detail=f"Could not download {filename} from Hugging Face: {str(exc)[:240]}") from exc
+
+
+@app.post("/api/admin/ml/model-sources")
+async def upload_ml_model_source(file: UploadFile = File(...), _: str = Depends(require_admin)):
+    original_name = Path(file.filename or "").name
+    if Path(original_name).suffix.lower() != ".pt" or not original_name:
+        raise HTTPException(status_code=400, detail="Choose a PyTorch YOLO model file with a .pt extension.")
+    safe_stem = "".join(character for character in Path(original_name).stem if character.isalnum() or character in "._-").strip("._-")[:80]
+    if not safe_stem:
+        raise HTTPException(status_code=400, detail="The model filename needs letters or numbers.")
+    if ml_training_lock.locked():
+        raise HTTPException(status_code=409, detail="Wait for the current training run to finish before importing another model.")
+    temporary = ML_MODEL_SOURCES_DIR / f"{safe_stem}.pt.uploading"
+    destination = ML_MODEL_SOURCES_DIR / f"{safe_stem}.pt"
+    total = 0
+    try:
+        with temporary.open("wb") as target:
+            while chunk := await file.read(8 * 1024 * 1024):
+                total += len(chunk)
+                if total > 2 * 1024 * 1024 * 1024:
+                    raise HTTPException(status_code=413, detail="Model files must be 2 GB or smaller.")
+                target.write(chunk)
+        if total < 1_000_000:
+            raise HTTPException(status_code=400, detail="That file is too small to be a usable model checkpoint.")
+        if destination.exists():
+            digest = hashlib.sha256()
+            with temporary.open("rb") as model_file:
+                for chunk in iter(lambda: model_file.read(8 * 1024 * 1024), b""):
+                    digest.update(chunk)
+            suffix = digest.hexdigest()[:8]
+            destination = ML_MODEL_SOURCES_DIR / f"{safe_stem}_{suffix}.pt"
+        temporary.replace(destination)
+        write_training_log("INFO", "Model source imported", name=destination.name, bytes=total)
+        return {"id": f"source:{destination.name}", "name": destination.stem, "bytes": total}
+    except HTTPException:
+        temporary.unlink(missing_ok=True)
+        raise
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        logger.exception("Could not save an imported model source")
+        raise HTTPException(status_code=503, detail="Could not save this model. Check available disk space and the admin log.") from exc
+    finally:
+        await file.close()
+
+
+@app.post("/api/admin/ml/enrichment")
+def start_ml_enrichment(payload: dict[str, Any], _: str = Depends(require_admin)):
+    lock_acquired = False
+    try:
+        checkpoint = str(payload.get("checkpoint", "yolo26m"))
+        source_list = list_ml_model_sources(_).get("sources", [])
+        source_ids = {item["id"] for item in source_list if isinstance(item, dict) and item.get("id")}
+        if checkpoint not in source_ids:
+            raise HTTPException(status_code=400, detail="Choose a model source that appears in the available model list.")
+        if not coco_dataset_layout_ready():
+            raise HTTPException(status_code=409, detail="Prepare COCO 2017 before enrichment. Your local COCO files will be reused.")
+        if ml_dataset_import_state.get("status") in {"preparing", "downloading"}:
+            raise HTTPException(status_code=409, detail="Wait for COCO 2017 preparation to finish before enriching the model.")
+        if not ml_training_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="A training run is already active. Wait for it to finish before starting enrichment.")
+        lock_acquired = True
+        inventory = training_device_inventory()
+        device_choice = "gpu:all" if inventory["gpus"] else f"cpu:{inventory['cpu_threads']}"
+        device_summary = "all available CUDA GPUs" if inventory["gpus"] else f"CPU · {inventory['cpu_threads']} threads (no NVIDIA GPU detected)"
+        ml_training_state.update({"status": "preparing", "message": f"Model enrichment queued · using {device_summary} and preparing COCO 2017 with reviewed live samples.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_summary, "elapsed_seconds": 0, "eta_seconds": None, "job_kind": "enrichment"})
+        write_training_log("INFO", "Model enrichment requested", checkpoint=checkpoint, dataset="COCO 2017 + human-reviewed camera samples", resources="all CUDA GPUs, CPU data workers, managed system memory")
+        threading.Thread(target=run_ml_training, args=(device_choice, "combined", checkpoint, True), name="vaos-ml-enrichment", daemon=True).start()
+        lock_acquired = False  # The worker releases the lock in its finally block.
+    except HTTPException:
+        if lock_acquired:
+            ml_training_lock.release()
+        raise
+    except Exception as exc:
+        if lock_acquired:
+            ml_training_lock.release()
+        logger.exception("Could not prepare the VAOS model enrichment request")
+        message = "Could not prepare model enrichment. Check Training activity and the admin service error log for details."
+        ml_training_state.update({"status": "error", "job_kind": "enrichment", "message": message})
+        write_training_log("ERROR", "Model enrichment request failed before the worker started", error=str(exc)[:400])
+        raise HTTPException(status_code=503, detail=message) from exc
+    return {"status": "preparing", "message": "Model enrichment started. The existing best.pt will be backed up before any replacement."}
 
 
 @app.post("/api/admin/ml/train/stop")

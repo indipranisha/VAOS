@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VAOS · Training Activity</title><link rel="stylesheet" href="/static/style.css?v=vaos-0.10.1">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+</head>
+<body class="training-shell">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">VIDEO ANALYTICS OS</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</a>
+      <a class="nav-link" href="/live-system"><span class="nav-icon" aria-hidden="true">◉</span>Live system</a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link active" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
+      <a class="nav-link" href="/#engine-settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+    </nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools">{% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}<button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local analytics engine</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+
+  <main class="page-wrap training-page training-activity-page">
+    <header class="ml-page-heading activity-page-heading"><div><p class="eyebrow">MODEL WORKSPACE / RUN HISTORY</p><h2>Training activity</h2><p class="lead">Live events from model preparation and training on this PC.</p></div><div class="activity-live-status"><span id="activity-run-state" class="state-indicator" data-state="idle"><i></i><span>Idle</span></span><span id="activity-last-updated" class="subtle-tag">Waiting for activity…</span><button id="activity-refresh" class="button button-secondary button-small" type="button">Refresh now</button></div></header>
+
+    <section class="panel activity-history-panel" aria-labelledby="history-heading">
+      <div class="section-title-row activity-history-toolbar">
+        <div><p class="eyebrow">MODEL PERFORMANCE / EPOCH HISTORY</p><h3 id="history-heading">Training metrics by epoch</h3><p class="helper">Charts use the values saved by Ultralytics for each epoch. Each chart has its own vertical scale.</p></div>
+        <label class="activity-run-picker">Saved training run<select id="history-run-select" aria-label="Choose a saved training run"><option value="">Loading saved runs…</option></select></label>
+      </div>
+      <p id="history-run-summary" class="helper" aria-live="polite">Loading metrics…</p>
+      <div id="history-metric-grid" class="activity-history-grid"><div class="empty-state">Loading epoch metrics…</div></div>
+      <details class="history-values-details"><summary>Show exact values by epoch</summary><div class="live-table-wrap"><table class="live-activity-table"><thead id="history-values-head"></thead><tbody id="history-values-body"></tbody></table></div></details>
+      <p id="history-metric-note" class="helper"></p>
+    </section>
+    <section class="activity-summary-grid" aria-label="Training run summary">
+      <article class="activity-summary-card"><span class="metric-label">CURRENT RUN</span><strong id="activity-run-title">No active run</strong><small id="activity-run-message">Waiting for the local training service.</small></article>
+      <article class="activity-summary-card"><span class="metric-label">PROGRESS</span><strong id="activity-progress-value">—</strong><progress id="activity-progress" max="100" value="0"></progress><small id="activity-progress-detail">Epoch and batch details appear here</small></article>
+      <article class="activity-summary-card"><span class="metric-label">COMPUTE</span><strong id="activity-device">—</strong><small id="activity-compute-details">Selected CPU or GPU</small></article>
+      <article class="activity-summary-card"><span class="metric-label">RUN TIME</span><strong id="activity-elapsed">—</strong><small id="activity-eta">Estimated time remaining</small></article>
+    </section>
+
+    <section class="panel activity-log-panel">
+      <div class="section-title-row activity-log-toolbar"><div><p class="eyebrow">LIVE EVENT STREAM</p><h3>Training activity log</h3><p class="helper">Newest entries appear first. Updates automatically every 5 seconds.</p></div><div class="activity-filters"><input id="activity-log-search" type="search" placeholder="Search events…" aria-label="Search training log"><select id="activity-log-level" aria-label="Filter by severity"><option value="all">All levels</option><option value="ERROR">Errors</option><option value="WARNING">Warnings</option><option value="INFO">Info</option></select><span class="subtle-tag" id="activity-log-count">0 entries</span></div></div>
+      <div id="activity-log-list" class="activity-log-list"><div class="empty-state">Loading training events…</div></div>
+      <nav class="live-pagination activity-pagination" aria-label="Training log pages"><span id="activity-log-page-label">Page 1 of 1</span><div><button class="button button-secondary button-small" id="activity-log-prev" type="button">Previous</button><button class="button button-secondary button-small" id="activity-log-next" type="button">Next</button></div></nav>
+      <p id="activity-log-error" class="helper live-error-note" aria-live="polite"></p>
+    </section>
+    <footer class="live-page-footer"><a href="/training">← Return to ML Training</a><span>Log entries are stored locally in VAOS data.</span></footer>
+  </main>
+
+  <script src="/static/theme.js?v=4"></script>
+  <script>
+const $=id=>document.getElementById(id),logState={entries:[],page:1,pageSize:15,busy:false};
+function escapeHtml(value){return String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));}
+const historyMetricOrder=['box_loss','class_loss','l1_loss','dfl_loss','precision','recall','map50','map50_95','learning_rate'];
+const historyMetricColors={box_loss:'#5576dc',class_loss:'#c16b54',l1_loss:'#8e75c9',dfl_loss:'#7b8b9b',precision:'#3d9877',recall:'#c18b36',map50:'#2f8fbd',map50_95:'#596bc7',learning_rate:'#ae6494'};
+function historyChartMarkup(key,metric){
+  const points=metric&&metric.points?metric.points:[],label=metric&&metric.label?metric.label:key.replaceAll('_',' ');
+  if(!points.length){const note=key==='dfl_loss'?'This run did not save a DFL loss column.':'No values were saved for this metric.';return '<article class="history-chart-card history-chart-empty"><div class="history-chart-heading"><strong>'+escapeHtml(key==='dfl_loss'?'DFL loss':label)+'</strong><span>Unavailable</span></div><div class="history-chart-placeholder">'+escapeHtml(note)+'</div></article>';}
+  const width=360,height=132,left=42,right=12,top=12,bottom=27,values=points.map(point=>Number(point.value)),epochs=points.map(point=>Number(point.epoch)),min=Math.min.apply(null,values),max=Math.max.apply(null,values),span=Math.max(max-min,Math.abs(max)*.04,.000001),low=min-span*.12,high=max+span*.12,color=historyMetricColors[key]||'#5275d7';
+  const x=function(epoch){return points.length===1?(left+width-right)/2:left+(epoch-Math.min.apply(null,epochs))/(Math.max.apply(null,epochs)-Math.min.apply(null,epochs))*(width-left-right);};
+  const y=function(value){return top+(high-value)/(high-low)*(height-top-bottom);};
+  const path=points.map(function(point,index){return (index?'L':'M')+x(Number(point.epoch)).toFixed(1)+','+y(Number(point.value)).toFixed(1);}).join(' ');
+  const circles=points.map(function(point){return '<circle cx="'+x(Number(point.epoch)).toFixed(1)+'" cy="'+y(Number(point.value)).toFixed(1)+'" r="3.2" fill="'+color+'"><title>Epoch '+Number(point.epoch)+' · '+Number(point.value).toFixed(5)+'</title></circle>';}).join('');
+  const startEpoch=Math.min.apply(null,epochs),endEpoch=Math.max.apply(null,epochs),midEpoch=Math.round((startEpoch+endEpoch)/2);
+  const midLabel=endEpoch>startEpoch?'<text x="'+x(midEpoch).toFixed(1)+'" y="'+(height-5)+'" text-anchor="middle" class="history-axis-label">E'+midEpoch+'</text>':'';
+  return '<article class="history-chart-card"><div class="history-chart-heading"><strong>'+escapeHtml(label)+'</strong><span>'+Number(points[points.length-1].value).toFixed(4)+'</span></div><svg class="history-chart-svg" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="'+escapeHtml(label)+' by epoch"><line x1="'+left+'" y1="'+top+'" x2="'+(width-right)+'" y2="'+top+'" class="history-gridline"/><line x1="'+left+'" y1="'+((top+height-bottom)/2)+'" x2="'+(width-right)+'" y2="'+((top+height-bottom)/2)+'" class="history-gridline"/><line x1="'+left+'" y1="'+(height-bottom)+'" x2="'+(width-right)+'" y2="'+(height-bottom)+'" class="history-gridline"/><text x="2" y="'+(top+4)+'" class="history-axis-label">'+high.toFixed(3)+'</text><text x="2" y="'+(height-bottom+4)+'" class="history-axis-label">'+low.toFixed(3)+'</text><path d="'+path+'" fill="none" stroke="'+color+'" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/>'+circles+'<text x="'+left+'" y="'+(height-5)+'" class="history-axis-label">E'+startEpoch+'</text>'+midLabel+'<text x="'+(width-right)+'" y="'+(height-5)+'" text-anchor="end" class="history-axis-label">E'+endEpoch+'</text></svg></article>';
+}
+function renderTrainingHistory(data){
+  const runs=data.runs||[],select=$('history-run-select'),selected=data.selected_run||'';
+  if(!runs.length){select.innerHTML='<option value="">No saved run results</option>';select.disabled=true;$('history-run-summary').textContent='No results.csv file was found in the local training runs.';$('history-metric-grid').innerHTML='<div class="empty-state">Training metrics will appear here after a run saves its epoch results.</div>';$('history-values-head').innerHTML='';$('history-values-body').innerHTML='';return;}
+  select.disabled=false;select.innerHTML=runs.map(function(run){return '<option value="'+escapeHtml(run.id)+'">'+escapeHtml(run.id)+' · '+Number(run.last_epoch)+' epochs</option>';}).join('');select.value=selected;
+  $('history-run-summary').textContent=selected+' · '+Number((runs.find(function(run){return run.id===selected;})||{}).last_epoch||0)+' completed epochs · values read from the saved training results.';
+  const metrics=data.metrics||{};$('history-metric-grid').innerHTML=historyMetricOrder.map(function(key){return historyChartMarkup(key,metrics[key]);}).join('');
+  const epochs=(metrics.box_loss&&metrics.box_loss.points)||[],header=['Epoch','Box','Class','L1 regression','DFL','Precision','Recall','mAP50','mAP50–95','Learning rate'];$('history-values-head').innerHTML='<tr>'+header.map(function(value){return '<th>'+escapeHtml(value)+'</th>';}).join('')+'</tr>';
+  $('history-values-body').innerHTML=epochs.map(function(point){const values=historyMetricOrder.map(function(key){const series=(metrics[key]&&metrics[key].points)||[];return series.find(function(value){return Number(value.epoch)===Number(point.epoch);});});return '<tr><td>'+Number(point.epoch)+'</td>'+values.map(function(item){return '<td>'+(item?Number(item.value).toFixed(5):'<span class="subtle-tag">—</span>')+'</td>';}).join('')+'</tr>';}).join('');
+  $('history-metric-note').textContent=data.regression_note||(!data.dfl_available?'DFL is unavailable when the saved results file has no train/dfl_loss column.':'');
+}
+async function loadTrainingHistory(runId){
+  const path='/api/admin/ml/history'+(runId?'?run_id='+encodeURIComponent(runId):'');
+  try{renderTrainingHistory(await api(path));}catch(error){$('history-run-summary').textContent='Training history could not be loaded: '+error.message;$('history-metric-grid').innerHTML='<div class="empty-state">Check the admin service and reload this page.</div>';}
+}function formatTime(value){try{return value?new Date(value).toLocaleString():'Time unavailable';}catch{return value||'Time unavailable';}}
+async function api(path){const response=await fetch(path,{credentials:'same-origin',cache:'no-store'}),body=await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body.detail||body.message||`Request failed (${response.status})`);error.status=response.status;throw error;}return body;}
+function estimateRemainingSeconds(training){const total=Number(training.epochs||0),elapsed=Number(training.elapsed_seconds||0);if(total<=0||elapsed<=0)return null;const epoch=Number(training.epoch||0),batches=Number(training.batches||0),batch=Number(training.batch||0),fraction=batches>0?Math.max(0,Math.min(1,batch/batches)):0;let completed=Math.max(0,epoch-1)+fraction;if(completed<=0&&Number(training.progress)>0)completed=Number(training.progress)/100*total;if(completed<.05)return null;completed=Math.min(total,completed);return Math.max(0,Math.round(elapsed*(total-completed)/completed));}
+function updateRun(training){const state=String(training.status||'idle').toLowerCase(),label=state==='running'?'Running':state==='preparing'?'Preparing':state==='stopping'?'Stopping':state==='complete'?'Complete':state==='error'?'Error':state==='stopped'?'Stopped':'Idle';$('activity-run-state').dataset.state=state;$('activity-run-state').querySelector('span').textContent=label;$('activity-run-title').textContent=training.job_kind==='enrichment'?'Updating custom model':state==='running'||state==='preparing'?'Training model':'No active run';$('activity-run-message').textContent=training.message||'No training run has been started.';const progress=Math.max(0,Math.min(100,Number(training.progress)||0));$('activity-progress').value=progress;$('activity-progress-value').textContent=['running','preparing','stopping','complete','stopped'].includes(state)?`${progress}%`:'—';$('activity-progress-detail').textContent=training.batch&&training.batches?`Epoch ${training.epoch||1} of ${training.epochs||'—'} · batch ${training.batch.toLocaleString()} / ${training.batches.toLocaleString()}`:training.epoch?`Epoch ${training.epoch} of ${training.epochs||'—'}`:'Waiting for training progress';$('activity-device').textContent=training.device||'—';$('activity-compute-details').textContent=training.device&&String(training.device).startsWith('GPU')?'GPU acceleration · local data workers':'Local CPU or GPU runtime';const elapsed=Number(training.elapsed_seconds||0),eta=estimateRemainingSeconds(training);$('activity-elapsed').textContent=elapsed?formatDuration(elapsed):'—';$('activity-eta').textContent=state==='running'&&eta!==null?`About ${formatDuration(eta)} remaining`:state==='complete'?'Run finished':state==='stopped'?'Safe stop completed':'Estimate updates during training';}
+function formatDuration(seconds){const value=Math.max(0,Number(seconds)||0),hours=Math.floor(value/3600),minutes=Math.floor((value%3600)/60);return hours?`${hours}h ${minutes}m`:`${minutes}m`;}
+function renderLog(){const query=$('activity-log-search').value.trim().toLowerCase(),level=$('activity-log-level').value,filtered=logState.entries.filter(entry=>(level==='all'||String(entry.level||'INFO').toUpperCase()===level)&&`${entry.message||''} ${JSON.stringify(entry)}`.toLowerCase().includes(query)),pages=Math.max(1,Math.ceil(filtered.length/logState.pageSize));logState.page=Math.min(logState.page,pages);const start=(logState.page-1)*logState.pageSize,entries=filtered.slice(start,start+logState.pageSize);$('activity-log-count').textContent=`${filtered.length} ${filtered.length===1?'entry':'entries'}`;$('activity-log-page-label').textContent=`Page ${logState.page} of ${pages}`;$('activity-log-prev').disabled=logState.page<=1;$('activity-log-next').disabled=logState.page>=pages;$('activity-log-list').innerHTML=entries.length?entries.map(entry=>{const severity=String(entry.level||'INFO').toLowerCase(),details=Object.fromEntries(Object.entries(entry).filter(([key])=>!['timestamp','level','message'].includes(key)));return `<article class="activity-log-entry"><span class="activity-severity severity-${escapeHtml(severity)}">${escapeHtml(severity.toUpperCase())}</span><div class="activity-log-main"><strong>${escapeHtml(entry.message||'Activity')}</strong>${Object.keys(details).length?`<pre>${escapeHtml(JSON.stringify(details,null,2))}</pre>`:''}</div><time>${escapeHtml(formatTime(entry.timestamp))}</time></article>`;}).join(''):'<div class="empty-state">No log entries match this filter.</div>';}
+async function refreshLog(){if(logState.busy)return;logState.busy=true;$('activity-refresh').disabled=true;try{let data;try{data=await api('/api/admin/ml/logs');}catch(error){if(error.status!==404)throw error;const existing=await api('/api/admin/ml/samples');data={entries:existing.training_logs||[],training:existing.training||{}};}$('activity-log-error').textContent='';logState.entries=(data.entries||[]).slice().reverse();updateRun(data.training||{});renderLog();$('activity-last-updated').textContent=`Updated ${new Date().toLocaleTimeString()}`;}catch(error){$('activity-log-error').textContent=`Could not load training activity: ${error.message}`;}finally{logState.busy=false;$('activity-refresh').disabled=false;}}
+$('activity-log-search').addEventListener('input',()=>{logState.page=1;renderLog();});$('activity-log-level').addEventListener('change',()=>{logState.page=1;renderLog();});$('activity-log-prev').addEventListener('click',()=>{logState.page--;renderLog();});$('activity-log-next').addEventListener('click',()=>{logState.page++;renderLog();});$('activity-refresh').addEventListener('click',refreshLog);$('history-run-select').addEventListener('change',function(event){loadTrainingHistory(event.target.value);});refreshLog();loadTrainingHistory();setInterval(refreshLog,5000);setInterval(function(){loadTrainingHistory($('history-run-select').value);},30000);
+  </script>
+</body>
+</html>
