@@ -987,6 +987,16 @@ body.vaos-dark .training-log-open { border-color: #34485b; color: #8dd1de; }
 .training-page .ml-workspace > .ml-model .model-about { grid-template-columns: 1fr; }
 .training-page .ml-workspace > .ml-model .model-about-row { grid-template-columns: minmax(100px, .42fr) minmax(0, 1fr); }
 .training-page .ml-steps { grid-template-columns: minmax(190px, .72fr) minmax(290px, 1.1fr) minmax(360px, 1.38fr); }
+.training-page .ml-dashboard-top { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.training-page .model-summary { min-height: 0; padding: 12px 14px; }
+.training-page .model-summary h3 { font-size: 14px; margin: 3px 0; }
+.training-page .model-summary .model-details-compact { max-height: 44px; overflow: hidden; font-size: 9px; }
+.training-page .model-summary .model-about-row { display: block; border: 0; padding: 1px 0; }
+.training-page .model-summary .model-about-row strong { display: none; }
+.training-page .model-summary .model-about-row span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.training-page .review-select { display: inline-flex; align-items: center; gap: 3px; color: var(--muted); font-size: 9px; }
+.training-page .review-select input { accent-color: #5275d7; }
+.training-page .crop-zoom-modal img { transition: transform .15s ease; cursor: zoom-in; }
 .training-page .ml-train { overflow-y: auto; }
 .training-page .dataset-prepare-row { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:2px 0 6px; padding:7px 8px; border:1px solid var(--ml-border); border-radius:9px; background:var(--ml-panel-raised); }
 .training-page .dataset-prepare-row > div { min-width:0; }
