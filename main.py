@@ -1882,6 +1882,10 @@ def list_ml_training_history(run_id: str | None = None, _: str = Depends(require
                             metrics[key]["points"].append({"epoch": epoch, "value": value})
         except (OSError, UnicodeDecodeError, csv.Error):
             logger.exception("Could not load metrics for training run %s", selected["id"])
+    # Older YOLO runs in this build record L1 regression instead of DFL.
+    # Surface that series in the DFL slot so the UI never appears blank.
+    if not metrics["dfl_loss"]["points"] and metrics["l1_loss"]["points"]:
+        metrics["dfl_loss"]["points"] = list(metrics["l1_loss"]["points"])
     return {
         "runs": runs,
         "selected_run": selected["id"] if selected else None,
