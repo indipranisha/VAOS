@@ -1884,14 +1884,15 @@ def list_ml_training_history(run_id: str | None = None, _: str = Depends(require
             logger.exception("Could not load metrics for training run %s", selected["id"])
     # Older YOLO runs in this build record L1 regression instead of DFL.
     # Surface that series in the DFL slot so the UI never appears blank.
-    if not metrics["dfl_loss"]["points"] and metrics["l1_loss"]["points"]:
+    actual_dfl_available = bool(metrics["dfl_loss"]["points"])
+    if not actual_dfl_available and metrics["l1_loss"]["points"]:
         metrics["dfl_loss"]["points"] = list(metrics["l1_loss"]["points"])
     return {
         "runs": runs,
         "selected_run": selected["id"] if selected else None,
         "metrics": metrics,
-        "dfl_available": bool(metrics["dfl_loss"]["points"]),
-        "regression_note": "This run records L1 regression loss rather than DFL loss." if metrics["l1_loss"]["points"] and not metrics["dfl_loss"]["points"] else "",
+        "dfl_available": actual_dfl_available,
+        "regression_note": "This run records L1 regression loss; the DFL chart is showing that same regression series as a compatibility view." if metrics["l1_loss"]["points"] and not actual_dfl_available else "",
     }
 
 @app.post("/api/admin/ml/datasets/import")
