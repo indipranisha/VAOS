@@ -13,6 +13,7 @@ import subprocess
 import threading
 import time
 import hashlib
+import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.request
 import zipfile
@@ -75,7 +76,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "0.10.9"
+APP_VERSION = "0.10.15"
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
 ENGINE_SETTING_DEFAULTS = {
@@ -1417,7 +1418,7 @@ def load_public_dataset_imports() -> dict[str, Any]:
             return {}
         # Only datasets with an implemented preparation and validation path are
         # exposed to training. Raw or retired registry records remain unusable.
-        return {key: item for key, item in value.items() if key in {"coco2017", "uvh26"}}
+        return {key: item for key, item in value.items() if key in {"coco2017", "uvh26", "kaggle_auto"}}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1453,7 +1454,17 @@ def local_dataset_catalog() -> list[dict[str, Any]]:
         imported = load_public_dataset_imports().get("uvh26")
         ready = bool(imported and Path(str(imported.get("data_yaml", ""))).is_file())
         downloadable = train_json.is_file() and val_json.is_file() and val_images.is_dir()
-        items.append({"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "status": "Validated · ready" if ready else "Ready to validate" if downloadable else "Download incomplete", "ready": ready, "can_prepare": downloadable, "message": "Validated majority-vote annotations for Indian road vehicles. Training can use this dataset together with reviewed samples." if ready else "Both train and validation annotations and image folders are present. Run preparation to verify every image reference and convert the boxes to YOLO format." if downloadable else "The UVH-26 download is still incomplete. Training remains disabled until both splits, annotations, and all referenced images are present."})
+        items.append({"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "status": "Validated · ready" if ready else "Ready to validate" if downloadable else "Download incomplete", "ready": ready, "can_prepare": True, "message": "Validated majority-vote annotations for Indian road vehicles. Training can use this dataset together with reviewed samples." if ready else "Download official train and validation files, then validate every image reference and convert the boxes to YOLO format." if not downloadable else "Both train and validation files are present. Run validation before using UVH-26 for training."})
+    kaggle = root / "kaggle_auto"
+    kaggle_annotations = kaggle / "Annotations" / "Annotations"
+    kaggle_images = kaggle / "auto"
+    kaggle_xml = list(kaggle_annotations.glob("*.xml")) if kaggle_annotations.is_dir() else []
+    kaggle_image_count = sum(1 for path in kaggle_images.iterdir() if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png"}) if kaggle_images.is_dir() else 0
+    kaggle_import = load_public_dataset_imports().get("kaggle_auto")
+    kaggle_ready = bool(kaggle_import and Path(str(kaggle_import.get("data_yaml", ""))).is_file())
+    kaggle_can_prepare = bool(kaggle_xml and kaggle_image_count and len(kaggle_xml) == kaggle_image_count)
+    if kaggle.exists():
+        items.append({"id": "kaggle_auto", "name": "Kaggle Auto · autorickshaws", "status": "Validated · ready" if kaggle_ready else "Ready to validate" if kaggle_can_prepare else "Image/annotation mismatch", "ready": kaggle_ready, "can_prepare": kaggle_can_prepare, "message": f"Validated {kaggle_image_count:,} Indian autorickshaw images and their Pascal VOC boxes." if kaggle_ready else f"Found {kaggle_image_count:,} images and {len(kaggle_xml):,} Pascal VOC annotation files. Validate filenames, dimensions, and boxes before training." if kaggle_can_prepare else "The local Kaggle Auto folder needs a matching image and Pascal VOC XML annotation for every sample before it can be trained."})
     objects365 = next((path for path in objects365_candidates if path.exists()), None)
     if objects365 is None:
         items.append({"id": "objects365", "name": "Objects365", "status": "Not found locally", "ready": False, "message": "No Objects365 dataset folder is present in the configured dataset directory."})
@@ -1484,9 +1495,45 @@ def prepare_uvh26_dataset() -> None:
     final_root = source_root / "vaos-uvh26-yolo"
     staging_created = False
     try:
-        ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "phase": "checking", "progress": 1, "message": "Checking UVH-26 train/validation files and verifying annotation references."})
+        ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "phase": "connecting", "progress": 0, "downloaded_bytes": 0, "expected_bytes": 90_000_000_000, "speed_bytes_per_second": 0, "message": "Resuming the official UVH-26 download to D:\\VAOS_Datasets. COCO 2017 + reviewed + Kaggle Auto training can run alongside this download."})
         if any(not annotation.is_file() for annotation, _ in split_specs.values()):
-            raise RuntimeError("UVH-26 is still downloading: the majority-vote annotations for both train and validation splits must be present.")
+            import truststore
+            truststore.inject_into_ssl()
+            from huggingface_hub import snapshot_download
+
+            allowed_patterns = [
+                "UVH-26-Train/data/**", "UVH-26-Train/UVH-26-MV-Train.json",
+                "UVH-26-Val/data/**", "UVH-26-Val/UVH-26-MV-Val.json",
+            ]
+            local_dir = source_root
+            local_dir.mkdir(parents=True, exist_ok=True)
+            # snapshot_download resumes its file cache and transfers; progress is
+            # polled from the actual destination tree, not guessed from archive size.
+            download_done = threading.Event()
+            download_error: list[BaseException] = []
+
+            def download_uvh() -> None:
+                try:
+                    snapshot_download(repo_id="iisc-aim/UVH-26", repo_type="dataset", local_dir=str(local_dir), allow_patterns=allowed_patterns, max_workers=4)
+                except BaseException as exc:
+                    download_error.append(exc)
+                finally:
+                    download_done.set()
+
+            threading.Thread(target=download_uvh, name="vaos-uvh26-download-worker", daemon=True).start()
+            previous_bytes = 0
+            previous_at = time.monotonic()
+            while not download_done.wait(5):
+                downloaded = sum(path.stat().st_size for split_root in (source_root / "UVH-26-Train", source_root / "UVH-26-Val") if split_root.exists() for path in split_root.rglob("*") if path.is_file() and ".cache" not in path.parts)
+                now = time.monotonic()
+                speed = max(0, int((downloaded - previous_bytes) / max(0.1, now - previous_at)))
+                previous_bytes, previous_at = downloaded, now
+                ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "phase": "download", "progress": min(99, int(downloaded * 100 / 90_000_000_000)), "downloaded_bytes": downloaded, "expected_bytes": 90_000_000_000, "speed_bytes_per_second": speed, "message": f"Downloading/resuming official UVH-26 · {downloaded / 1_000_000_000:.2f} GB saved · {speed / 1_000_000:.2f} MB/s. Interim COCO + reviewed + Kaggle training is independent."})
+            if download_error:
+                raise RuntimeError(f"UVH-26 download failed and can be retried/resumed: {download_error[0]}")
+        ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "phase": "checking", "progress": 1, "message": "UVH-26 files downloaded. Checking train/validation image references and annotations."})
+        if any(not annotation.is_file() for annotation, _ in split_specs.values()):
+            raise RuntimeError("UVH-26 download finished without both majority-vote train and validation annotations.")
         if final_root.exists():
             imported = load_public_dataset_imports().get("uvh26")
             if imported and Path(str(imported.get("data_yaml", ""))).is_file():
@@ -1624,6 +1671,128 @@ def prepare_uvh26_dataset() -> None:
         ml_dataset_import_state = {"status": "error", "dataset": "uvh26", "message": str(exc)[:500]}
         logger.exception("VAOS UVH-26 preparation failed")
         write_training_log("ERROR", "UVH-26 preparation failed", error=str(exc)[:400])
+    finally:
+        if ml_dataset_import_lock.locked():
+            ml_dataset_import_lock.release()
+
+
+def prepare_kaggle_auto_dataset() -> None:
+    """Validate the local Kaggle Pascal VOC sample and publish a YOLO derivative."""
+    global ml_dataset_import_state
+    source_root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")) / "kaggle_auto"
+    annotation_root = source_root / "Annotations" / "Annotations"
+    source_images = source_root / "auto"
+    staging = source_root / ".vaos-yolo-incomplete"
+    final_root = source_root / "vaos-yolo"
+    staging_created = False
+    try:
+        ml_dataset_import_state.update({"status": "preparing", "dataset": "kaggle_auto", "phase": "validating", "progress": 2, "message": "Validating Kaggle Auto Pascal VOC annotations and matching images."})
+        if not annotation_root.is_dir() or not source_images.is_dir():
+            raise RuntimeError(f"Expected local Kaggle Auto folders at {annotation_root} and {source_images}.")
+        xml_files = sorted(annotation_root.glob("*.xml"), key=lambda item: (item.stem.casefold(), item.name.casefold()))
+        images_by_name: dict[str, Path] = {}
+        duplicates: set[str] = set()
+        for image_path in source_images.iterdir():
+            if image_path.is_file() and image_path.suffix.lower() in {".jpg", ".jpeg", ".png"}:
+                key = image_path.name.casefold()
+                if key in images_by_name:
+                    duplicates.add(key)
+                else:
+                    images_by_name[key] = image_path
+        if not xml_files or not images_by_name:
+            raise RuntimeError("Kaggle Auto has no images or Pascal VOC XML annotations.")
+        if len(xml_files) != len(images_by_name):
+            raise RuntimeError(f"Kaggle Auto has {len(images_by_name)} images but {len(xml_files)} XML annotations; every image needs exactly one annotation.")
+        if duplicates:
+            raise RuntimeError("Kaggle Auto has duplicate image filenames, so annotation-to-image matching is ambiguous.")
+        if final_root.exists():
+            imported = load_public_dataset_imports().get("kaggle_auto")
+            if imported and Path(str(imported.get("data_yaml", ""))).is_file():
+                ml_dataset_import_state = {"status": "complete", "dataset": "kaggle_auto", "message": "Kaggle Auto is already validated and ready; source files were not changed."}
+                return
+            raise RuntimeError(f"A previous incomplete Kaggle Auto derivative exists at {final_root}; source files were left intact.")
+        if staging.exists():
+            raise RuntimeError(f"An incomplete Kaggle Auto preparation folder already exists at {staging}; inspect it before retrying.")
+
+        rows: list[tuple[Path, str, list[tuple[float, float, float, float]]]] = []
+        for index, xml_path in enumerate(xml_files, start=1):
+            try:
+                annotation = ET.parse(xml_path).getroot()
+                filename = Path((annotation.findtext("filename") or "").strip()).name
+                image_path = images_by_name.get(filename.casefold())
+                if not filename or image_path is None:
+                    raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} references a missing image.")
+                size = annotation.find("size")
+                if size is None:
+                    raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} is missing image dimensions.")
+                width, height = int(size.findtext("width")), int(size.findtext("height"))
+            except RuntimeError:
+                raise
+            except (ET.ParseError, AttributeError, TypeError, ValueError) as exc:
+                raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} is malformed: {exc}") from exc
+            if width <= 0 or height <= 0:
+                raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} has invalid image dimensions.")
+            decoded = cv2.imread(str(image_path))
+            if decoded is None or decoded.shape[1] != width or decoded.shape[0] != height:
+                raise RuntimeError(f"Kaggle Auto image dimensions do not match {xml_path.name}.")
+            del decoded
+            boxes: list[tuple[float, float, float, float]] = []
+            for obj in annotation.findall("object"):
+                label = " ".join((obj.findtext("name") or "").strip().casefold().replace("_", " ").split())
+                if label not in {"auto rickshaw", "autorickshaw", "auto", "three wheeler", "three-wheeler"}:
+                    raise RuntimeError(f"Unexpected Kaggle Auto class '{label}' in {xml_path.name}; this prepared source is intended to contain autorickshaws only.")
+                box = obj.find("bndbox")
+                try:
+                    x1, y1, x2, y2 = (float(box.findtext(key)) for key in ("xmin", "ymin", "xmax", "ymax"))
+                except (AttributeError, TypeError, ValueError) as exc:
+                    raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} has an invalid bounding box.") from exc
+                if not all(np.isfinite(value) for value in (x1, y1, x2, y2)):
+                    raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} has a non-finite bounding box.")
+                x1, x2 = min(max(x1, 0.0), float(width)), min(max(x2, 0.0), float(width))
+                y1, y2 = min(max(y1, 0.0), float(height)), min(max(y2, 0.0), float(height))
+                if x2 <= x1 or y2 <= y1:
+                    raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} has an empty or reversed bounding box.")
+                boxes.append(((x1 + x2) / (2 * width), (y1 + y2) / (2 * height), (x2 - x1) / width, (y2 - y1) / height))
+            if not boxes:
+                raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} has no object boxes.")
+            rows.append((image_path, xml_path.stem, boxes))
+            if index % 10 == 0:
+                ml_dataset_import_state.update({"progress": 5 + int(35 * index / len(xml_files)), "message": f"Validated {index:,}/{len(xml_files):,} Kaggle Auto images and boxes."})
+
+        (staging / "images" / "train").mkdir(parents=True, exist_ok=False)
+        staging_created = True
+        (staging / "images" / "val").mkdir(parents=True, exist_ok=False)
+        (staging / "labels" / "train").mkdir(parents=True, exist_ok=False)
+        (staging / "labels" / "val").mkdir(parents=True, exist_ok=False)
+        ml_dataset_import_state.update({"progress": 45, "phase": "converting", "message": "Creating a space-efficient YOLO copy of Kaggle Auto labels."})
+        for index, (image_path, stem, boxes) in enumerate(rows):
+            split = "val" if (index + 1) % 5 == 0 else "train"
+            target_image = staging / "images" / split / image_path.name
+            try:
+                os.link(image_path, target_image)
+            except OSError as exc:
+                raise RuntimeError(f"Could not create a space-saving hardlink for {image_path.name}; keep the dataset derivative on the same NTFS drive. {exc}") from exc
+            target_label = staging / "labels" / split / f"{image_path.stem}.txt"
+            target_label.write_text("".join(f"0 {cx:.8f} {cy:.8f} {bw:.8f} {bh:.8f}\n" for cx, cy, bw, bh in boxes), encoding="ascii")
+            if index % 10 == 0:
+                ml_dataset_import_state.update({"progress": 45 + int(50 * (index + 1) / len(rows)), "message": f"Prepared {index + 1:,}/{len(rows):,} Kaggle Auto images."})
+        yaml_path = staging / "dataset.yaml"
+        yaml_path.write_text("path: " + json.dumps(str(final_root.resolve())) + "\ntrain: images/train\nval: images/val\nnames:\n  0: auto rickshaw\n", encoding="utf-8")
+        for split in ("train", "val"):
+            if not any((staging / "images" / split).iterdir()) or not any((staging / "labels" / split).iterdir()):
+                raise RuntimeError(f"Kaggle Auto {split} split is empty after conversion.")
+        staging.replace(final_root)
+        imported = load_public_dataset_imports()
+        imported["kaggle_auto"] = {"id": "kaggle_auto", "name": "Kaggle Auto · autorickshaws", "data_yaml": str(final_root / "dataset.yaml"), "classes": ["auto rickshaw"], "train_count": len(rows) - len(rows) // 5, "val_count": len(rows) // 5, "annotations": sum(len(row[2]) for row in rows), "imported_at": utc_now(), "source": "Datacluster Labs · local Pascal VOC annotations"}
+        write_public_dataset_imports(imported)
+        ml_dataset_import_state = {"status": "complete", "dataset": "kaggle_auto", "message": f"Kaggle Auto validated · {len(rows):,} images · {sum(len(row[2]) for row in rows):,} autorickshaw boxes · 1 class."}
+        write_training_log("INFO", "Kaggle Auto dataset prepared", images=len(rows), annotations=sum(len(row[2]) for row in rows), classes=1)
+    except Exception as exc:
+        if staging_created:
+            shutil.rmtree(staging, ignore_errors=True)
+        ml_dataset_import_state = {"status": "error", "dataset": "kaggle_auto", "message": str(exc)[:500]}
+        logger.exception("VAOS Kaggle Auto preparation failed")
+        write_training_log("ERROR", "Kaggle Auto preparation failed", error=str(exc)[:400])
     finally:
         if ml_dataset_import_lock.locked():
             ml_dataset_import_lock.release()
@@ -1939,11 +2108,9 @@ def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(requir
         if imported and Path(str(imported.get("data_yaml", ""))).is_file():
             ml_dataset_import_state.update({"status": "complete", "dataset": "uvh26", "message": "UVH-26 is already validated and ready; no source files were changed."})
             return {"status": "complete", "message": "UVH-26 is already validated and ready."}
-        if ml_training_lock.locked():
-            raise HTTPException(status_code=409, detail="Wait for the active model training job to finish before preparing UVH-26.")
         if not ml_dataset_import_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="A dataset preparation job is already running.")
-        ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "message": "Checking both UVH-26 splits, image references, and bounding boxes before converting to YOLO format."})
+        ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "message": "Resuming the official UVH-26 files to D:\\VAOS_Datasets. This download can run while a COCO + reviewed + Kaggle Auto training job runs."})
         try:
             threading.Thread(target=prepare_uvh26_dataset, name="vaos-uvh26-prepare", daemon=True).start()
         except Exception as exc:
@@ -1952,8 +2119,26 @@ def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(requir
             logger.exception("Could not launch UVH-26 preparation")
             raise HTTPException(status_code=503, detail="VAOS could not start UVH-26 preparation. Check the admin service error log.") from exc
         return {"status": "preparing", "message": "UVH-26 validation and conversion started. Source annotations and images will remain unchanged."}
+    if dataset_id == "kaggle_auto":
+        imported = load_public_dataset_imports().get("kaggle_auto")
+        if imported and Path(str(imported.get("data_yaml", ""))).is_file():
+            ml_dataset_import_state.update({"status": "complete", "dataset": "kaggle_auto", "message": "Kaggle Auto is already validated and ready; no source files were changed."})
+            return {"status": "complete", "message": "Kaggle Auto is already validated and ready."}
+        if ml_training_lock.locked():
+            raise HTTPException(status_code=409, detail="Wait for the active model training job to finish before preparing Kaggle Auto.")
+        if not ml_dataset_import_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="A dataset preparation job is already running.")
+        ml_dataset_import_state.update({"status": "preparing", "dataset": "kaggle_auto", "phase": "checking", "progress": 1, "message": "Checking local Kaggle Auto images and Pascal VOC annotations."})
+        try:
+            threading.Thread(target=prepare_kaggle_auto_dataset, name="vaos-kaggle-auto-prepare", daemon=True).start()
+        except Exception as exc:
+            ml_dataset_import_lock.release()
+            ml_dataset_import_state.update({"status": "error", "dataset": "kaggle_auto", "message": f"Could not start Kaggle Auto preparation: {exc}"})
+            logger.exception("Could not launch Kaggle Auto preparation")
+            raise HTTPException(status_code=503, detail="VAOS could not start Kaggle Auto preparation. Check the admin service error log.") from exc
+        return {"status": "preparing", "message": "Kaggle Auto validation and conversion started. Source images and annotations will remain unchanged."}
     if dataset_id != "coco2017":
-        raise HTTPException(status_code=400, detail="Choose UVH-26 or COCO 2017. Other local datasets remain unavailable until their annotations pass validation.")
+        raise HTTPException(status_code=400, detail="Choose UVH-26, Kaggle Auto, or COCO 2017.")
     imported = load_public_dataset_imports().get("coco2017")
     if imported and coco_dataset_layout_ready():
         existing_yaml = Path(str(imported.get("data_yaml", "")))
@@ -2105,6 +2290,279 @@ def build_combined_uvh_reviewed_yaml(uvh_yaml: Path, reviewed: list[tuple[int, b
     return root / "dataset.yaml", class_names, reviewed_images
 
 
+def build_combined_coco_uvh_kaggle_reviewed_yaml(
+    coco_yaml: Path,
+    uvh_yaml: Path | None,
+    kaggle_yaml: Path,
+    reviewed: list[tuple[int, bytes, str, str]],
+    coco_classes: list[str],
+    uvh_classes: list[str],
+    kaggle_classes: list[str],
+    expected_images: int,
+) -> tuple[Path, list[str], int]:
+    """Build one detector dataset from COCO, UVH-26, Kaggle Auto and reviewed crops.
+
+    Source images stay in their original locations. Directory junctions expose
+    each validated source under a unique images/ prefix, while only remapped
+    YOLO text labels are written into the combined dataset.
+    """
+    import yaml
+
+    aliases = {
+        "auto": "auto rickshaw", "auto rickshaw": "auto rickshaw", "auto-rickshaw": "auto rickshaw",
+        "autorickshaw": "auto rickshaw", "rickshaw": "auto rickshaw", "three wheeler": "auto rickshaw",
+        "three-wheeler": "auto rickshaw", "three_wheeler": "auto rickshaw", "cycle": "bicycle",
+        "two wheeler": "motorcycle", "two-wheeler": "motorcycle", "motorbike": "motorcycle",
+        "bike": "motorcycle", "mini bus": "bus", "mini-bus": "bus", "tempo traveller": "van",
+        "tempo-traveller": "van", "hatchback": "car", "sedan": "car", "suv": "car", "muv": "car",
+        "lcv": "light commercial vehicle", "other": "other vehicle", "mobile phone": "cell phone",
+    }
+
+    def canonical(value: str) -> str:
+        clean = " ".join(str(value).strip().casefold().replace("_", " ").split())
+        return aliases.get(clean, clean)
+
+    source_specs = [("coco2017", coco_yaml, coco_classes)]
+    if uvh_yaml is not None:
+        source_specs.append(("uvh26", uvh_yaml, uvh_classes))
+    source_specs.append(("kaggle_auto", kaggle_yaml, kaggle_classes))
+    try:
+        prior_metadata = json.loads((ML_DATA_DIR / "active" / "metadata.json").read_text(encoding="utf-8"))
+        prior_classes = [str(value) for value in prior_metadata.get("classes", []) if str(value).strip()]
+    except (OSError, json.JSONDecodeError, TypeError):
+        prior_classes = []
+
+    class_names: list[str] = []
+    class_ids: dict[str, int] = {}
+
+    def add_class(label: str) -> int:
+        name = canonical(label)
+        if not name:
+            raise RuntimeError("A training source has an empty class name.")
+        if name not in class_ids:
+            class_ids[name] = len(class_names)
+            class_names.append(name)
+        return class_ids[name]
+
+    for label in [*prior_classes, *coco_classes, *uvh_classes, *kaggle_classes, *(row[2] for row in reviewed)]:
+        add_class(label)
+
+    def split_images(dataset_yaml: Path, split: str) -> tuple[Path, list[Path]]:
+        config = yaml.safe_load(dataset_yaml.read_text(encoding="utf-8")) or {}
+        root_value = config.get("path") or str(dataset_yaml.parent)
+        dataset_root = Path(str(root_value))
+        if not dataset_root.is_absolute():
+            dataset_root = dataset_yaml.parent / dataset_root
+        images_root = dataset_root / "images"
+        spec = config.get(split)
+        if isinstance(spec, list):
+            entries = spec
+        elif isinstance(spec, str):
+            target = Path(spec)
+            if not target.is_absolute():
+                target = dataset_root / target
+            if target.is_dir():
+                paths = sorted(path for path in target.rglob("*") if path.is_file() and path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+                if not paths:
+                    raise RuntimeError(f"The {split} image folder in {dataset_yaml} is empty.")
+                return images_root, paths
+            if target.is_file() and target.suffix.lower() == ".txt":
+                entries = target.read_text(encoding="utf-8").splitlines()
+            elif target.is_file():
+                entries = [str(target)]
+            else:
+                raise RuntimeError(f"The {split} image source is missing: {target}")
+        else:
+            raise RuntimeError(f"The {split} source is not configured in {dataset_yaml}.")
+        paths: list[Path] = []
+        for entry in entries:
+            value = str(entry).strip()
+            if not value:
+                continue
+            path = Path(value)
+            if not path.is_absolute():
+                path = dataset_root / path
+            if not path.is_file() or path.suffix.lower() not in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+                raise RuntimeError(f"A {split} image listed by {dataset_yaml.name} is missing or unsupported: {value}")
+            paths.append(path)
+        if not paths:
+            raise RuntimeError(f"The {split} image list in {dataset_yaml} is empty.")
+        return images_root, paths
+
+    import_root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets"))
+    identity_data = {
+        # The COCO YAML is rewritten on every prepare request. Its mtime is
+        # therefore not a dataset version and caused a new 120k-image merge
+        # on every retry. Hash the stable configuration content instead.
+        "sources": [(key, str(path.resolve()), hashlib.sha256(path.read_bytes()).hexdigest()) for key, path, _ in source_specs],
+        "reviewed": [(row[0], canonical(row[2]), row[3]) for row in reviewed],
+        "classes": class_names,
+    }
+    identity = hashlib.sha256(json.dumps(identity_data, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:14]
+    source_name = "coco-uvh26-kaggle" if uvh_yaml is not None else "coco-kaggle"
+    root = import_root / f"{source_name}-reviewed-{identity}"
+    staging = root.with_name(root.name + ".incomplete")
+    if root.exists() and (root / "dataset.yaml").is_file():
+        # Ultralytics resolves paths in a text manifest relative to the
+        # manifest only when each relative entry starts with "./". Without
+        # that prefix it keeps e.g. "images/coco2017/..." relative, and on
+        # Windows img2label_paths cannot replace the leading "images" with
+        # "labels". It then caches zero labels beside the images.
+        for split in ("train", "val"):
+            manifest = root / f"{split}.txt"
+            if not manifest.is_file():
+                raise RuntimeError(f"The existing combined dataset is missing its {split} manifest: {manifest}")
+            entries = [line.strip() for line in manifest.read_text(encoding="utf-8-sig").splitlines() if line.strip()]
+            normalized = [entry if Path(entry).is_absolute() or entry.startswith("./") else f"./{entry.lstrip('./')}" for entry in entries]
+            if normalized != entries:
+                temporary_manifest = manifest.with_suffix(".txt.new")
+                temporary_manifest.write_text("\n".join(normalized) + "\n", encoding="utf-8")
+                temporary_manifest.replace(manifest)
+        return root / "dataset.yaml", class_names, sum(1 for split in ("train", "val") for _ in (root / f"{split}.txt").read_text(encoding="utf-8").splitlines() if _.strip())
+    if root.exists():
+        raise RuntimeError(f"An incomplete combined dataset exists at {root}; it was left untouched for inspection.")
+    if staging.exists():
+        raise RuntimeError(f"An incomplete combined dataset exists at {staging}; it was left untouched for inspection.")
+
+    staging.mkdir(parents=True, exist_ok=False)
+    image_base = staging / "images"
+    label_base = staging / "labels"
+    image_base.mkdir()
+    label_base.mkdir()
+    split_entries: dict[str, list[str]] = {"train": [], "val": []}
+    total_images = 0
+    processed_images = 0
+
+    def create_junction(link_path: Path, target_path: Path) -> None:
+        if not target_path.is_dir():
+            raise RuntimeError(f"A validated dataset image folder is missing: {target_path}")
+        link_path.parent.mkdir(parents=True, exist_ok=True)
+        escaped_link = str(link_path).replace("'", "''")
+        escaped_target = str(target_path).replace("'", "''")
+        script = f"New-Item -ItemType Junction -Path '{escaped_link}' -Target '{escaped_target}' -ErrorAction Stop | Out-Null"
+        result = subprocess.run(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=30)
+        if result.returncode or not link_path.is_dir():
+            detail = (result.stderr or result.stdout).strip()
+            raise RuntimeError(f"Could not link the source images into the combined training set without copying them: {detail or link_path}")
+
+    try:
+        for source_id, dataset_yaml, source_classes in source_specs:
+            config = yaml.safe_load(dataset_yaml.read_text(encoding="utf-8")) or {}
+            source_names = config.get("names", source_classes)
+            if isinstance(source_names, dict):
+                source_names = [str(name) for _, name in sorted(source_names.items(), key=lambda item: int(item[0]))]
+            else:
+                source_names = [str(name) for name in source_names]
+            if source_names != source_classes:
+                raise RuntimeError(f"The saved class map for {source_id} no longer matches its validated dataset record.")
+            source_image_root = Path(str(config.get("path") or dataset_yaml.parent))
+            if not source_image_root.is_absolute():
+                source_image_root = dataset_yaml.parent / source_image_root
+            source_image_root = source_image_root / "images"
+            if not source_image_root.is_dir():
+                raise RuntimeError(f"The validated image root for {source_id} is missing: {source_image_root}")
+            create_junction(image_base / source_id, source_image_root)
+            mapped_ids = {index: add_class(name) for index, name in enumerate(source_classes)}
+            for split in ("train", "val"):
+                _, image_paths = split_images(dataset_yaml, split)
+                target_labels = label_base / source_id
+                for image_path in image_paths:
+                    relative = image_path.relative_to(source_image_root)
+                    source_label = image_path.with_suffix(".txt")
+                    image_parts = list(image_path.parts)
+                    image_segment = max((i for i, part in enumerate(image_parts) if part.casefold() == "images"), default=-1)
+                    if image_segment < 0:
+                        raise RuntimeError(f"Image path does not contain an images/ folder: {image_path}")
+                    label_parts = image_parts[:]
+                    label_parts[image_segment] = "labels"
+                    source_label = Path(*label_parts).with_suffix(".txt")
+                    relative_label = relative.with_suffix(".txt")
+                    target_label = target_labels / relative_label
+                    target_label.parent.mkdir(parents=True, exist_ok=True)
+                    remapped_lines: list[str] = []
+                    if source_label.is_file():
+                        for line_number, raw_line in enumerate(source_label.read_text(encoding="ascii").splitlines(), start=1):
+                            fields = raw_line.split()
+                            if not fields:
+                                continue
+                            try:
+                                class_id = int(fields[0])
+                                values = [float(value) for value in fields[1:]]
+                            except ValueError as exc:
+                                raise RuntimeError(f"Non-numeric YOLO label at {source_label}:{line_number}.") from exc
+                            if class_id not in mapped_ids or not all(np.isfinite(value) for value in values):
+                                raise RuntimeError(f"Invalid class ID or coordinate at {source_label}:{line_number}.")
+                            if len(values) == 4:
+                                # Standard YOLO detection boxes are cx, cy, width, height.
+                                cx, cy, width, height = values
+                                if width <= 0 or height <= 0:
+                                    raise RuntimeError(f"Empty normalized box at {source_label}:{line_number}.")
+                            elif len(values) >= 6 and len(values) % 2 == 0:
+                                # COCO's existing YOLO export stores polygon points. Convert
+                                # each polygon to its enclosing detection rectangle.
+                                if any(value < -0.01 or value > 1.01 for value in values):
+                                    raise RuntimeError(f"Out-of-range polygon coordinate at {source_label}:{line_number}.")
+                                points = np.asarray(values, dtype=np.float64).reshape(-1, 2)
+                                left, top = points.min(axis=0)
+                                right, bottom = points.max(axis=0)
+                                width, height = float(right - left), float(bottom - top)
+                                cx, cy = float((left + right) / 2), float((top + bottom) / 2)
+                                if width <= 0 or height <= 0:
+                                    raise RuntimeError(f"Degenerate polygon at {source_label}:{line_number}.")
+                            else:
+                                raise RuntimeError(f"Malformed detection box or polygon at {source_label}:{line_number}.")
+                            values = [cx, cy, width, height]
+                            if any(value < -0.01 or value > 1.01 for value in values):
+                                raise RuntimeError(f"Out-of-range normalized box at {source_label}:{line_number}.")
+                            values = [min(1.0, max(0.0, value)) for value in values]
+                            remapped_lines.append(" ".join([str(mapped_ids[class_id]), *(f"{value:.8f}" for value in values)]))
+                    target_label.write_text("\n".join(remapped_lines) + ("\n" if remapped_lines else ""), encoding="ascii")
+                    split_entries[split].append("./" + (Path("images") / source_id / relative).as_posix())
+                    processed_images += 1
+                    if processed_images % 1000 == 0:
+                        progress = min(88, 5 + int(83 * processed_images / max(1, expected_images)))
+                        ml_training_state.update({"status": "preparing", "progress": progress, "message": f"Merging source labels · {processed_images:,} / about {expected_images:,} images · {source_id} {split}."})
+                total_images += len(image_paths)
+
+        reviewed_train: list[str] = []
+        reviewed_val: list[str] = []
+        for index, (sample_id, image_bytes, raw_label, bbox) in enumerate(reviewed):
+            split = "val" if (index + 1) % 5 == 0 else "train"
+            fields = [part for part in re.split(r"[\s,]+", str(bbox).strip()) if part]
+            try:
+                left, top, width, height = (float(value) for value in fields)
+            except (TypeError, ValueError) as exc:
+                raise RuntimeError(f"Reviewed sample {sample_id} has an invalid bounding box.") from exc
+            if len(fields) != 4 or not all(np.isfinite(value) for value in (left, top, width, height)) or left < -0.01 or top < -0.01 or width <= 0 or height <= 0 or width > 1 or height > 1 or left + width > 1.01 or top + height > 1.01:
+                raise RuntimeError(f"Reviewed sample {sample_id} has an invalid normalized bounding box.")
+            cx, cy = left + width / 2, top + height / 2
+            class_id = add_class(raw_label)
+            stem = f"sample_{sample_id}"
+            (image_base / "reviewed" / split).mkdir(parents=True, exist_ok=True)
+            (label_base / "reviewed" / split).mkdir(parents=True, exist_ok=True)
+            (image_base / "reviewed" / split / f"{stem}.jpg").write_bytes(image_bytes)
+            (label_base / "reviewed" / split / f"{stem}.txt").write_text(f"{class_id} {cx:.8f} {cy:.8f} {width:.8f} {height:.8f}\n", encoding="ascii")
+            (reviewed_val if split == "val" else reviewed_train).append("./" + (Path("images") / "reviewed" / split / f"{stem}.jpg").as_posix())
+        split_entries["train"].extend(reviewed_train)
+        split_entries["val"].extend(reviewed_val)
+        if not split_entries["train"] or not split_entries["val"]:
+            raise RuntimeError("The combined training set needs non-empty train and validation image lists.")
+        for split, entries in split_entries.items():
+            (staging / f"{split}.txt").write_text("\n".join(entries) + "\n", encoding="utf-8")
+        yaml_path = staging / "dataset.yaml"
+        names_yaml = "\n".join(f"  {index}: {json.dumps(name, ensure_ascii=False)}" for index, name in enumerate(class_names))
+        yaml_path.write_text(f"path: {json.dumps(str(root.resolve()))}\ntrain: train.txt\nval: val.txt\nnames:\n{names_yaml}\n", encoding="utf-8")
+        source_names = ["COCO 2017"] + (["UVH-26 majority-vote"] if uvh_yaml is not None else []) + ["Kaggle Auto Pascal VOC", "Human-reviewed camera samples"]
+        (staging / "sources.json").write_text(json.dumps({"sources": source_names, "source_images": total_images, "reviewed_samples": len(reviewed), "classes": class_names, "class_aliases": aliases}, indent=2, ensure_ascii=False), encoding="utf-8")
+        staging.replace(root)
+    except Exception:
+        # shutil.rmtree is junction-safe on supported Windows Python versions;
+        # it removes the link itself and leaves source dataset folders untouched.
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    return root / "dataset.yaml", class_names, total_images + len(reviewed)
+
+
 def count_training_class_instances(data_yaml: Path, class_names: list[str]) -> tuple[dict[str, int], int]:
     """Count labeled objects across the exact train/validation manifests."""
     import yaml
@@ -2237,7 +2695,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
     job_started = time.monotonic()
     write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
     try:
-        epochs_total = 20 if dataset_source == "uvh26_combined" else 10 if dataset_source in {"coco2017", "combined"} else 30
+        epochs_total = 20 if dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
         if dataset_source == "coco2017":
             imported = load_public_dataset_imports().get("coco2017")
             if not imported or not Path(imported.get("data_yaml", "")).is_file():
@@ -2273,6 +2731,54 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             yaml_path, labels, reviewed_count = build_combined_uvh_reviewed_yaml(Path(imported["data_yaml"]), labeled, list(imported.get("classes", [])))
             sample_count = int(imported.get("train_count", 0)) + int(imported.get("val_count", 0)) + reviewed_count
             dataset_name = "UVH-26 Indian road vehicles + human-reviewed samples"
+        elif dataset_source == "combined_vehicle":
+            registry = load_public_dataset_imports()
+            coco_import, uvh_import, kaggle_import = (registry.get(key) for key in ("coco2017", "uvh26", "kaggle_auto"))
+            if not coco_import or not coco_dataset_layout_ready() or not Path(str(coco_import.get("data_yaml", ""))).is_file():
+                raise RuntimeError("Prepare COCO 2017 before selecting the combined Indian vehicle training source.")
+            if not uvh_import or not Path(str(uvh_import.get("data_yaml", ""))).is_file():
+                raise RuntimeError("Download, validate, and prepare both UVH-26 splits before selecting the combined Indian vehicle training source.")
+            if not kaggle_import or not Path(str(kaggle_import.get("data_yaml", ""))).is_file():
+                raise RuntimeError("Validate and prepare the local Kaggle Auto dataset before selecting the combined Indian vehicle training source.")
+            with db_connection() as db:
+                rows = db.execute("SELECT id,image,bbox,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
+            labeled = [(row["id"], bytes(row["image"]), row["confirmed_label"] or row["suggested_label"], row["bbox"]) for row in rows]
+            reviewed_labels = {str(item[2]).strip().casefold() for item in labeled if str(item[2]).strip()}
+            if len(labeled) < 20 or len(reviewed_labels) < 2:
+                raise RuntimeError("The combined source needs at least 20 confirmed samples across at least 2 object types.")
+            yaml_path, labels, source_image_count = build_combined_coco_uvh_kaggle_reviewed_yaml(
+                Path(coco_import["data_yaml"]),
+                Path(uvh_import["data_yaml"]),
+                Path(kaggle_import["data_yaml"]),
+                labeled,
+                list(coco_import.get("classes", [])),
+                list(uvh_import.get("classes", [])),
+                list(kaggle_import.get("classes", [])),
+                int(coco_import.get("train_limit", 118287)) + 5000 + int(uvh_import.get("train_count", 0)) + int(uvh_import.get("val_count", 0)) + int(kaggle_import.get("train_count", 0)) + int(kaggle_import.get("val_count", 0)) + len(labeled),
+            )
+            sample_count = source_image_count
+            dataset_name = "COCO 2017 + UVH-26 + Kaggle Auto + human-reviewed samples"
+        elif dataset_source == "combined_kaggle":
+            registry = load_public_dataset_imports()
+            coco_import, kaggle_import = registry.get("coco2017"), registry.get("kaggle_auto")
+            if not coco_import or not coco_dataset_layout_ready() or not Path(str(coco_import.get("data_yaml", ""))).is_file():
+                raise RuntimeError("Prepare COCO 2017 before selecting COCO + Kaggle Auto training.")
+            if not kaggle_import or not Path(str(kaggle_import.get("data_yaml", ""))).is_file():
+                raise RuntimeError("Validate and prepare the local Kaggle Auto dataset before selecting COCO + Kaggle Auto training.")
+            with db_connection() as db:
+                rows = db.execute("SELECT id,image,bbox,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
+            labeled = [(row["id"], bytes(row["image"]), row["confirmed_label"] or row["suggested_label"], row["bbox"]) for row in rows]
+            reviewed_labels = {str(item[2]).strip().casefold() for item in labeled if str(item[2]).strip()}
+            if len(labeled) < 20 or len(reviewed_labels) < 2:
+                raise RuntimeError("The interim combined source needs at least 20 confirmed samples across at least 2 object types.")
+            base_yaml, coco_classes = build_coco_dataset_yaml()
+            yaml_path, labels, source_image_count = build_combined_coco_uvh_kaggle_reviewed_yaml(
+                Path(coco_import["data_yaml"]), None, Path(kaggle_import["data_yaml"]), labeled,
+                list(coco_import.get("classes", coco_classes)), [], list(kaggle_import.get("classes", [])),
+                int(coco_import.get("train_limit", 118287)) + 5000 + int(kaggle_import.get("train_count", 0)) + int(kaggle_import.get("val_count", 0)) + len(labeled),
+            )
+            sample_count = source_image_count
+            dataset_name = "COCO 2017 + Kaggle Auto + human-reviewed samples (UVH-26 downloading separately)"
         elif dataset_source == "reviewed":
             with db_connection() as db:
                 rows = db.execute("SELECT id,image,bbox,review_state,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
@@ -2297,7 +2803,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             sample_count = len(labeled)
             dataset_name = "Human-reviewed camera samples"
         else:
-            raise RuntimeError("Choose reviewed camera samples, prepared COCO 2017, or validated UVH-26 + reviewed samples.")
+            raise RuntimeError("Choose reviewed samples, prepared COCO 2017, UVH-26 + reviewed samples, or the combined COCO + UVH-26 + Kaggle Auto + reviewed source.")
         write_training_log("INFO", "Training data prepared", dataset=dataset_name, images=sample_count, classes=len(labels))
         if ml_training_state.get("stop_requested"):
             ml_training_state = {"status": "stopped", "progress": 0, "epoch": 0, "epochs": epochs_total, "stop_requested": False, "message": "Training was stopped safely before the first epoch; no new model was installed."}
@@ -2476,7 +2982,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         else:
             training_batch = 16 if resource_mode and device_kind == "cpu" else 4
         write_training_log("INFO", "Training resources configured", device=device_label, gpu_count=torch.cuda.device_count() if torch.cuda.is_available() else 0, batch="auto" if training_batch == -1 else training_batch, workers=training_workers, cpu_threads=os.cpu_count(), memory_available_gb=round((__import__("psutil").virtual_memory().available / (1024 ** 3)), 2) if resource_mode else None)
-        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=640, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False)
+        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=640, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False, plots=False)
         best = Path(result.save_dir) / "weights" / "best.pt"
         stopped_early = bool(ml_training_state.get("stop_requested"))
         if stopped_early and not best.is_file():
@@ -2533,16 +3039,19 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     if device_choice.startswith("gpu:") and device_choice.split(":", 1)[1].isdigit() and int(device_choice.split(":", 1)[1]) not in {item["index"] for item in inventory["gpus"]}:
         raise HTTPException(status_code=400, detail="That GPU is not available. Refresh the page and choose one listed in the device menu.")
     dataset_source = str(payload.get("source", "reviewed"))
-    if dataset_source not in {"reviewed", "coco2017", "combined", "uvh26_combined"}:
+    if dataset_source not in {"reviewed", "coco2017", "combined", "uvh26_combined", "combined_kaggle", "combined_vehicle"}:
         write_training_log("WARNING", "Training request rejected", reason="Unsupported dataset source", source=dataset_source)
-        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, or UVH-26 + reviewed training")
-    if dataset_source in {"coco2017", "combined"} and ("coco2017" not in load_public_dataset_imports() or not coco_dataset_layout_ready()):
+        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, COCO + reviewed, COCO + Kaggle Auto + reviewed, UVH-26 + reviewed, or the complete combined source.")
+    if dataset_source in {"coco2017", "combined", "combined_kaggle", "combined_vehicle"} and ("coco2017" not in load_public_dataset_imports() or not coco_dataset_layout_ready()):
         write_training_log("WARNING", "Training request rejected", reason="COCO 2017 is not imported", source=dataset_source)
         raise HTTPException(status_code=409, detail="Prepare COCO 2017 first. Existing image and label files will be reused; missing files are identified before a download starts.")
-    if dataset_source == "uvh26_combined" and ("uvh26" not in load_public_dataset_imports() or not Path(str(load_public_dataset_imports().get("uvh26", {}).get("data_yaml", ""))).is_file()):
+    if dataset_source in {"uvh26_combined", "combined_vehicle"} and ("uvh26" not in load_public_dataset_imports() or not Path(str(load_public_dataset_imports().get("uvh26", {}).get("data_yaml", ""))).is_file()):
         write_training_log("WARNING", "Training request rejected", reason="UVH-26 has not passed validation", source=dataset_source)
         raise HTTPException(status_code=409, detail="Validate and prepare both UVH-26 splits first. The dataset is not selectable until image references and annotations pass validation.")
-    if dataset_source in {"coco2017", "combined"} and ml_dataset_import_state.get("status") in {"preparing", "downloading"}:
+    if dataset_source in {"combined_kaggle", "combined_vehicle"} and ("kaggle_auto" not in load_public_dataset_imports() or not Path(str(load_public_dataset_imports().get("kaggle_auto", {}).get("data_yaml", ""))).is_file()):
+        write_training_log("WARNING", "Training request rejected", reason="Kaggle Auto is not validated", source=dataset_source)
+        raise HTTPException(status_code=409, detail="Validate and prepare the local Kaggle Auto images and Pascal VOC annotations first.")
+    if dataset_source in {"coco2017", "combined", "combined_kaggle", "combined_vehicle"} and ml_dataset_import_state.get("dataset") == "coco2017" and ml_dataset_import_state.get("status") in {"preparing", "downloading"}:
         reason = "COCO 2017 is still downloading. Wait for the import to finish before using COCO-based training. You can switch to Reviewed camera samples to train from confirmed samples now."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
         raise HTTPException(status_code=409, detail=reason)

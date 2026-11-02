@@ -448,6 +448,8 @@ th { color: #78839a; background: #f5f6fb; }
 .training-page .maturity-signals strong { color: #e2edf6; font-size: 9px; }
 .training-page .maturity-disclaimer { display: none; }
 .training-page .dataset-summary .subtle-tag { margin-top: 9px; color: #7ce4b9; background: rgb(31 179 121 / 15%); }
+.training-page .dataset-prepare-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.training-page .dataset-prepare-actions .button { margin: 0; }
 .training-page .summary-detail { display: block; margin-top: 11px; color: #d5e1ed; font-size: 10px; }
 .training-page .summary-footnote { display: block; margin-top: 7px; color: #8195a9; font-size: 9px; }
 .training-page .samples-summary > strong { display: block; margin: -1px 0 1px; color: #f2f7fc; font-size: 27px; line-height: 1.1; }
