@@ -988,9 +988,11 @@ body.vaos-dark .training-log-open { border-color: #34485b; color: #8dd1de; }
 .training-page .ml-workspace > .ml-model .model-about-row { grid-template-columns: minmax(100px, .42fr) minmax(0, 1fr); }
 .training-page .ml-steps { grid-template-columns: minmax(190px, .72fr) minmax(290px, 1.1fr) minmax(360px, 1.38fr); }
 .training-page .ml-dashboard-top { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+.training-page > .ml-workspace { grid-template-columns: minmax(0, 1fr); }
+.training-page > .ml-workspace > .ml-steps { grid-column: 1 / -1; width: 100%; }
 .training-page .model-summary { min-height: 0; padding: 12px 14px; }
 .training-page .model-summary h3 { font-size: 14px; margin: 3px 0; }
-.training-page .model-summary .model-details-compact { max-height: 44px; overflow: hidden; font-size: 9px; }
+.training-page .model-summary .model-details-compact { max-height: 25px; overflow: hidden; font-size: 9px; }
 .training-page .model-summary .model-about-row { display: block; border: 0; padding: 1px 0; }
 .training-page .model-summary .model-about-row strong { display: none; }
 .training-page .model-summary .model-about-row span { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -1019,11 +1021,13 @@ body.vaos-dark .training-page .dataset-prepare-row strong { color:var(--ml-text)
   .training-page .ml-steps { grid-template-columns:minmax(190px,.72fr) minmax(290px,1.1fr) minmax(360px,1.38fr); }
 }
 @media(max-width:1050px) {
+  .training-page .ml-dashboard-top { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .training-page .ml-steps { grid-template-columns:repeat(2,minmax(0,1fr)); }
   .training-page .ml-train { grid-column:1/-1; }
   .training-activity-page .activity-summary-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
 }
 @media(max-width:760px) {
+  .training-page .ml-dashboard-top { grid-template-columns:1fr 1fr; }
   .training-page .ml-steps { grid-template-columns:1fr; }
   .training-page .ml-train { grid-column:auto; }
   .training-page .ml-workspace > .ml-model .model-about { grid-template-columns:1fr; }
