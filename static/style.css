@@ -118,6 +118,18 @@ td strong { font-size: 12px; }
 .training-sample-info > span { color: var(--muted); font-size: 10px; }
 .training-sample-info .inline-actions { gap: 5px; }
 .training-page .section-panel { margin-bottom: 17px; }
+.reviewable-total { margin: 8px 0 12px; padding: 8px 10px; border-radius: 9px; background: var(--soft-panel, #f3f6fa); color: var(--text); font-size: 12px; font-weight: 650; }
+.review-toolbar { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 10px; color: var(--muted); font-size: 10px; }
+.review-toolbar select { min-width: 140px; max-width: 230px; min-height: 30px; padding: 4px 8px; font-size: 10px; }
+.review-toolbar button { min-height: 28px; }
+.review-toolbar #review-page-label { min-width: 68px; text-align: center; }
+.uvh-progress-wrap { display: grid; gap: 3px; margin-top: 6px; color: var(--muted); font-size: 9px; }
+.uvh-progress-wrap progress { width: 100%; height: 5px; accent-color: #48b88a; }
+.class-breakdown { position: static; z-index: 2; margin-top: 5px; color: var(--muted); font-size: 9px; }
+.class-breakdown summary { width: fit-content; cursor: pointer; font-size: 9px; }
+.class-breakdown > div { position: static; display: grid; grid-template-columns: 1fr; gap: 2px; width: 100%; max-height: 48px; overflow: auto; padding: 2px 0 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.class-breakdown > div strong { color: var(--text); font-size: 9px; }
+.class-breakdown > div span { overflow-wrap: anywhere; font-size: 9px; line-height: 1.3; }
 .training-groups { display: flex; flex-direction: column; gap: 17px; }
 .training-group { padding: 13px; border: 1px solid #e5eaf1; border-radius: 13px; background: #fff; }
 .training-group-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
@@ -463,6 +475,9 @@ th { color: #78839a; background: #f5f6fb; }
 .training-page .sample-counts { border-color: #263747; color: #9dafc0; }
 .training-page .training-group { border-color: #293a4a; background: #142130; }
 .training-page .training-group-head span, .training-page .training-sample-info > span { color: #94a9bc; }
+.training-page .review-toolbar { color: #a6b5c4; }
+.training-page .class-breakdown > div { border: 0; background: transparent; }
+.training-page .class-breakdown > div strong { color: #e3edf5; }
 .training-page .training-sample { border-color: #2a3a49; background: #101b28; }
 .training-page .training-sample-info strong { color: #e2edf6; }
 .training-page .training-sample img { background: #1a2a39; }

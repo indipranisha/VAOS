@@ -75,7 +75,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "0.10.2"
+APP_VERSION = "0.10.7"
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
 ENGINE_SETTING_DEFAULTS = {
@@ -125,7 +125,6 @@ ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 ML_TRAINING_LOG_PATH = ML_DATA_DIR / "training.log"
 ml_training_state: dict[str, Any] = {"status": "idle", "message": "No training job has been started."}
 ml_dataset_import_state: dict[str, Any] = {"status": "idle", "message": "No public dataset import is running."}
-ml_sama_import_state: dict[str, Any] = {"status": "idle", "dataset": "sama-coco", "message": "SAMA-COCO annotations are not prepared yet."}
 ml_training_lock = threading.Lock()
 ml_dataset_import_lock = threading.Lock()
 ml_training_log_lock = threading.Lock()
@@ -1414,7 +1413,11 @@ def load_public_dataset_imports() -> dict[str, Any]:
     path = ML_DATA_DIR / "public_dataset_imports.json"
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
-        return value if isinstance(value, dict) else {}
+        if not isinstance(value, dict):
+            return {}
+        # Only datasets with an implemented preparation and validation path are
+        # exposed to training. Raw or retired registry records remain unusable.
+        return {key: item for key, item in value.items() if key in {"coco2017", "uvh26"}}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1424,6 +1427,206 @@ def write_public_dataset_imports(value: dict[str, Any]) -> None:
     temporary = path.with_suffix(".json.new")
     temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def local_dataset_catalog() -> list[dict[str, Any]]:
+    """Describe local datasets that are present but are not yet detector-ready.
+
+    These entries are intentionally informational until their annotations and
+    image references have passed conversion/validation. That keeps raw or
+    incomplete data from being accidentally used in a model update.
+    """
+    root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets"))
+    idd = root / "idd-lite" / "idd20k_lite"
+    india = root / "IndiaScene365-v2" / "IndiaScene365" / "Indiascene365"
+    uvh = root / "UVH-26"
+    objects365_candidates = (root / "Objects365", root / "objects365", root / "Objects365v2")
+    items: list[dict[str, Any]] = []
+    if idd.exists():
+        items.append({"id": "idd-lite", "name": "IDD Lite · Indian road scenes", "status": "Segmentation only · not detector-ready", "ready": False, "message": "This is the IDD Lite segmentation variant; its masks do not provide object boxes. Converting masks to boxes could merge adjacent traffic objects, so VAOS keeps it out of detection training. The separate IDD Detection download contains bounding boxes."})
+    if india.exists():
+        items.append({"id": "indiascene365", "name": "IndiaScene365 · Indian scenes", "status": "Downloaded · annotation check failed", "ready": False, "message": "The local XML annotations do not match the image filenames in the downloaded folders, and several labels are corrupted. It is excluded from training until the source files are repaired."})
+    if uvh.exists():
+        train_json = uvh / "UVH-26-Train" / "UVH-26-MV-Train.json"
+        val_json = uvh / "UVH-26-Val" / "UVH-26-MV-Val.json"
+        val_images = uvh / "UVH-26-Val" / "data"
+        imported = load_public_dataset_imports().get("uvh26")
+        ready = bool(imported and Path(str(imported.get("data_yaml", ""))).is_file())
+        downloadable = train_json.is_file() and val_json.is_file() and val_images.is_dir()
+        items.append({"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "status": "Validated · ready" if ready else "Ready to validate" if downloadable else "Download incomplete", "ready": ready, "can_prepare": downloadable, "message": "Validated majority-vote annotations for Indian road vehicles. Training can use this dataset together with reviewed samples." if ready else "Both train and validation annotations and image folders are present. Run preparation to verify every image reference and convert the boxes to YOLO format." if downloadable else "The UVH-26 download is still incomplete. Training remains disabled until both splits, annotations, and all referenced images are present."})
+    objects365 = next((path for path in objects365_candidates if path.exists()), None)
+    if objects365 is None:
+        items.append({"id": "objects365", "name": "Objects365", "status": "Not found locally", "ready": False, "message": "No Objects365 dataset folder is present in the configured dataset directory."})
+    else:
+        items.append({"id": "objects365", "name": "Objects365", "status": "Downloaded · needs preparation", "ready": False, "message": "Local files were found, but no validated YOLO dataset manifest is registered yet."})
+    return items
+
+
+def uvh26_source_root() -> Path:
+    return Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")) / "UVH-26"
+
+
+def prepare_uvh26_dataset() -> None:
+    """Validate official UVH-26 MV splits and create a YOLO-ready derivative.
+
+    Source images and annotations are never edited. Image hardlinks keep this
+    derivative space-efficient; if the dataset and derivative are on separate
+    volumes or hardlinks are unavailable, preparation stops instead of copying
+    several gigabytes unexpectedly.
+    """
+    global ml_dataset_import_state
+    source_root = uvh26_source_root()
+    split_specs = {
+        "train": (source_root / "UVH-26-Train" / "UVH-26-MV-Train.json", source_root / "UVH-26-Train"),
+        "val": (source_root / "UVH-26-Val" / "UVH-26-MV-Val.json", source_root / "UVH-26-Val"),
+    }
+    staging = source_root / ".vaos-uvh26-yolo-incomplete"
+    final_root = source_root / "vaos-uvh26-yolo"
+    staging_created = False
+    try:
+        ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "phase": "checking", "progress": 1, "message": "Checking UVH-26 train/validation files and verifying annotation references."})
+        if any(not annotation.is_file() for annotation, _ in split_specs.values()):
+            raise RuntimeError("UVH-26 is still downloading: the majority-vote annotations for both train and validation splits must be present.")
+        if final_root.exists():
+            imported = load_public_dataset_imports().get("uvh26")
+            if imported and Path(str(imported.get("data_yaml", ""))).is_file():
+                ml_dataset_import_state = {"status": "complete", "dataset": "uvh26", "message": "UVH-26 is already validated and ready; no source files were changed."}
+                return
+            raise RuntimeError(f"A previous incomplete derivative exists at {final_root}. Source files were left intact; move that derivative aside before retrying.")
+        if staging.exists():
+            raise RuntimeError(f"An incomplete preparation folder already exists at {staging}. It was left untouched; inspect it before retrying.")
+
+        manifests: dict[str, dict[str, Any]] = {}
+        classes: list[str] = []
+        for split, (annotation_path, split_root) in split_specs.items():
+            ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "phase": "validating", "progress": 5 if split == "train" else 40, "message": f"Validating UVH-26 {split} split: annotation records, image references, and bounding boxes."})
+            if not (split_root / "data").is_dir():
+                raise RuntimeError(f"UVH-26 {split} images are missing. Wait for the source download to finish, then retry preparation.")
+            payload = json.loads(annotation_path.read_text(encoding="utf-8"))
+            if not all(isinstance(payload.get(key), list) for key in ("images", "annotations", "categories")):
+                raise RuntimeError(f"{annotation_path.name} is not a COCO detection annotation file.")
+            categories = sorted(payload["categories"], key=lambda item: int(item["id"]))
+            split_classes = [str(item["name"]).strip() for item in categories]
+            if not split_classes or any(not name for name in split_classes):
+                raise RuntimeError(f"{annotation_path.name} has missing category names.")
+            if classes and split_classes != classes:
+                raise RuntimeError("UVH-26 train and validation splits use different class lists; refusing to merge incompatible labels.")
+            classes = split_classes
+            category_ids = {int(item["id"]): index for index, item in enumerate(categories)}
+            image_rows = payload["images"]
+            if not image_rows:
+                raise RuntimeError(f"{annotation_path.name} contains no image records.")
+            image_paths: dict[str, Path] = {}
+            duplicate_names: set[str] = set()
+            for image_path in (split_root / "data").rglob("*"):
+                if image_path.is_file() and image_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+                    key = image_path.name.casefold()
+                    if key in image_paths:
+                        duplicate_names.add(key)
+                    else:
+                        image_paths[key] = image_path
+            missing = [str(row.get("file_name", "")) for row in image_rows if Path(str(row.get("file_name", ""))).name.casefold() not in image_paths]
+            ambiguous = [str(row.get("file_name", "")) for row in image_rows if Path(str(row.get("file_name", ""))).name.casefold() in duplicate_names]
+            if missing or ambiguous:
+                examples = ", ".join((missing[:3] + ambiguous[:3]))
+                raise RuntimeError(f"UVH-26 {split} validation failed: {len(missing):,} referenced images are missing and {len(ambiguous):,} names are ambiguous. Examples: {examples}")
+            images_by_id: dict[int, dict[str, Any]] = {}
+            for image_index, row in enumerate(image_rows, start=1):
+                try:
+                    image_id = int(row["id"])
+                    width, height = int(row["width"]), int(row["height"])
+                    filename = Path(str(row["file_name"])).name
+                except (KeyError, TypeError, ValueError):
+                    raise RuntimeError(f"UVH-26 {split} contains an image record with invalid id, dimensions, or filename.")
+                if width <= 0 or height <= 0 or image_id in images_by_id:
+                    raise RuntimeError(f"UVH-26 {split} contains duplicate image IDs or invalid image dimensions.")
+                source_image = image_paths[filename.casefold()]
+                if source_image.suffix.lower() == ".png":
+                    with source_image.open("rb") as image_file:
+                        header = image_file.read(24)
+                    if len(header) < 24 or header[:8] != b"\x89PNG\r\n\x1a\n":
+                        raise RuntimeError(f"UVH-26 image {filename} is not a complete PNG file.")
+                    actual_width = int.from_bytes(header[16:20], "big")
+                    actual_height = int.from_bytes(header[20:24], "big")
+                    if (actual_width, actual_height) != (width, height):
+                        raise RuntimeError(f"UVH-26 image dimensions do not match its annotation for {filename}.")
+                elif source_image.stat().st_size == 0:
+                    raise RuntimeError(f"UVH-26 image {filename} is empty.")
+                images_by_id[image_id] = {"width": width, "height": height, "filename": filename, "source": source_image, "labels": []}
+                if image_index % 2000 == 0:
+                    split_progress = 5 + int(30 * image_index / len(image_rows)) if split == "train" else 40 + int(25 * image_index / len(image_rows))
+                    ml_dataset_import_state.update({"progress": split_progress, "message": f"Validated {image_index:,}/{len(image_rows):,} UVH-26 {split} image records."})
+            invalid_annotations = 0
+            for row in payload["annotations"]:
+                try:
+                    image = images_by_id[int(row["image_id"])]
+                    class_id = category_ids[int(row["category_id"])]
+                    x, y, width, height = (float(value) for value in row["bbox"])
+                    image_width, image_height = image["width"], image["height"]
+                    if not all(np.isfinite(value) for value in (x, y, width, height)) or width <= 0 or height <= 0 or x < -1 or y < -1 or x + width > image_width + 1 or y + height > image_height + 1:
+                        invalid_annotations += 1
+                        continue
+                    x = min(max(0.0, x), image_width)
+                    y = min(max(0.0, y), image_height)
+                    width = min(width, image_width - x)
+                    height = min(height, image_height - y)
+                    if width <= 0 or height <= 0:
+                        invalid_annotations += 1
+                        continue
+                    normalized = ((x + width / 2) / image_width, (y + height / 2) / image_height, width / image_width, height / image_height)
+                    image["labels"].append((class_id, normalized))
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    invalid_annotations += 1
+            if invalid_annotations:
+                raise RuntimeError(f"UVH-26 {split} validation found {invalid_annotations:,} annotations with invalid image/category references or bounding boxes. No converted data was published.")
+            manifests[split] = {"images": images_by_id, "annotations": len(payload["annotations"]), "annotation_file": str(annotation_path)}
+
+        if staging.exists():
+            raise RuntimeError(f"Preparation target already exists: {staging}")
+        for split_number, (split, manifest) in enumerate(manifests.items()):
+            image_dir, label_dir = staging / "images" / split, staging / "labels" / split
+            image_dir.mkdir(parents=True, exist_ok=False)
+            staging_created = True
+            label_dir.mkdir(parents=True, exist_ok=False)
+            image_total = len(manifest["images"])
+            ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "phase": "converting", "progress": 68 if split_number == 0 else 83, "message": f"Converting UVH-26 {split} images and COCO boxes into YOLO labels."})
+            for image_index, image in enumerate(manifest["images"].values(), start=1):
+                image_target = image_dir / image["filename"]
+                try:
+                    os.link(image["source"], image_target)
+                except OSError as exc:
+                    raise RuntimeError(f"Could not create a space-saving image link for {image['filename']}. Keep the dataset and VAOS derivative on the same NTFS drive. {exc}") from exc
+                lines = [f"{class_id} {cx:.8f} {cy:.8f} {width:.8f} {height:.8f}" for class_id, (cx, cy, width, height) in image["labels"]]
+                (label_dir / f"{Path(image['filename']).stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="ascii")
+                if image_index % 1000 == 0:
+                    progress = 68 + int(14 * image_index / image_total) if split_number == 0 else 83 + int(14 * image_index / image_total)
+                    ml_dataset_import_state.update({"progress": progress, "message": f"Converted {image_index:,}/{image_total:,} UVH-26 {split} images."})
+        yaml_path = staging / "dataset.yaml"
+        yaml_path.write_text("path: " + json.dumps(str(final_root.resolve())) + "\ntrain: images/train\nval: images/val\nnames:\n" + "".join(f"  {index}: {json.dumps(name, ensure_ascii=False)}\n" for index, name in enumerate(classes)), encoding="utf-8")
+        # Cheap structural verification before making the prepared copy visible.
+        for split, manifest in manifests.items():
+            if len(list((staging / "images" / split).iterdir())) != len(manifest["images"]):
+                raise RuntimeError(f"UVH-26 {split} conversion produced an unexpected image count.")
+            if len(list((staging / "labels" / split).glob("*.txt"))) != len(manifest["images"]):
+                raise RuntimeError(f"UVH-26 {split} conversion produced an unexpected label-file count.")
+        staging.replace(final_root)
+        yaml_path = final_root / "dataset.yaml"
+        imported = load_public_dataset_imports()
+        train_count = len(manifests["train"]["images"])
+        val_count = len(manifests["val"]["images"])
+        imported["uvh26"] = {"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "data_yaml": str(yaml_path), "classes": classes, "train_count": train_count, "val_count": val_count, "train_annotations": manifests["train"]["annotations"], "val_annotations": manifests["val"]["annotations"], "license": "CC BY 4.0", "imported_at": utc_now(), "source": "iisc-aim/UVH-26 · majority-vote annotations"}
+        write_public_dataset_imports(imported)
+        ml_dataset_import_state = {"status": "complete", "dataset": "uvh26", "message": f"UVH-26 validated · {train_count:,} train and {val_count:,} validation images · {len(classes)} vehicle classes · CC BY 4.0."}
+        write_training_log("INFO", "UVH-26 validated and prepared", train_images=train_count, validation_images=val_count, classes=len(classes), train_annotations=manifests["train"]["annotations"], validation_annotations=manifests["val"]["annotations"])
+    except Exception as exc:
+        if staging_created:
+            shutil.rmtree(staging, ignore_errors=True)
+        ml_dataset_import_state = {"status": "error", "dataset": "uvh26", "message": str(exc)[:500]}
+        logger.exception("VAOS UVH-26 preparation failed")
+        write_training_log("ERROR", "UVH-26 preparation failed", error=str(exc)[:400])
+    finally:
+        if ml_dataset_import_lock.locked():
+            ml_dataset_import_lock.release()
 
 
 def build_coco_dataset_yaml() -> tuple[Path, list[str]]:
@@ -1449,181 +1652,6 @@ def coco_dataset_layout_ready() -> bool:
         root / "labels" / "train2017", root / "labels" / "val2017",
     )
     return all(path.exists() for path in required)
-
-
-def sama_dataset_root() -> Path:
-    return ML_DATASETS_DIR / "sama-coco" / "dataset"
-
-
-def sama_dataset_layout_ready() -> bool:
-    root = sama_dataset_root()
-    required = (root / "dataset.yaml", root / "train2017.txt", root / "val2017.txt", root / "images" / "train2017", root / "images" / "val2017", root / "labels" / "train2017", root / "labels" / "val2017")
-    if not all(path.exists() for path in required):
-        return False
-    try:
-        return any((root / "labels" / "train2017").glob("*.txt")) and any((root / "labels" / "val2017").glob("*.txt"))
-    except OSError:
-        return False
-
-
-def _ensure_image_junction(source: Path, target: Path) -> None:
-    source = source.resolve(strict=True)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if os.path.lexists(target):
-        if target.resolve(strict=True) == source:
-            return
-        if target.is_dir() and sum(1 for _ in target.glob("*.jpg")) == sum(1 for _ in source.glob("*.jpg")):
-            return
-        raise RuntimeError(f"SAMA image path already exists with different contents: {target}")
-    try:
-        os.symlink(source, target, target_is_directory=True)
-    except OSError:
-        # Windows junctions reuse the existing 20 GB COCO image folders without copying them.
-        # Use paths relative to the app root and set cwd explicitly. Passing an
-        # absolute command string as a single cmd.exe argument double-quotes it
-        # on Windows when it contains spaces, so mklink fails despite valid paths.
-        target_relative = target.relative_to(BASE_DIR).as_posix()
-        source_relative = source.relative_to(BASE_DIR).as_posix()
-        command = f'mklink /J "{target_relative}" "{source_relative}"'
-        result = subprocess.run(command, shell=True, cwd=BASE_DIR, capture_output=True, text=True, timeout=15, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        if result.returncode != 0 or not target.is_dir():
-            reason = (result.stderr or result.stdout or "unknown Windows junction error").strip()
-            raise RuntimeError(f"Could not link SAMA-COCO to the existing COCO images ({reason[:240]}); no image copy or download was started.")
-
-
-def import_sama_coco_dataset() -> None:
-    """Convert official SAMA-COCO COCO-format annotations to YOLO labels, reusing local COCO images."""
-    global ml_sama_import_state
-    source_root = ML_DATASETS_DIR / "sama-coco"
-    downloads = source_root / "downloads"
-    root = sama_dataset_root()
-    image_source = ML_DATASETS_DIR / "coco2017" / "images"
-    archive_specs = (
-        ("sama-coco-train.zip", "https://sama-documentation-assets.s3.amazonaws.com/sama-coco/sama-coco-train.zip", 154_437_504, "train"),
-        ("sama-coco-val.zip", "https://sama-documentation-assets.s3.amazonaws.com/sama-coco/sama-coco-val.zip", 5_744_782, "val"),
-    )
-    try:
-        if not coco_dataset_layout_ready():
-            raise RuntimeError("Prepare the already-downloaded COCO 2017 image files first. SAMA-COCO reuses those images and does not download them again.")
-        imports = load_public_dataset_imports()
-        if imports.get("sama-coco") and sama_dataset_layout_ready():
-            ml_sama_import_state = {"status": "complete", "dataset": "sama-coco", "progress": 100, "message": "SAMA-COCO annotations are already prepared and ready. COCO images are reused locally."}
-            return
-        downloads.mkdir(parents=True, exist_ok=True)
-        archives: list[tuple[Path, str]] = []
-        expected_total = sum(spec[2] for spec in archive_specs)
-        downloaded_total = 0
-        for filename, url, expected_size, _split in archive_specs:
-            archive_path = downloads / filename
-            if not archive_path.is_file() or archive_path.stat().st_size != expected_size:
-                temporary = archive_path.with_suffix(archive_path.suffix + ".part")
-                temporary.unlink(missing_ok=True)
-                ml_sama_import_state = {"status": "downloading", "dataset": "sama-coco", "phase": "downloading", "progress": int(downloaded_total * 100 / expected_total), "downloaded_bytes": downloaded_total, "expected_bytes": expected_total, "message": f"Downloading official annotation archive {filename}. COCO images remain local."}
-                request = urllib.request.Request(url, headers={"User-Agent": "VAOS-Dataset-Importer/1.0"})
-                started = time.monotonic()
-                received = 0
-                with urllib.request.urlopen(request, timeout=45) as response, temporary.open("wb") as target_file:
-                    while chunk := response.read(1024 * 1024):
-                        target_file.write(chunk)
-                        received += len(chunk)
-                        ml_sama_import_state.update({"status": "downloading", "phase": "downloading", "progress": min(99, int((downloaded_total + received) * 100 / expected_total)), "downloaded_bytes": downloaded_total + received, "expected_bytes": expected_total, "speed_bytes_per_second": int(received / max(0.1, time.monotonic() - started)), "message": f"Downloading {filename} · {received:,} bytes. Existing COCO images will be reused."})
-                if received != expected_size:
-                    temporary.unlink(missing_ok=True)
-                    raise RuntimeError(f"SAMA-COCO archive size check failed for {filename}; expected {expected_size:,} bytes, got {received:,}.")
-                temporary.replace(archive_path)
-            with zipfile.ZipFile(archive_path) as archive:
-                bad_member = archive.testzip()
-                if bad_member:
-                    raise RuntimeError(f"SAMA-COCO archive failed integrity validation: {filename} · {bad_member}")
-                if not any(name.lower().endswith(".json") for name in archive.namelist()):
-                    raise RuntimeError(f"SAMA-COCO archive contains no annotation JSON files: {filename}")
-            downloaded_total += expected_size
-            archives.append((archive_path, _split))
-        for split in ("train", "val"):
-            source_images = image_source / ("train2017" if split == "train" else "val2017")
-            target_images = root / "images" / ("train2017" if split == "train" else "val2017")
-            _ensure_image_junction(source_images, target_images)
-            (root / "labels" / ("train2017" if split == "train" else "val2017")).mkdir(parents=True, exist_ok=True)
-        import yaml
-        import ultralytics
-        ultralytics_config = Path(ultralytics.__file__).resolve().parent / "cfg" / "datasets" / "coco.yaml"
-        config = yaml.safe_load(ultralytics_config.read_text(encoding="utf-8"))
-        classes = [str(name) for _, name in sorted(config["names"].items())]
-        class_ids = {name.casefold(): index for index, name in enumerate(classes)}
-        json_shards: list[tuple[Path, str, str]] = []
-        for archive_path, split in archives:
-            with zipfile.ZipFile(archive_path) as archive:
-                json_shards.extend((archive_path, split, member) for member in archive.namelist() if member.lower().endswith(".json"))
-        total_shards = len(json_shards)
-        processed_images = 0
-        ml_sama_import_state = {"status": "preparing", "dataset": "sama-coco", "phase": "converting", "progress": 0, "processed_images": 0, "total_images": 123_287, "message": f"Converting official SAMA-COCO annotations · 0 of {total_shards} shards. Reusing local COCO images."}
-        for shard_index, (archive_path, split, member) in enumerate(json_shards, 1):
-            image_split = "train2017" if split == "train" else "val2017"
-            labels_dir = root / "labels" / image_split
-            with zipfile.ZipFile(archive_path) as archive, archive.open(member) as raw:
-                document = json.loads(raw.read().decode("utf-8"))
-            categories = {int(item["id"]): class_ids.get(str(item.get("name", "")).casefold()) for item in document.get("categories", []) if isinstance(item, dict) and str(item.get("id", "")).isdigit()}
-            annotations_by_image: dict[int, list[str]] = {}
-            images_by_id = {int(item["id"]): item for item in document.get("images", []) if isinstance(item, dict) and str(item.get("id", "")).isdigit()}
-            for annotation in document.get("annotations", []):
-                if not isinstance(annotation, dict):
-                    continue
-                image_id = int(annotation.get("image_id", -1))
-                category_id = int(annotation.get("category_id", -1))
-                label_id = categories.get(category_id)
-                image = images_by_id.get(image_id)
-                bbox = annotation.get("bbox")
-                if label_id is None or image is None or not isinstance(bbox, list) or len(bbox) < 4:
-                    continue
-                try:
-                    width, height = float(image["width"]), float(image["height"])
-                    x, y, box_width, box_height = map(float, bbox[:4])
-                except (KeyError, TypeError, ValueError):
-                    continue
-                if width <= 0 or height <= 0 or box_width <= 0 or box_height <= 0:
-                    continue
-                x1, y1 = max(0.0, x), max(0.0, y)
-                x2, y2 = min(width, x + box_width), min(height, y + box_height)
-                if x2 <= x1 or y2 <= y1:
-                    continue
-                cx, cy, bw, bh = ((x1 + x2) / (2 * width), (y1 + y2) / (2 * height), (x2 - x1) / width, (y2 - y1) / height)
-                annotations_by_image.setdefault(image_id, []).append(f"{label_id} {cx:.6f} {cy:.6f} {bw:.6f} {bh:.6f}")
-            for image_id, image in images_by_id.items():
-                image_name = Path(str(image.get("file_name", ""))).name
-                if not image_name.lower().endswith(".jpg") or not image_name:
-                    continue
-                label_path = labels_dir / f"{Path(image_name).stem}.txt"
-                lines = annotations_by_image.get(image_id, [])
-                if lines:
-                    label_path.write_text("\n".join(lines) + "\n", encoding="ascii")
-                else:
-                    label_path.unlink(missing_ok=True)
-                processed_images += 1
-            ml_sama_import_state.update({"status": "preparing", "dataset": "sama-coco", "phase": "converting", "progress": min(99, int(shard_index * 100 / total_shards)), "processed_images": processed_images, "total_images": 123_287, "message": f"Converting SAMA-COCO labels · shard {shard_index} of {total_shards} · {processed_images:,} images. No image files are being copied."})
-        for split, image_split in (("train", "train2017"), ("val", "val2017")):
-            image_dir = root / "images" / image_split
-            listing = root / f"{split}2017.txt"
-            images = sorted(image_dir.glob("*.jpg"))
-            if not images:
-                raise RuntimeError(f"No existing COCO {image_split} images were found for SAMA-COCO.")
-            listing.write_text("".join(f"./images/{image_split}/{path.name}\n" for path in images), encoding="utf-8")
-        dataset_config = {"path": str(root.resolve()), "train": "train2017.txt", "val": "val2017.txt", "names": {index: name for index, name in enumerate(classes)}}
-        yaml_path = root / "dataset.yaml"
-        yaml_path.write_text(yaml.safe_dump(dataset_config, sort_keys=False, allow_unicode=True), encoding="utf-8")
-        from ultralytics.data.utils import check_det_dataset
-        check_det_dataset(str(yaml_path))
-        metadata = {"id": "sama-coco", "name": "SAMA-COCO", "data_yaml": str(yaml_path), "classes": classes, "train_limit": 118_287, "validation_images": 5_000, "imported_at": utc_now(), "license": "CC BY 4.0", "source": "https://www.sama.com/sama-coco-dataset", "annotation_archives": [str(path) for path, _ in archives], "image_source": "Existing local COCO 2017 images; reused via directory junctions"}
-        imports = load_public_dataset_imports()
-        imports["sama-coco"] = metadata
-        write_public_dataset_imports(imports)
-        ml_sama_import_state = {"status": "complete", "dataset": "sama-coco", "phase": "complete", "progress": 100, "processed_images": processed_images, "total_images": processed_images, "message": f"SAMA-COCO ready · {processed_images:,} images indexed across {len(classes)} classes. Existing COCO images are reused; no image copy or download was done."}
-        write_training_log("INFO", "SAMA-COCO prepared", images=processed_images, classes=len(classes), license="CC BY 4.0", reused_coco_images=True)
-    except Exception as exc:
-        logger.exception("VAOS SAMA-COCO preparation failed")
-        ml_sama_import_state = {"status": "error", "dataset": "sama-coco", "message": str(exc)[:500]}
-        write_training_log("ERROR", "SAMA-COCO preparation failed", error=str(exc)[:400])
-    finally:
-        ml_dataset_import_lock.release()
 
 
 def repair_coco_dataset_layout() -> None:
@@ -1753,10 +1781,17 @@ def import_coco2017_dataset() -> None:
 
 
 @app.get("/api/admin/ml/samples")
-def list_ml_samples(_: str = Depends(require_admin)):
+def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str = Depends(require_admin)):
+    limit = max(1, min(500, int(limit)))
+    offset = max(0, int(offset))
+    label = label.strip()
+    label_filter = " AND lower(COALESCE(s.confirmed_label,s.suggested_label))=lower(?)" if label else ""
+    label_params = (label,) if label else ()
     with db_connection() as db:
-        rows = db.execute("SELECT s.id,s.created_at,s.suggested_label,s.confidence,s.review_state,s.confirmed_label,c.name AS camera_name FROM ml_samples s JOIN cameras c ON c.token=s.camera_token WHERE s.review_state IN ('pending','later') ORDER BY s.id DESC LIMIT 100").fetchall()
+        rows = db.execute("SELECT s.id,s.created_at,s.suggested_label,s.confidence,s.review_state,s.confirmed_label,COALESCE(s.confirmed_label,s.suggested_label) AS review_label,c.name AS camera_name FROM ml_samples s JOIN cameras c ON c.token=s.camera_token WHERE s.review_state IN ('pending','later')" + label_filter + " ORDER BY COALESCE(s.confirmed_label,s.suggested_label) COLLATE NOCASE,s.id DESC LIMIT ? OFFSET ?", (*label_params, limit, offset)).fetchall()
         totals = db.execute("SELECT review_state,COUNT(*) AS n FROM ml_samples GROUP BY review_state").fetchall()
+        reviewable_class_counts = db.execute("SELECT COALESCE(confirmed_label,suggested_label) AS label,COUNT(*) AS n FROM ml_samples WHERE review_state IN ('pending','later') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL GROUP BY COALESCE(confirmed_label,suggested_label) ORDER BY label COLLATE NOCASE").fetchall()
+        filtered_reviewable_total = int(db.execute("SELECT COUNT(*) FROM ml_samples s WHERE s.review_state IN ('pending','later')" + label_filter, label_params).fetchone()[0])
         collection_stats = db.execute("SELECT COUNT(*) AS total,MAX(created_at) AS latest FROM ml_samples").fetchone()
         setting = db.execute("SELECT value FROM app_settings WHERE key='ml_capture_enabled'").fetchone()
         confirmed_labels = db.execute("SELECT DISTINCT COALESCE(confirmed_label,suggested_label) AS label FROM ml_samples WHERE review_state IN ('confirmed','corrected')").fetchall()
@@ -1813,7 +1848,8 @@ def list_ml_samples(_: str = Depends(require_admin)):
         if launcher_progress["batch"] >= current_batch and launcher_progress["batches"] >= current_total:
             training_state.update(launcher_progress)
             training_state["progress_source"] = "launcher_output"
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_import": dict(ml_dataset_import_state), "sama_dataset_import": dict(ml_sama_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "sama_dataset_ready": sama_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    reviewable_total = sum(int(row["n"]) for row in totals if row["review_state"] in {"pending", "later"})
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.get("/api/admin/ml/logs")
@@ -1898,24 +1934,26 @@ def list_ml_training_history(run_id: str | None = None, _: str = Depends(require
 @app.post("/api/admin/ml/datasets/import")
 def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(require_admin)):
     dataset_id = str(payload.get("dataset", ""))
-    if dataset_id == "sama-coco":
-        imported = load_public_dataset_imports().get("sama-coco")
-        if imported and sama_dataset_layout_ready():
-            ml_sama_import_state.update({"status": "complete", "dataset": "sama-coco", "progress": 100, "message": "SAMA-COCO is already prepared. Existing COCO images are reused."})
-            return {"status": "complete", "message": "SAMA-COCO is already prepared. Existing COCO images are reused."}
+    if dataset_id == "uvh26":
+        imported = load_public_dataset_imports().get("uvh26")
+        if imported and Path(str(imported.get("data_yaml", ""))).is_file():
+            ml_dataset_import_state.update({"status": "complete", "dataset": "uvh26", "message": "UVH-26 is already validated and ready; no source files were changed."})
+            return {"status": "complete", "message": "UVH-26 is already validated and ready."}
+        if ml_training_lock.locked():
+            raise HTTPException(status_code=409, detail="Wait for the active model training job to finish before preparing UVH-26.")
         if not ml_dataset_import_lock.acquire(blocking=False):
-            raise HTTPException(status_code=409, detail="Another public dataset preparation is already running")
-        ml_sama_import_state.update({"status": "preparing", "dataset": "sama-coco", "phase": "starting", "progress": 0, "message": "Starting SAMA-COCO annotation preparation. Existing COCO images will be reused."})
+            raise HTTPException(status_code=409, detail="A dataset preparation job is already running.")
+        ml_dataset_import_state.update({"status": "preparing", "dataset": "uvh26", "message": "Checking both UVH-26 splits, image references, and bounding boxes before converting to YOLO format."})
         try:
-            threading.Thread(target=import_sama_coco_dataset, name="vaos-sama-coco-import", daemon=True).start()
+            threading.Thread(target=prepare_uvh26_dataset, name="vaos-uvh26-prepare", daemon=True).start()
         except Exception as exc:
             ml_dataset_import_lock.release()
-            logger.exception("Could not launch the SAMA-COCO preparation worker")
-            ml_sama_import_state.update({"status": "error", "dataset": "sama-coco", "message": "Could not start SAMA-COCO preparation. Check the admin service log."})
-            raise HTTPException(status_code=503, detail="Could not start SAMA-COCO preparation. Check the admin service error log.") from exc
-        return {"status": "preparing", "message": "SAMA-COCO preparation started. COCO images are reused locally."}
+            ml_dataset_import_state.update({"status": "error", "dataset": "uvh26", "message": f"Could not start UVH-26 preparation: {exc}"})
+            logger.exception("Could not launch UVH-26 preparation")
+            raise HTTPException(status_code=503, detail="VAOS could not start UVH-26 preparation. Check the admin service error log.") from exc
+        return {"status": "preparing", "message": "UVH-26 validation and conversion started. Source annotations and images will remain unchanged."}
     if dataset_id != "coco2017":
-        raise HTTPException(status_code=400, detail="Choose COCO 2017 or SAMA-COCO")
+        raise HTTPException(status_code=400, detail="Choose UVH-26 or COCO 2017. Other local datasets remain unavailable until their annotations pass validation.")
     imported = load_public_dataset_imports().get("coco2017")
     if imported and coco_dataset_layout_ready():
         existing_yaml = Path(str(imported.get("data_yaml", "")))
@@ -1990,6 +2028,146 @@ def build_combined_coco_reviewed_yaml(coco_yaml: Path, reviewed: list[tuple[int,
     return yaml_path, class_names
 
 
+def build_combined_uvh_reviewed_yaml(uvh_yaml: Path, reviewed: list[tuple[int, bytes, str, str]], uvh_classes: list[str]) -> tuple[Path, list[str], int]:
+    """Mix validated UVH-26 images with reviewed crops, preserving existing class IDs."""
+    import yaml
+
+    aliases = {"auto rickshaw": "Three-wheeler", "autorickshaw": "Three-wheeler", "rickshaw": "Three-wheeler", "cycle": "Bicycle", "motorcycle": "Two-wheeler", "motorbike": "Two-wheeler", "bike": "Two-wheeler", "mini bus": "Mini-bus", "tempo traveller": "Tempo-traveller"}
+    def canonical(label: str) -> str:
+        clean = " ".join(str(label).strip().split())
+        return aliases.get(clean.casefold(), clean)
+
+    try:
+        prior_metadata = json.loads((ML_DATA_DIR / "active" / "metadata.json").read_text(encoding="utf-8"))
+        prior_classes = [str(label) for label in prior_metadata.get("classes", []) if str(label).strip()]
+    except (OSError, json.JSONDecodeError, TypeError):
+        prior_classes = []
+    class_names = list(prior_classes)
+    known = {label.casefold(): index for index, label in enumerate(class_names)}
+    for name in [*uvh_classes, *(canonical(item[2]) for item in reviewed)]:
+        if name.casefold() not in known:
+            known[name.casefold()] = len(class_names)
+            class_names.append(name)
+    mapping = {index: known[name.casefold()] for index, name in enumerate(uvh_classes)}
+    identity = hashlib.sha256(json.dumps([class_names, [(row[0], row[2], row[3]) for row in reviewed]], ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()[:12]
+    root = uvh_yaml.parent.parent / f"vaos-uvh26-reviewed-{identity}"
+    staging = root.with_name(root.name + ".incomplete")
+    if root.exists() and (root / "dataset.yaml").is_file():
+        return root / "dataset.yaml", class_names, sum(1 for split in ("train", "val") for _ in (root / "images" / split).iterdir())
+    if staging.exists():
+        raise RuntimeError(f"An incomplete combined UVH-26 dataset exists at {staging}; it was left untouched for inspection.")
+    base_root = uvh_yaml.parent
+    for split in ("train", "val"):
+        image_dir, label_dir = staging / "images" / split, staging / "labels" / split
+        image_dir.mkdir(parents=True, exist_ok=False)
+        label_dir.mkdir(parents=True, exist_ok=False)
+        source_images = base_root / "images" / split
+        source_labels = base_root / "labels" / split
+        if not source_images.is_dir() or not source_labels.is_dir():
+            raise RuntimeError(f"Validated UVH-26 {split} images or labels are missing. Prepare UVH-26 again before training.")
+        for image in source_images.iterdir():
+            if not image.is_file():
+                continue
+            os.link(image, image_dir / image.name)
+            source_label = source_labels / f"{image.stem}.txt"
+            remapped: list[str] = []
+            if source_label.is_file():
+                for line in source_label.read_text(encoding="ascii").splitlines():
+                    fields = line.split()
+                    if not fields:
+                        continue
+                    old_id = int(fields[0])
+                    if old_id not in mapping:
+                        raise RuntimeError(f"UVH-26 label contains unknown class ID {old_id} in {source_label.name}.")
+                    remapped.append(" ".join([str(mapping[old_id]), *fields[1:]]))
+            (label_dir / f"{image.stem}.txt").write_text("\n".join(remapped) + ("\n" if remapped else ""), encoding="ascii")
+
+    reviewed_images = 0
+    for index, (sample_id, image_bytes, raw_label, bbox) in enumerate(reviewed):
+        split = "val" if index % 5 == 0 else "train"
+        stem = f"review_sample_{sample_id}"
+        fields = [part for part in re.split(r"[\s,]+", str(bbox).strip()) if part]
+        try:
+            cx, cy, width, height = (float(value) for value in fields)
+        except (TypeError, ValueError):
+            raise RuntimeError(f"Reviewed sample {sample_id} has an invalid bounding box; it was excluded from combined training.")
+        if len(fields) != 4 or not all(np.isfinite(value) for value in (cx, cy, width, height)) or width <= 0 or height <= 0 or width > 1 or height > 1 or cx - width / 2 < -0.01 or cy - height / 2 < -0.01 or cx + width / 2 > 1.01 or cy + height / 2 > 1.01:
+            raise RuntimeError(f"Reviewed sample {sample_id} has an invalid normalized bounding box; it was excluded from combined training.")
+        class_id = known[canonical(raw_label).casefold()]
+        (staging / "images" / split / f"{stem}.jpg").write_bytes(image_bytes)
+        (staging / "labels" / split / f"{stem}.txt").write_text(f"{class_id} {cx:.8f} {cy:.8f} {width:.8f} {height:.8f}\n", encoding="ascii")
+        reviewed_images += 1
+    yaml_path = staging / "dataset.yaml"
+    yaml_path.write_text("path: " + json.dumps(str(root.resolve())) + "\ntrain: images/train\nval: images/val\nnames:\n" + "".join(f"  {index}: {json.dumps(name, ensure_ascii=False)}\n" for index, name in enumerate(class_names)), encoding="utf-8")
+    if not any((staging / "images" / "train").iterdir()) or not any((staging / "images" / "val").iterdir()):
+        raise RuntimeError("The combined UVH-26 dataset needs non-empty train and validation image splits.")
+    staging.replace(root)
+    return root / "dataset.yaml", class_names, reviewed_images
+
+
+def count_training_class_instances(data_yaml: Path, class_names: list[str]) -> tuple[dict[str, int], int]:
+    """Count labeled objects across the exact train/validation manifests."""
+    import yaml
+
+    config = yaml.safe_load(data_yaml.read_text(encoding="utf-8")) or {}
+    dataset_root = Path(str(config.get("path") or data_yaml.parent))
+    counts = {name: 0 for name in class_names}
+    invalid_ids = 0
+
+    def split_images(spec: Any):
+        if isinstance(spec, list):
+            entries = spec
+        elif isinstance(spec, str):
+            target = Path(spec)
+            if not target.is_absolute():
+                target = dataset_root / target
+            if target.is_dir():
+                yield from (path for path in target.rglob("*") if path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+                return
+            if target.is_file() and target.suffix.lower() == ".txt":
+                entries = target.read_text(encoding="utf-8").splitlines()
+            elif target.is_file():
+                entries = [str(target)]
+            else:
+                return
+        else:
+            return
+        for entry in entries:
+            image_path = Path(str(entry).strip())
+            if not str(entry).strip():
+                continue
+            if not image_path.is_absolute():
+                image_path = dataset_root / image_path
+            if image_path.suffix.lower() in {".jpg", ".jpeg", ".png", ".bmp", ".webp"}:
+                yield image_path
+
+    for split in ("train", "val"):
+        for image_path in split_images(config.get(split)):
+            parts = list(image_path.parts)
+            image_parts = [index for index, part in enumerate(parts) if part.casefold() == "images"]
+            if image_parts:
+                parts[image_parts[-1]] = "labels"
+                label_path = Path(*parts).with_suffix(".txt")
+            else:
+                label_path = image_path.with_suffix(".txt")
+            try:
+                with label_path.open("r", encoding="utf-8") as labels_file:
+                    for line in labels_file:
+                        fields = line.split()
+                        if not fields:
+                            continue
+                        class_id = int(fields[0])
+                        if 0 <= class_id < len(class_names):
+                            counts[class_names[class_id]] += 1
+                        else:
+                            invalid_ids += 1
+            except FileNotFoundError:
+                continue
+            except (OSError, UnicodeError, ValueError):
+                invalid_ids += 1
+    return counts, invalid_ids
+
+
 @app.post("/api/admin/ml/capture")
 def set_ml_capture(payload: dict[str, Any], _: str = Depends(require_admin)):
     enabled = bool(payload.get("enabled"))
@@ -2040,8 +2218,8 @@ def batch_review_ml_samples(payload: dict[str, Any], _: str = Depends(require_ad
     state_by_choice = {"approve": "confirmed", "reject": "rejected", "change_label": "corrected"}
     label = str(payload.get("label", "")).strip().lower()
     sample_ids = payload.get("ids")
-    if choice not in state_by_choice or not isinstance(sample_ids, list) or not sample_ids or len(sample_ids) > 100:
-        raise HTTPException(status_code=400, detail="Choose approve, reject, or change_label and provide up to 100 sample IDs")
+    if choice not in state_by_choice or not isinstance(sample_ids, list) or not sample_ids or len(sample_ids) > 500:
+        raise HTTPException(status_code=400, detail="Choose approve, reject, or change_label and provide up to 500 sample IDs")
     if choice == "change_label" and (not label or len(label) > 48 or not all(ch.isalnum() or ch in " _-" for ch in label)):
         raise HTTPException(status_code=400, detail="Enter a short corrected object name using letters, numbers, spaces, underscores, or hyphens")
     try:
@@ -2059,7 +2237,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
     job_started = time.monotonic()
     write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
     try:
-        epochs_total = 10 if dataset_source in {"coco2017", "combined", "sama_coco", "sama_combined"} else 30
+        epochs_total = 20 if dataset_source == "uvh26_combined" else 10 if dataset_source in {"coco2017", "combined"} else 30
         if dataset_source == "coco2017":
             imported = load_public_dataset_imports().get("coco2017")
             if not imported or not Path(imported.get("data_yaml", "")).is_file():
@@ -2082,26 +2260,19 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             yaml_path, labels = build_combined_coco_reviewed_yaml(base_yaml, labeled, coco_classes)
             sample_count = 118287 + len(labeled)
             dataset_name = "COCO 2017 + human-reviewed samples"
-        elif dataset_source in {"sama_coco", "sama_combined"}:
-            imported = load_public_dataset_imports().get("sama-coco")
-            if not imported or not Path(imported.get("data_yaml", "")).is_file() or not sama_dataset_layout_ready():
-                raise RuntimeError("Prepare SAMA-COCO annotations before selecting this dataset. Existing COCO images will be reused.")
-            base_yaml = Path(imported["data_yaml"])
-            labels = list(imported.get("classes", []))
-            if dataset_source == "sama_coco":
-                yaml_path = base_yaml
-                sample_count = 118287
-                dataset_name = "SAMA-COCO"
-            else:
-                with db_connection() as db:
-                    rows = db.execute("SELECT id,image,bbox,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
-                labeled = [(row["id"], bytes(row["image"]), row["confirmed_label"] or row["suggested_label"], row["bbox"]) for row in rows]
-                reviewed_labels = {item[2] for item in labeled}
-                if len(labeled) < 20 or len(reviewed_labels) < 2:
-                    raise RuntimeError("SAMA-COCO + reviewed training needs at least 20 confirmed crops across at least 2 object types.")
-                yaml_path, labels = build_combined_coco_reviewed_yaml(base_yaml, labeled, labels)
-                sample_count = 118287 + len(labeled)
-                dataset_name = "SAMA-COCO + human-reviewed samples"
+        elif dataset_source == "uvh26_combined":
+            imported = load_public_dataset_imports().get("uvh26")
+            if not imported or not Path(imported.get("data_yaml", "")).is_file():
+                raise RuntimeError("Prepare and validate the local UVH-26 dataset before choosing UVH-26 + reviewed samples.")
+            with db_connection() as db:
+                rows = db.execute("SELECT id,image,bbox,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
+            labeled = [(row["id"], bytes(row["image"]), row["confirmed_label"] or row["suggested_label"], row["bbox"]) for row in rows]
+            reviewed_labels = {item[2] for item in labeled}
+            if len(labeled) < 20 or len(reviewed_labels) < 2:
+                raise RuntimeError("UVH-26 + reviewed training needs at least 20 confirmed samples across at least 2 object types.")
+            yaml_path, labels, reviewed_count = build_combined_uvh_reviewed_yaml(Path(imported["data_yaml"]), labeled, list(imported.get("classes", [])))
+            sample_count = int(imported.get("train_count", 0)) + int(imported.get("val_count", 0)) + reviewed_count
+            dataset_name = "UVH-26 Indian road vehicles + human-reviewed samples"
         elif dataset_source == "reviewed":
             with db_connection() as db:
                 rows = db.execute("SELECT id,image,bbox,review_state,suggested_label,confirmed_label FROM ml_samples WHERE review_state IN ('confirmed','corrected') ORDER BY id").fetchall()
@@ -2126,7 +2297,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             sample_count = len(labeled)
             dataset_name = "Human-reviewed camera samples"
         else:
-            raise RuntimeError("Choose reviewed camera samples, COCO 2017, or prepared SAMA-COCO.")
+            raise RuntimeError("Choose reviewed camera samples, prepared COCO 2017, or validated UVH-26 + reviewed samples.")
         write_training_log("INFO", "Training data prepared", dataset=dataset_name, images=sample_count, classes=len(labels))
         if ml_training_state.get("stop_requested"):
             ml_training_state = {"status": "stopped", "progress": 0, "epoch": 0, "epochs": epochs_total, "stop_requested": False, "message": "Training was stopped safely before the first epoch; no new model was installed."}
@@ -2326,7 +2497,14 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         temp_model.replace(active / "best.pt")
         result_metrics = getattr(result, "results_dict", {}) or {}
         final_metrics = {str(key): round(float(value), 4) for key, value in result_metrics.items() if isinstance(value, (int, float))}
-        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": Path(model_file).name, "resource_mode": bool(resource_mode), "workers": training_workers, "batch": training_batch}
+        ml_training_state.update({"status": "running", "progress": 99, "message": "Training finished · saving per-class object counts and final model details."})
+        write_training_log("INFO", "Summarizing final training labels", dataset=dataset_name, classes=len(labels))
+        try:
+            class_counts, invalid_class_ids = count_training_class_instances(yaml_path, labels)
+        except Exception:
+            logger.exception("Could not summarize per-class training labels")
+            class_counts, invalid_class_ids = {}, None
+        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "class_counts": class_counts, "invalid_class_ids": invalid_class_ids, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": Path(model_file).name, "resource_mode": bool(resource_mode), "workers": training_workers, "batch": training_batch}
         metadata_tmp = active / "metadata.json.new"
         metadata_tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         metadata_tmp.replace(active / "metadata.json")
@@ -2355,21 +2533,19 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     if device_choice.startswith("gpu:") and device_choice.split(":", 1)[1].isdigit() and int(device_choice.split(":", 1)[1]) not in {item["index"] for item in inventory["gpus"]}:
         raise HTTPException(status_code=400, detail="That GPU is not available. Refresh the page and choose one listed in the device menu.")
     dataset_source = str(payload.get("source", "reviewed"))
-    if dataset_source not in {"reviewed", "coco2017", "combined", "sama_coco", "sama_combined"}:
+    if dataset_source not in {"reviewed", "coco2017", "combined", "uvh26_combined"}:
         write_training_log("WARNING", "Training request rejected", reason="Unsupported dataset source", source=dataset_source)
-        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, or SAMA-COCO training")
+        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, or UVH-26 + reviewed training")
     if dataset_source in {"coco2017", "combined"} and ("coco2017" not in load_public_dataset_imports() or not coco_dataset_layout_ready()):
         write_training_log("WARNING", "Training request rejected", reason="COCO 2017 is not imported", source=dataset_source)
         raise HTTPException(status_code=409, detail="Prepare COCO 2017 first. Existing image and label files will be reused; missing files are identified before a download starts.")
+    if dataset_source == "uvh26_combined" and ("uvh26" not in load_public_dataset_imports() or not Path(str(load_public_dataset_imports().get("uvh26", {}).get("data_yaml", ""))).is_file()):
+        write_training_log("WARNING", "Training request rejected", reason="UVH-26 has not passed validation", source=dataset_source)
+        raise HTTPException(status_code=409, detail="Validate and prepare both UVH-26 splits first. The dataset is not selectable until image references and annotations pass validation.")
     if dataset_source in {"coco2017", "combined"} and ml_dataset_import_state.get("status") in {"preparing", "downloading"}:
         reason = "COCO 2017 is still downloading. Wait for the import to finish before using COCO-based training. You can switch to Reviewed camera samples to train from confirmed samples now."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
         raise HTTPException(status_code=409, detail=reason)
-    if dataset_source in {"sama_coco", "sama_combined"} and ("sama-coco" not in load_public_dataset_imports() or not sama_dataset_layout_ready()):
-        write_training_log("WARNING", "Training request rejected", reason="SAMA-COCO annotations are not prepared", source=dataset_source)
-        raise HTTPException(status_code=409, detail="Prepare SAMA-COCO first. Its annotations will reuse your local COCO images without downloading them again.")
-    if dataset_source in {"sama_coco", "sama_combined"} and ml_sama_import_state.get("status") in {"preparing", "downloading"}:
-        raise HTTPException(status_code=409, detail="SAMA-COCO preparation is still running. Wait for it to finish before starting training.")
     if not ml_training_lock.acquire(blocking=False):
         reason = "A model training job is already active. Wait for it to finish before starting another."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
@@ -2404,7 +2580,7 @@ def list_ml_model_sources(_: str = Depends(require_admin)):
     with db_connection() as db:
         reviewed_count = int(db.execute("SELECT COUNT(*) FROM ml_samples WHERE review_state IN ('confirmed','corrected')").fetchone()[0])
         reviewed_types = int(db.execute("SELECT COUNT(DISTINCT COALESCE(confirmed_label,suggested_label)) FROM ml_samples WHERE review_state IN ('confirmed','corrected') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL").fetchone()[0])
-    return {"sources": sources, "dataset": {"coco2017_ready": coco_dataset_layout_ready(), "sama_coco_ready": sama_dataset_layout_ready(), "reviewed_count": reviewed_count, "reviewed_types": reviewed_types}, "training": {"status": ml_training_state.get("status", "idle")}, "devices": training_device_inventory()}
+    return {"sources": sources, "dataset": {"coco2017_ready": coco_dataset_layout_ready(), "reviewed_count": reviewed_count, "reviewed_types": reviewed_types}, "dataset_catalog": local_dataset_catalog(), "training": {"status": ml_training_state.get("status", "idle")}, "devices": training_device_inventory()}
 
 
 def get_huggingface_yolo_models() -> list[dict[str, Any]]:
@@ -2517,26 +2693,28 @@ def start_ml_enrichment(payload: dict[str, Any], _: str = Depends(require_admin)
     lock_acquired = False
     try:
         checkpoint = str(payload.get("checkpoint", "yolo26m"))
-        dataset_source = str(payload.get("dataset_source", "sama_combined"))
-        if dataset_source not in {"combined", "sama_combined"}:
-            raise HTTPException(status_code=400, detail="Choose COCO 2017 + reviewed samples or SAMA-COCO + reviewed samples.")
+        dataset_source = str(payload.get("dataset_source", "combined"))
+        if dataset_source not in {"reviewed", "combined"}:
+            raise HTTPException(status_code=400, detail="Choose reviewed samples or COCO 2017 + reviewed samples.")
         source_list = list_ml_model_sources(_).get("sources", [])
         source_ids = {item["id"] for item in source_list if isinstance(item, dict) and item.get("id")}
         if checkpoint not in source_ids:
             raise HTTPException(status_code=400, detail="Choose a model source that appears in the available model list.")
-        if dataset_source == "sama_combined" and (not sama_dataset_layout_ready() or "sama-coco" not in load_public_dataset_imports()):
-            raise HTTPException(status_code=409, detail="Prepare SAMA-COCO first. It reuses the COCO images already saved on this PC.")
         if dataset_source == "combined" and (not coco_dataset_layout_ready() or "coco2017" not in load_public_dataset_imports()):
-            raise HTTPException(status_code=409, detail="Prepare COCO 2017 before enrichment. Your local COCO files will be reused.")
-        if dataset_source == "sama_combined" and ml_sama_import_state.get("status") in {"preparing", "downloading"}:
-            raise HTTPException(status_code=409, detail="Wait for SAMA-COCO preparation to finish before enriching the model.")
+            raise HTTPException(status_code=409, detail="Prepare COCO 2017 before choosing it with reviewed samples. Your local COCO files will be reused.")
+        if dataset_source in {"reviewed", "combined"}:
+            with db_connection() as db:
+                reviewed_count = int(db.execute("SELECT COUNT(*) FROM ml_samples WHERE review_state IN ('confirmed','corrected')").fetchone()[0])
+                reviewed_types = int(db.execute("SELECT COUNT(DISTINCT COALESCE(confirmed_label,suggested_label)) FROM ml_samples WHERE review_state IN ('confirmed','corrected') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL").fetchone()[0])
+            if reviewed_count < 20 or reviewed_types < 2:
+                raise HTTPException(status_code=409, detail="Confirm at least 20 reviewed samples across two object types before starting an update.")
         if not ml_training_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="A training run is already active. Wait for it to finish before starting enrichment.")
         lock_acquired = True
         inventory = training_device_inventory()
         device_choice = "gpu:all" if inventory["gpus"] else f"cpu:{inventory['cpu_threads']}"
         device_summary = "all available CUDA GPUs" if inventory["gpus"] else f"CPU · {inventory['cpu_threads']} threads (no NVIDIA GPU detected)"
-        dataset_name = "SAMA-COCO + human-reviewed camera samples" if dataset_source == "sama_combined" else "COCO 2017 + human-reviewed camera samples"
+        dataset_name = "Human-reviewed camera samples" if dataset_source == "reviewed" else "COCO 2017 + human-reviewed camera samples"
         ml_training_state.update({"status": "preparing", "message": f"Model update queued · {dataset_name} · {device_summary}.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_summary, "elapsed_seconds": 0, "eta_seconds": None, "job_kind": "enrichment"})
         write_training_log("INFO", "Model enrichment requested", checkpoint=checkpoint, dataset=dataset_name, resources="all CUDA GPUs, bounded CPU data workers, managed system memory")
         threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, checkpoint, True), name="vaos-ml-enrichment", daemon=True).start()
