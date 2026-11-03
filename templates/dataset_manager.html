@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>VAOS · Dataset preparation</title><link rel="stylesheet" href="/static/style.css?v=vaos-0.10.16">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+</head>
+<body class="training-shell">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">VIDEO ANALYTICS OS</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</a>
+      <a class="nav-link" href="/live-system"><span class="nav-icon" aria-hidden="true">◉</span>Live system</a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link active" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
+      <a class="nav-link" href="/#engine-settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+    </nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools">{% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}<button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local analytics engine</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+  <main class="page-wrap training-page dataset-manager-page">
+    <header class="ml-page-heading dataset-manager-heading">
+      <div><p class="eyebrow">DATA WORKSPACE / PREPARE ONCE</p><h2>Dataset preparation</h2><p class="lead">Validate local YOLO detection data before it appears in the training menu. Original files stay in place until you explicitly purge them.</p></div>
+      <div class="dataset-manager-state"><span class="state-indicator" data-state="idle" id="dataset-run-state"><i></i><span>Ready</span></span><a class="button button-secondary button-small" href="/training">Open ML training</a></div>
+    </header>
+
+    <section class="dataset-manager-summary" aria-label="Dataset preparation status">
+      <article class="panel dataset-summary-card"><span>Training</span><strong id="dataset-training-state">Checking…</strong><small id="dataset-training-detail">CPU-only preparation never calls CUDA.</small></article>
+      <article class="panel dataset-summary-card"><span>Validated local datasets</span><strong id="dataset-ready-count">—</strong><small>Ready to select for future training</small></article>
+      <article class="panel dataset-summary-card"><span>Latest validation</span><strong id="dataset-prep-state">Idle</strong><small id="dataset-prep-detail">No dataset scan running</small></article>
+    </section>
+
+    <section class="panel dataset-prepare-panel" aria-labelledby="prepare-heading">
+      <div class="section-title-row"><div><p class="eyebrow">01 / VALIDATE</p><h3 id="prepare-heading">Add a local YOLO detection dataset</h3></div><span class="subtle-tag">CPU only · no CUDA</span></div>
+      <p class="helper dataset-format-note">Choose a dataset folder containing <code>data.yaml</code> or <code>dataset.yaml</code>, or enter the YAML file itself. This page checks train/validation images, class names, and normalized detection boxes. Segmentation-only or unlabeled datasets are not accepted here.</p>
+      <div class="dataset-form-grid">
+        <label>Dataset name<input id="dataset-name" type="text" maxlength="80" placeholder="e.g. Indian road vehicles" autocomplete="off"></label>
+        <label>Local folder or YAML path<input id="dataset-path" type="text" placeholder="D:\VAOS_Datasets\my-dataset" autocomplete="off" spellcheck="false"></label>
+      </div>
+      <label class="dataset-cpu-option" for="dataset-cpu-only"><input id="dataset-cpu-only" type="checkbox"><span><strong>Allow CPU-only preparation while training is active</strong><small>Validation uses CPU and disk only and does not query or use the GPU. It can still compete for CPU and disk bandwidth, so the active training run may slow down. VAOS blocks folders that overlap datasets currently registered for training.</small></span></label>
+      <div class="inline-actions dataset-actions"><button id="dataset-validate" class="button button-primary" type="button">Validate and add to training</button><button id="dataset-refresh" class="button button-secondary" type="button">Refresh list</button></div>
+      <div id="dataset-result" class="result-box" role="status" aria-live="polite">Enter a name and local path to begin.</div>
+      <div id="dataset-progress-wrap" class="training-progress-wrap hidden"><div class="training-progress-label"><strong id="dataset-progress-label">Checking files on CPU</strong><span id="dataset-progress-value">0%</span></div><progress id="dataset-progress" max="100" value="0"></progress></div>
+    </section>
+
+    <section class="panel dataset-list-panel" aria-labelledby="dataset-list-heading">
+      <div class="section-title-row"><div><p class="eyebrow">02 / TRAINING LIBRARY</p><h3 id="dataset-list-heading">Validated datasets</h3><p class="helper">Registered datasets appear in the Training data menu on the ML training page.</p></div><span class="subtle-tag" id="dataset-list-note">Loading…</span></div>
+      <div id="managed-dataset-list" class="managed-dataset-list"><div class="empty-state">Loading registered datasets…</div></div>
+      <aside class="dataset-purge-note"><strong>About purge</strong><span>Purge removes a selected local dataset from the training menu and permanently deletes its registered source folder. VAOS will block purge while training, validation, or a dataset download is active. Model checkpoints and training history are kept.</span></aside>
+    </section>
+    <footer class="ml-footer">VAOS validates YOLO detection data using CPU file and annotation checks. It does not initialize PyTorch or access CUDA on this page.</footer>
+  </main>
+  <script src="/static/theme.js?v=4"></script>
+  <script>
+    const $=id=>document.getElementById(id);
+    const escapeHtml=value=>String(value??'').replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+    async function api(path,options={}){const response=await fetch(path,{credentials:'same-origin',...options});const body=await response.json().catch(()=>({}));if(!response.ok){const error=new Error(body.detail||`Request failed (${response.status})`);error.status=response.status;throw error;}return body;}
+    function setIndicator(state,label){const node=$('dataset-run-state');node.dataset.state=state;node.querySelector('span').textContent=label;}
+    function renderDatasets(rows){$('dataset-ready-count').textContent=Number(rows.length).toLocaleString();$('dataset-list-note').textContent=`${rows.length} ready`;
+      if(!rows.length){$('managed-dataset-list').innerHTML='<div class="empty-state">No local datasets have been registered yet. Validate a YOLO detection dataset above to add it here.</div>';return;}
+      $('managed-dataset-list').innerHTML=rows.map(item=>`<article class="managed-dataset-card"><div class="managed-dataset-main"><div class="managed-dataset-title"><strong>${escapeHtml(item.name)}</strong><span class="state-indicator" data-state="complete"><i></i><span>Validated</span></span></div><p>${Number(item.image_count||0).toLocaleString()} images · ${Number(item.train_count||0).toLocaleString()} train · ${Number(item.val_count||0).toLocaleString()} validation · ${Number(item.classes?.length||0).toLocaleString()} classes · ${Number(item.annotations||0).toLocaleString()} boxes</p><small>Source folder: <code>${escapeHtml(item.source_root)}</code></small><small>Training manifest: <code>${escapeHtml(item.data_yaml)}</code></small><small>Validated ${item.validated_at?new Date(item.validated_at).toLocaleString():'—'} · Original files remain in place.</small></div><button class="button button-danger button-small" type="button" data-purge="${escapeHtml(item.id)}" data-name="${escapeHtml(item.name)}" data-root="${escapeHtml(item.source_root)}">Purge dataset</button></article>`).join('');
+      document.querySelectorAll('[data-purge]').forEach(button=>button.addEventListener('click',purgeDataset));
+    }
+    async function refresh(){try{const data=await api('/api/admin/ml/datasets/managed');renderDatasets(data.datasets||[]);const trainingActive=!!data.training_active;$('dataset-training-state').textContent=trainingActive?'Active':'Idle';$('dataset-training-detail').textContent=trainingActive?'GPU training is running. CPU-only prep may slow it through CPU/disk use; GPU is not accessed.':'No active training job.';const prep=data.preparation||{};$('dataset-prep-state').textContent=prep.status||'Idle';$('dataset-prep-detail').textContent=prep.message||'No dataset scan running';const busy=prep.status==='preparing';$('dataset-progress-wrap').classList.toggle('hidden',!busy);$('dataset-progress').value=Math.max(0,Math.min(100,Number(prep.progress)||0));$('dataset-progress-value').textContent=`${Number(prep.progress)||0}%`;$('dataset-progress-label').textContent=prep.message||'Checking files on CPU';$('dataset-validate').disabled=busy;$('dataset-validate').textContent=busy?'Validating on CPU…':'Validate and add to training';setIndicator(busy?'preparing':prep.status==='error'?'error':'idle',busy?'CPU validation':prep.status==='complete'?'Validated':prep.status==='error'?'Needs attention':'Ready');if(prep.message&&['complete','error'].includes(prep.status))$('dataset-result').textContent=prep.message;return busy;}catch(error){$('dataset-result').textContent=`Could not load dataset status: ${error.message}`;$('dataset-result').classList.add('error');setIndicator('error','Unavailable');return false;}}
+    async function prepareDataset(){const name=$('dataset-name').value.trim(),path=$('dataset-path').value.trim(),trainingActive=$('dataset-training-state').textContent==='Active',cpuOnly=$('dataset-cpu-only').checked;if(!name||!path){$('dataset-result').textContent='Enter both a dataset name and a local folder or YAML path.';return;}if(trainingActive&&!cpuOnly){$('dataset-result').textContent='Training is active. Check the CPU-only option to continue. The GPU will not be used.';$('dataset-result').classList.add('error');return;}if(trainingActive&&!confirm('Training is active. Dataset validation will use CPU and disk only and will not access the GPU, but it may slow training. Continue?'))return;$('dataset-result').classList.remove('error');$('dataset-result').textContent='Starting CPU-only validation…';$('dataset-validate').disabled=true;try{const result=await api('/api/admin/ml/datasets/prepare',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,path,cpu_only_during_training:cpuOnly})});$('dataset-result').textContent=result.message||'Validation started.';await refresh();}catch(error){$('dataset-result').textContent=error.message;$('dataset-result').classList.add('error');$('dataset-validate').disabled=false;}}
+    async function purgeDataset(event){const button=event.currentTarget,name=button.dataset.name,root=button.dataset.root;if(!confirm(`Permanently remove “${name}” from the training menu and delete this entire original dataset folder?\n\n${root}\n\nThis cannot be undone. Model checkpoints and training history will remain.`))return;button.disabled=true;try{const result=await api(`/api/admin/ml/datasets/managed/${encodeURIComponent(button.dataset.purge)}`,{method:'DELETE',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirm_name:name})});$('dataset-result').textContent=result.message;await refresh();}catch(error){alert(error.message);button.disabled=false;}}
+    $('dataset-validate').addEventListener('click',prepareDataset);$('dataset-refresh').addEventListener('click',()=>refresh());$('dataset-cpu-only').addEventListener('change',()=>{$('dataset-result').classList.remove('error');});
+    refresh().then(busy=>{if(busy)setTimeout(poll,1600);});async function poll(){const busy=await refresh();setTimeout(poll,busy?1600:7000);}setInterval(()=>{if($('dataset-training-state').textContent!=='Active')refresh();},7000);
+  </script>
+</body>
+</html>

@@ -76,7 +76,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "0.10.15"
+APP_VERSION = "0.10.16"
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
 ENGINE_SETTING_DEFAULTS = {
@@ -126,8 +126,10 @@ ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 ML_TRAINING_LOG_PATH = ML_DATA_DIR / "training.log"
 ml_training_state: dict[str, Any] = {"status": "idle", "message": "No training job has been started."}
 ml_dataset_import_state: dict[str, Any] = {"status": "idle", "message": "No public dataset import is running."}
+ml_dataset_prepare_state: dict[str, Any] = {"status": "idle", "message": "No local dataset validation is running."}
 ml_training_lock = threading.Lock()
 ml_dataset_import_lock = threading.Lock()
+ml_dataset_prepare_lock = threading.Lock()
 ml_training_log_lock = threading.Lock()
 system_metrics_lock = threading.Lock()
 system_metrics_cache: dict[str, Any] = {"sampled_at": 0.0, "data": {}}
@@ -881,6 +883,11 @@ def ml_training_activity_page(request: Request, _: str = Depends(require_admin))
     return templates.TemplateResponse(request, "training_activity.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
 
 
+@app.get("/datasets", response_class=HTMLResponse)
+def dataset_manager_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+
+
 @app.get("/live-system", response_class=HTMLResponse)
 def live_system_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "live_system.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
@@ -1418,7 +1425,7 @@ def load_public_dataset_imports() -> dict[str, Any]:
             return {}
         # Only datasets with an implemented preparation and validation path are
         # exposed to training. Raw or retired registry records remain unusable.
-        return {key: item for key, item in value.items() if key in {"coco2017", "uvh26", "kaggle_auto"}}
+        return {key: item for key, item in value.items() if key in {"coco2017", "uvh26", "kaggle_auto"} or (key.startswith("local_") and isinstance(item, dict) and item.get("managed_local_dataset") is True)}
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -1428,6 +1435,346 @@ def write_public_dataset_imports(value: dict[str, Any]) -> None:
     temporary = path.with_suffix(".json.new")
     temporary.write_text(json.dumps(value, indent=2), encoding="utf-8")
     temporary.replace(path)
+
+
+def _path_is_within(candidate: Path, parent: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(parent.resolve())
+        return True
+    except (OSError, ValueError):
+        return False
+
+
+def _dataset_allowed_roots() -> list[Path]:
+    return [
+        Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")).expanduser().resolve(),
+        ML_DATASETS_DIR.resolve(),
+    ]
+
+
+def _training_dataset_roots() -> list[Path]:
+    imports = load_public_dataset_imports()
+    dataset_root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")).expanduser()
+    active_source = str(ml_training_state.get("source") or "")
+    if active_source:
+        roots: list[Path] = []
+        if active_source in {"reviewed", "combined", "combined_kaggle", "uvh26_combined", "combined_vehicle"}:
+            roots.append(ML_DATA_DIR.resolve())
+        elif active_source.startswith("dataset:"):
+            record = imports.get(active_source.split(":", 1)[1], {})
+            if isinstance(record, dict):
+                for key in ("source_root", "data_root", "data_yaml"):
+                    if record.get(key):
+                        path = Path(str(record[key])).expanduser()
+                        roots.append((path.parent if path.suffix.lower() in {".yaml", ".yml"} else path).resolve())
+        else:
+            dataset_ids = {
+                "coco2017": {"coco2017"}, "combined": {"coco2017"},
+                "combined_kaggle": {"coco2017", "kaggle_auto"},
+                "uvh26_combined": {"uvh26"},
+                "combined_vehicle": {"coco2017", "uvh26", "kaggle_auto"},
+            }.get(active_source, set())
+            for dataset_id in dataset_ids:
+                record = imports.get(dataset_id, {})
+                if dataset_id == "uvh26":
+                    roots.append((dataset_root / "UVH-26").resolve())
+                elif dataset_id == "kaggle_auto":
+                    roots.append((dataset_root / "kaggle_auto").resolve())
+                elif isinstance(record, dict) and record.get("data_yaml"):
+                    roots.append(Path(str(record["data_yaml"])).expanduser().resolve().parent)
+        return roots or [ML_DATA_DIR.resolve()]
+
+    # Older running jobs do not expose their selected source in their status
+    # record. Be conservative for those jobs until they finish.
+    roots = [ML_DATA_DIR.resolve(), (dataset_root / "UVH-26").resolve(), (dataset_root / "kaggle_auto").resolve()]
+    for record in imports.values():
+        if not isinstance(record, dict):
+            continue
+        for key in ("source_root", "data_root", "data_yaml"):
+            raw = record.get(key)
+            if not raw:
+                continue
+            path = Path(str(raw)).expanduser()
+            roots.append((path.parent if path.suffix.lower() in {".yaml", ".yml"} else path).resolve())
+    return roots
+
+
+def _read_yolo_dataset_config(yaml_path: Path) -> tuple[dict[str, Any], Path, list[str]]:
+    try:
+        import yaml
+        config = yaml.safe_load(yaml_path.read_text(encoding="utf-8-sig")) or {}
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError(f"Could not read dataset YAML: {exc}") from exc
+    except ImportError as exc:
+        raise ValueError("PyYAML is not installed in the VAOS admin service environment.") from exc
+    if not isinstance(config, dict):
+        raise ValueError("Dataset YAML must contain a mapping with path, train, val, and names.")
+    names_value = config.get("names")
+    if isinstance(names_value, dict):
+        try:
+            name_keys = sorted(names_value, key=lambda item: int(item))
+            if [int(key) for key in name_keys] != list(range(len(name_keys))):
+                raise ValueError("The class IDs in dataset YAML must be consecutive integers starting at 0.")
+            names = [str(names_value[key]).strip() for key in name_keys]
+        except (TypeError, ValueError):
+            if all(str(key).lstrip("+-").isdigit() for key in names_value):
+                raise
+            names = [str(value).strip() for value in names_value.values()]
+    elif isinstance(names_value, list):
+        names = [str(value).strip() for value in names_value]
+    else:
+        raise ValueError("The YAML must define object class names as a list or numbered mapping.")
+    if not names or any(not name for name in names):
+        raise ValueError("The dataset must define at least one non-empty object class name.")
+    raw_root = config.get("path") or str(yaml_path.parent)
+    root = Path(str(raw_root)).expanduser()
+    if not root.is_absolute():
+        root = yaml_path.parent / root
+    root = root.resolve()
+    return config, root, names
+
+
+def _split_image_paths(value: Any, dataset_root: Path) -> list[Path]:
+    entries = value if isinstance(value, list) else [value]
+    images: list[Path] = []
+    extensions = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+    for entry in entries:
+        if not isinstance(entry, (str, Path)):
+            raise ValueError("Train/validation entries must be image folders, image-list files, or lists of those paths.")
+        path = Path(str(entry)).expanduser()
+        if not path.is_absolute():
+            path = dataset_root / path
+        path = path.resolve()
+        if path.is_file() and path.suffix.lower() in {".txt", ".list"}:
+            try:
+                listing = path.read_text(encoding="utf-8-sig").splitlines()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise ValueError(f"Could not read image list {path.name}: {exc}") from exc
+            for line in listing:
+                raw = line.strip()
+                if not raw:
+                    continue
+                image = Path(raw).expanduser()
+                if not image.is_absolute():
+                    image = (path.parent / image).resolve()
+                if image.suffix.lower() in extensions:
+                    images.append(image.resolve())
+        elif path.is_dir():
+            images.extend(item.resolve() for item in path.rglob("*") if item.is_file() and item.suffix.lower() in extensions)
+        elif path.is_file() and path.suffix.lower() in extensions:
+            images.append(path)
+        else:
+            raise ValueError(f"Train/validation path is missing or unsupported: {entry}")
+    return images
+
+
+def _label_path_for_image(image_path: Path) -> Path:
+    parts = list(image_path.parts)
+    indexes = [index for index, part in enumerate(parts) if part.casefold() == "images"]
+    if indexes:
+        parts[indexes[-1]] = "labels"
+        return Path(*parts).with_suffix(".txt")
+    return image_path.parent.parent / "labels" / image_path.parent.name / f"{image_path.stem}.txt"
+
+
+def validate_local_yolo_dataset(source_path: Path, progress_callback=None) -> dict[str, Any]:
+    """CPU-only structural and annotation validation for a YOLO detection dataset."""
+    source_path = source_path.resolve()
+    if source_path.is_file() and source_path.suffix.lower() in {".yaml", ".yml"}:
+        yaml_path = source_path
+        source_root = yaml_path.parent.resolve()
+    elif source_path.is_dir():
+        source_root = source_path
+        candidates = [source_root / "dataset.yaml", source_root / "data.yaml"]
+        yaml_path = next((candidate for candidate in candidates if candidate.is_file()), None)
+        if yaml_path is None:
+            raise ValueError("Choose a YOLO detection dataset folder containing dataset.yaml or data.yaml, or select its YAML file directly.")
+    else:
+        raise ValueError("The selected path must be an existing dataset folder or YAML file.")
+    if yaml_path.is_symlink() or source_root.is_symlink():
+        raise ValueError("Dataset roots and YAML files cannot be symbolic links.")
+    config, dataset_root, names = _read_yolo_dataset_config(yaml_path)
+    if not _path_is_within(yaml_path, source_root) or not _path_is_within(dataset_root, source_root):
+        raise ValueError("The YAML and its declared dataset root must stay inside the selected source folder. This is required for safe training and purge.")
+    split_images = {}
+    for split in ("train", "val"):
+        if not config.get(split):
+            raise ValueError(f"The dataset YAML is missing the required '{split}' split.")
+        images = _split_image_paths(config[split], dataset_root)
+        if not images:
+            raise ValueError(f"The {split} split contains no supported images.")
+        if any(not _path_is_within(image, source_root) for image in images):
+            raise ValueError(f"At least one {split} image points outside the selected source folder; this dataset cannot be safely purged as a unit.")
+        split_images[split] = images
+    all_images = split_images["train"] + split_images["val"]
+    total = len(all_images)
+    missing_labels = invalid_labels = invalid_images = boxes = 0
+    for index, image in enumerate(all_images, start=1):
+        try:
+            if image.stat().st_size <= 0 or cv2.imread(str(image), cv2.IMREAD_UNCHANGED) is None:
+                invalid_images += 1
+        except OSError:
+            invalid_images += 1
+        label_path = _label_path_for_image(image)
+        if not _path_is_within(label_path, source_root):
+            raise ValueError("A derived label path escaped the selected dataset folder.")
+        if not label_path.is_file():
+            missing_labels += 1
+        else:
+            try:
+                for line in label_path.read_text(encoding="utf-8-sig").splitlines():
+                    fields = line.split()
+                    if not fields:
+                        continue
+                    if len(fields) != 5:
+                        invalid_labels += 1
+                        continue
+                    class_id = int(fields[0])
+                    coords = [float(value) for value in fields[1:]]
+                    if class_id < 0 or class_id >= len(names) or not np.isfinite(coords).all() or any(value < 0 or value > 1 for value in coords) or coords[2] <= 0 or coords[3] <= 0:
+                        invalid_labels += 1
+                        continue
+                    boxes += 1
+            except (OSError, UnicodeDecodeError, ValueError):
+                invalid_labels += 1
+        if progress_callback and (index == total or index % 250 == 0):
+            progress_callback(index, total)
+    if invalid_images:
+        raise ValueError(f"Could not decode {invalid_images:,} listed images with the CPU image reader. Repair those files before adding this dataset.")
+    if boxes == 0:
+        raise ValueError("No valid YOLO detection boxes were found. This looks like an unlabeled or segmentation dataset, so it cannot train the VAOS detector.")
+    if invalid_labels:
+        raise ValueError(f"Found {invalid_labels:,} invalid YOLO label rows. Fix them before adding this dataset to training.")
+    return {
+        "data_yaml": str(yaml_path.resolve()), "source_root": str(source_root), "data_root": str(dataset_root),
+        "classes": names, "train_count": len(split_images["train"]), "val_count": len(split_images["val"]),
+        "image_count": total, "labeled_images": total - missing_labels, "missing_label_files": missing_labels,
+        "invalid_images": invalid_images, "annotations": boxes,
+    }
+
+
+def _dataset_conflicts_with_training(source_root: Path) -> bool:
+    if not ml_training_lock.locked():
+        return False
+    return any(_path_is_within(source_root, active) or _path_is_within(active, source_root) for active in _training_dataset_roots())
+
+
+def _prepare_local_dataset_worker(name: str, source_path: Path, dataset_id: str) -> None:
+    global ml_dataset_prepare_state
+    try:
+        ml_dataset_prepare_state.update({"status": "preparing", "progress": 0, "message": "Checking the local YOLO dataset on CPU. No CUDA/GPU calls are made."})
+        def progress(current: int, total: int) -> None:
+            ml_dataset_prepare_state.update({"status": "preparing", "progress": min(99, round(current * 100 / max(total, 1))), "message": f"CPU validation · checked {current:,} of {total:,} images and labels. No CUDA/GPU calls are made."})
+        report = validate_local_yolo_dataset(source_path, progress)
+        if _dataset_conflicts_with_training(Path(report["source_root"])):
+            raise ValueError("This dataset overlaps files currently used by the active training run. Wait for training to finish before adding it.")
+        record = {
+            "id": dataset_id, "name": name, "managed_local_dataset": True,
+            "data_yaml": report["data_yaml"], "source_root": report["source_root"],
+            "data_root": report["data_root"], "classes": report["classes"],
+            "train_count": report["train_count"], "val_count": report["val_count"],
+            "image_count": report["image_count"], "labeled_images": report["labeled_images"],
+            "missing_label_files": report["missing_label_files"], "annotations": report["annotations"],
+            "validated_at": utc_now(), "imported_at": utc_now(), "format": "YOLO detection",
+        }
+        imports = load_public_dataset_imports()
+        imports[dataset_id] = record
+        write_public_dataset_imports(imports)
+        ml_dataset_prepare_state = {"status": "complete", "progress": 100, "dataset": dataset_id, "message": f"{name} validated and added to the training-data menu · {report['image_count']:,} images · {len(report['classes']):,} classes · {report['annotations']:,} valid boxes. CPU-only; GPU was not used.", "report": record}
+    except Exception as exc:
+        ml_dataset_prepare_state = {"status": "error", "progress": 0, "message": str(exc)[:700]}
+        logger.warning("Local dataset validation failed: %s", exc, exc_info=True)
+    finally:
+        ml_dataset_prepare_lock.release()
+
+
+@app.get("/api/admin/ml/datasets/managed")
+def list_managed_datasets(_: str = Depends(require_admin)):
+    imports = load_public_dataset_imports()
+    datasets = [item for key, item in imports.items() if key.startswith("local_") and isinstance(item, dict) and item.get("managed_local_dataset") is True]
+    training_active = ml_training_lock.locked()
+    return {"datasets": datasets, "preparation": dict(ml_dataset_prepare_state), "training_active": training_active}
+
+
+@app.post("/api/admin/ml/datasets/prepare")
+def prepare_local_dataset(payload: dict[str, Any], _: str = Depends(require_admin)):
+    raw_path = str(payload.get("path", "")).strip().strip('"')
+    name = str(payload.get("name", "")).strip()[:80]
+    allow_during_training = payload.get("cpu_only_during_training") is True
+    if not raw_path or not name:
+        raise HTTPException(status_code=400, detail="Enter a dataset name and its local folder or YAML file path.")
+    source_path = Path(raw_path).expanduser()
+    if not source_path.exists() or source_path.is_symlink():
+        raise HTTPException(status_code=400, detail="The selected dataset path does not exist or is a symbolic link.")
+    source_root = source_path.parent.resolve() if source_path.is_file() else source_path.resolve()
+    allowed_roots = _dataset_allowed_roots()
+    if not any(_path_is_within(source_root, root) for root in allowed_roots):
+        raise HTTPException(status_code=400, detail="For safe registration and purge, place datasets under D:\\VAOS_Datasets or this app's managed training-data folder.")
+    if source_root in allowed_roots:
+        raise HTTPException(status_code=400, detail="Select a specific dataset subfolder, not the full datasets root.")
+    if any(Path(str(item.get("source_root", ""))).resolve() == source_root for item in load_public_dataset_imports().values() if isinstance(item, dict) and item.get("source_root")):
+        raise HTTPException(status_code=409, detail="This folder is already registered as a dataset.")
+    if ml_training_lock.locked() and not allow_during_training:
+        raise HTTPException(status_code=409, detail="Training is active. Enable the CPU-only preparation option to validate a separate dataset without using the GPU.")
+    if ml_dataset_import_lock.locked() or not ml_dataset_prepare_lock.acquire(blocking=False):
+        raise HTTPException(status_code=409, detail="Another dataset download or preparation is running. Wait for it to finish first.")
+    if _dataset_conflicts_with_training(source_root):
+        ml_dataset_prepare_lock.release()
+        raise HTTPException(status_code=409, detail="This folder overlaps a dataset currently used by training. Choose a separate folder or wait for training to finish.")
+    dataset_id = f"local_{secrets.token_hex(6)}"
+    ml_dataset_prepare_state.update({"status": "preparing", "progress": 0, "dataset": dataset_id, "message": "Starting CPU-only validation. CUDA/GPU will not be queried or used."})
+    try:
+        threading.Thread(target=_prepare_local_dataset_worker, args=(name, source_path, dataset_id), name="vaos-local-dataset-validation", daemon=True).start()
+    except Exception as exc:
+        ml_dataset_prepare_lock.release()
+        ml_dataset_prepare_state.update({"status": "error", "message": f"Could not start CPU validation: {exc}"})
+        raise HTTPException(status_code=503, detail="Could not start local dataset validation.") from exc
+    return {"status": "preparing", "dataset": dataset_id, "message": "CPU-only dataset validation started. The GPU is not used."}
+
+
+@app.delete("/api/admin/ml/datasets/managed/{dataset_id}")
+def purge_managed_dataset(dataset_id: str, payload: dict[str, Any] | None = None, _: str = Depends(require_admin)):
+    imports = load_public_dataset_imports()
+    record = imports.get(dataset_id)
+    if not dataset_id.startswith("local_") or not isinstance(record, dict) or record.get("managed_local_dataset") is not True:
+        raise HTTPException(status_code=404, detail="This managed local dataset was not found.")
+    expected_name = str(record.get("name", ""))
+    if str((payload or {}).get("confirm_name", "")) != expected_name:
+        raise HTTPException(status_code=400, detail="Confirmation did not match the dataset name.")
+    if ml_training_lock.locked() or ml_dataset_import_lock.locked() or ml_dataset_prepare_lock.locked():
+        raise HTTPException(status_code=409, detail="Stop/wait for training and dataset preparation/downloads to finish before purging a dataset.")
+    raw_root = record.get("source_root")
+    if not raw_root:
+        raise HTTPException(status_code=409, detail="This dataset has no recorded source folder, so VAOS cannot safely purge it.")
+    source_root = Path(str(raw_root)).resolve()
+    yaml_value = str(record.get("data_yaml", ""))
+    yaml_path = Path(yaml_value).resolve() if yaml_value else Path()
+    allowed_roots = _dataset_allowed_roots()
+    if source_root.is_symlink() or source_root in allowed_roots or not any(_path_is_within(source_root, root) for root in allowed_roots) or not yaml_value or yaml_path.suffix.lower() not in {".yaml", ".yml"} or not _path_is_within(yaml_path, source_root):
+        raise HTTPException(status_code=403, detail="The recorded folder is outside approved dataset roots or is not safe to purge.")
+    if not source_root.is_dir():
+        imports.pop(dataset_id, None)
+        write_public_dataset_imports(imports)
+        return {"ok": True, "removed_from_training": True, "folder_removed": False, "message": "The dataset was removed from the training menu; its source folder was already missing."}
+    staged = source_root.with_name(f".vaos-purging-{dataset_id}")
+    if staged.exists():
+        raise HTTPException(status_code=409, detail="A previous purge staging folder exists. Review it before retrying.")
+    try:
+        source_root.rename(staged)
+    except OSError as exc:
+        raise HTTPException(status_code=409, detail=f"Could not safely stage the original folder for removal: {exc}") from exc
+    imports.pop(dataset_id, None)
+    try:
+        write_public_dataset_imports(imports)
+    except OSError as exc:
+        staged.rename(source_root)
+        raise HTTPException(status_code=500, detail="Could not update the training menu; the dataset folder was restored.") from exc
+    try:
+        shutil.rmtree(staged)
+    except OSError as exc:
+        logger.exception("Dataset purge did not remove staged folder %s", staged)
+        raise HTTPException(status_code=500, detail=f"Removed from the training menu, but some files remain in {staged}. Check that folder before retrying.") from exc
+    return {"ok": True, "removed_from_training": True, "folder_removed": True, "message": f"{expected_name} and its original dataset folder were purged."}
 
 
 def local_dataset_catalog() -> list[dict[str, Any]]:
@@ -2018,7 +2365,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
             training_state.update(launcher_progress)
             training_state["progress_source"] = "launcher_output"
     reviewable_total = sum(int(row["n"]) for row in totals if row["review_state"] in {"pending", "later"})
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "dataset_prepare": dict(ml_dataset_prepare_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.get("/api/admin/ml/logs")
@@ -2695,8 +3042,17 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
     job_started = time.monotonic()
     write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
     try:
-        epochs_total = 20 if dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
-        if dataset_source == "coco2017":
+        epochs_total = 20 if dataset_source.startswith("dataset:") or dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
+        if dataset_source.startswith("dataset:"):
+            dataset_id = dataset_source.split(":", 1)[1]
+            imported = load_public_dataset_imports().get(dataset_id)
+            if not imported or imported.get("managed_local_dataset") is not True or not Path(str(imported.get("data_yaml", ""))).is_file():
+                raise RuntimeError("The selected local dataset is no longer registered or its YAML file is missing. Revalidate it on Dataset preparation.")
+            yaml_path = Path(str(imported["data_yaml"]))
+            labels = list(imported.get("classes", []))
+            sample_count = int(imported.get("image_count", int(imported.get("train_count", 0)) + int(imported.get("val_count", 0))))
+            dataset_name = str(imported.get("name", "Validated local dataset"))
+        elif dataset_source == "coco2017":
             imported = load_public_dataset_imports().get("coco2017")
             if not imported or not Path(imported.get("data_yaml", "")).is_file():
                 raise RuntimeError("Import COCO 2017 before selecting it for training.")
@@ -2852,7 +3208,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             train_device = "cpu"
             device_label = f"CPU · {cpu_threads} thread{'s' if cpu_threads != 1 else ''}"
         job_kind = "enrichment" if resource_mode else "training"
-        ml_training_state = {"status": "running", "job_kind": job_kind, "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
+        ml_training_state = {"status": "running", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "data_yaml": str(yaml_path), "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
         model = YOLO(model_file)
         def scalar(value: Any) -> float | None:
             try:
@@ -3039,9 +3395,15 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     if device_choice.startswith("gpu:") and device_choice.split(":", 1)[1].isdigit() and int(device_choice.split(":", 1)[1]) not in {item["index"] for item in inventory["gpus"]}:
         raise HTTPException(status_code=400, detail="That GPU is not available. Refresh the page and choose one listed in the device menu.")
     dataset_source = str(payload.get("source", "reviewed"))
-    if dataset_source not in {"reviewed", "coco2017", "combined", "uvh26_combined", "combined_kaggle", "combined_vehicle"}:
+    is_registered_dataset = dataset_source.startswith("dataset:")
+    if dataset_source not in {"reviewed", "coco2017", "combined", "uvh26_combined", "combined_kaggle", "combined_vehicle"} and not is_registered_dataset:
         write_training_log("WARNING", "Training request rejected", reason="Unsupported dataset source", source=dataset_source)
-        raise HTTPException(status_code=400, detail="Choose reviewed samples, COCO 2017, COCO + reviewed, COCO + Kaggle Auto + reviewed, UVH-26 + reviewed, or the complete combined source.")
+        raise HTTPException(status_code=400, detail="Choose a validated dataset from Dataset preparation or one of the built-in training sources.")
+    if is_registered_dataset:
+        dataset_id = dataset_source.split(":", 1)[1]
+        imported_local = load_public_dataset_imports().get(dataset_id)
+        if not re.fullmatch(r"local_[a-f0-9]{12}", dataset_id) or not isinstance(imported_local, dict) or imported_local.get("managed_local_dataset") is not True or not Path(str(imported_local.get("data_yaml", ""))).is_file():
+            raise HTTPException(status_code=409, detail="That local dataset is no longer available. Revalidate it on Dataset preparation.")
     if dataset_source in {"coco2017", "combined", "combined_kaggle", "combined_vehicle"} and ("coco2017" not in load_public_dataset_imports() or not coco_dataset_layout_ready()):
         write_training_log("WARNING", "Training request rejected", reason="COCO 2017 is not imported", source=dataset_source)
         raise HTTPException(status_code=409, detail="Prepare COCO 2017 first. Existing image and label files will be reused; missing files are identified before a download starts.")
@@ -3059,10 +3421,14 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
         reason = "A model training job is already active. Wait for it to finish before starting another."
         write_training_log("WARNING", "Training request rejected", reason=reason, source=dataset_source)
         raise HTTPException(status_code=409, detail=reason)
+    if ml_dataset_prepare_lock.locked():
+        ml_training_lock.release()
+        raise HTTPException(status_code=409, detail="Local dataset validation is still running. Wait until it completes before starting training.")
     initial_model = str(payload.get("initial_model", "auto"))
     if initial_model not in {"auto", "best.pt", "yolo26m"}:
         raise HTTPException(status_code=400, detail="Choose best.pt or YOLO26m as the starting model.")
-    ml_training_state.update({"status": "preparing", "message": "Training request accepted. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
+    active_record = load_public_dataset_imports().get(dataset_source.split(":", 1)[1], {}) if is_registered_dataset else {}
+    ml_training_state.update({"status": "preparing", "source": dataset_source, "dataset_id": dataset_source.split(":", 1)[1] if is_registered_dataset else "", "dataset_name": str(active_record.get("name", "")), "data_yaml": str(active_record.get("data_yaml", "")), "message": "Training request accepted. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
     write_training_log("INFO", "Training requested", source=dataset_source, device=device_choice, checkpoint=initial_model, resource_mode=resource_mode)
     try:
         threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode), name="vaos-ml-training", daemon=True).start()
