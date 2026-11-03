@@ -1925,6 +1925,8 @@ def prepare_uvh26_dataset() -> None:
                 examples = ", ".join((missing[:3] + ambiguous[:3]))
                 raise RuntimeError(f"UVH-26 {split} validation failed: {len(missing):,} referenced images are missing and {len(ambiguous):,} names are ambiguous. Examples: {examples}")
             images_by_id: dict[int, dict[str, Any]] = {}
+            excluded_image_ids: set[int] = set()
+            excluded_image_names: list[str] = []
             for image_index, row in enumerate(image_rows, start=1):
                 try:
                     image_id = int(row["id"])
@@ -1943,7 +1945,9 @@ def prepare_uvh26_dataset() -> None:
                     actual_width = int.from_bytes(header[16:20], "big")
                     actual_height = int.from_bytes(header[20:24], "big")
                     if (actual_width, actual_height) != (width, height):
-                        raise RuntimeError(f"UVH-26 image dimensions do not match its annotation for {filename}.")
+                        excluded_image_ids.add(image_id)
+                        excluded_image_names.append(filename)
+                        continue
                 elif source_image.stat().st_size == 0:
                     raise RuntimeError(f"UVH-26 image {filename} is empty.")
                 images_by_id[image_id] = {"width": width, "height": height, "filename": filename, "source": source_image, "labels": []}
@@ -1951,9 +1955,15 @@ def prepare_uvh26_dataset() -> None:
                     split_progress = 5 + int(30 * image_index / len(image_rows)) if split == "train" else 40 + int(25 * image_index / len(image_rows))
                     ml_dataset_import_state.update({"progress": split_progress, "message": f"Validated {image_index:,}/{len(image_rows):,} UVH-26 {split} image records."})
             invalid_annotations = 0
+            excluded_annotations = 0
+            valid_annotations = 0
             for row in payload["annotations"]:
                 try:
-                    image = images_by_id[int(row["image_id"])]
+                    image_id = int(row["image_id"])
+                    if image_id in excluded_image_ids:
+                        excluded_annotations += 1
+                        continue
+                    image = images_by_id[image_id]
                     class_id = category_ids[int(row["category_id"])]
                     x, y, width, height = (float(value) for value in row["bbox"])
                     image_width, image_height = image["width"], image["height"]
@@ -1969,11 +1979,14 @@ def prepare_uvh26_dataset() -> None:
                         continue
                     normalized = ((x + width / 2) / image_width, (y + height / 2) / image_height, width / image_width, height / image_height)
                     image["labels"].append((class_id, normalized))
+                    valid_annotations += 1
                 except (KeyError, TypeError, ValueError, OverflowError):
                     invalid_annotations += 1
             if invalid_annotations:
                 raise RuntimeError(f"UVH-26 {split} validation found {invalid_annotations:,} annotations with invalid image/category references or bounding boxes. No converted data was published.")
-            manifests[split] = {"images": images_by_id, "annotations": len(payload["annotations"]), "annotation_file": str(annotation_path)}
+            if len(excluded_image_ids) > max(10, int(len(image_rows) * 0.01)):
+                raise RuntimeError(f"UVH-26 {split} has {len(excluded_image_ids):,} image dimension mismatches, above the safe 1% limit. No converted data was published.")
+            manifests[split] = {"images": images_by_id, "annotations": valid_annotations, "excluded_images": len(excluded_image_ids), "excluded_annotations": excluded_annotations, "excluded_image_names": excluded_image_names, "annotation_file": str(annotation_path)}
 
         if staging.exists():
             raise RuntimeError(f"Preparation target already exists: {staging}")
@@ -2008,10 +2021,13 @@ def prepare_uvh26_dataset() -> None:
         imported = load_public_dataset_imports()
         train_count = len(manifests["train"]["images"])
         val_count = len(manifests["val"]["images"])
-        imported["uvh26"] = {"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "data_yaml": str(yaml_path), "classes": classes, "train_count": train_count, "val_count": val_count, "train_annotations": manifests["train"]["annotations"], "val_annotations": manifests["val"]["annotations"], "license": "CC BY 4.0", "imported_at": utc_now(), "source": "iisc-aim/UVH-26 · majority-vote annotations"}
+        excluded_images = sum(manifest["excluded_images"] for manifest in manifests.values())
+        excluded_annotations = sum(manifest["excluded_annotations"] for manifest in manifests.values())
+        imported["uvh26"] = {"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "data_yaml": str(yaml_path), "classes": classes, "train_count": train_count, "val_count": val_count, "train_annotations": manifests["train"]["annotations"], "val_annotations": manifests["val"]["annotations"], "excluded_dimension_mismatch_images": excluded_images, "excluded_annotations": excluded_annotations, "license": "CC BY 4.0", "imported_at": utc_now(), "source": "iisc-aim/UVH-26 · majority-vote annotations"}
         write_public_dataset_imports(imported)
-        ml_dataset_import_state = {"status": "complete", "dataset": "uvh26", "message": f"UVH-26 validated · {train_count:,} train and {val_count:,} validation images · {len(classes)} vehicle classes · CC BY 4.0."}
-        write_training_log("INFO", "UVH-26 validated and prepared", train_images=train_count, validation_images=val_count, classes=len(classes), train_annotations=manifests["train"]["annotations"], validation_annotations=manifests["val"]["annotations"])
+        exclusion_note = f" · excluded {excluded_images} image(s) and {excluded_annotations:,} box(es) with inconsistent image dimensions" if excluded_images else ""
+        ml_dataset_import_state = {"status": "complete", "dataset": "uvh26", "message": f"UVH-26 validated · {train_count:,} train and {val_count:,} validation images · {len(classes)} vehicle classes{exclusion_note} · CC BY 4.0."}
+        write_training_log("INFO", "UVH-26 validated and prepared", train_images=train_count, validation_images=val_count, classes=len(classes), train_annotations=manifests["train"]["annotations"], validation_annotations=manifests["val"]["annotations"], excluded_dimension_mismatch_images=excluded_images, excluded_annotations=excluded_annotations)
     except Exception as exc:
         if staging_created:
             shutil.rmtree(staging, ignore_errors=True)
