@@ -71,8 +71,9 @@ The interactive OpenAPI reference is the source of truth for exact JSON fields a
 | `POST` | `/admin/tunnel/{action}` | Pause, start, stop, or restart the camera tunnel. |
 | `GET` | `/admin/admin-tunnel` | Read the private dashboard tunnel status and URL. |
 | `POST` | `/admin/admin-tunnel/{action}` | Control the separate dashboard tunnel. |
+| `POST` | `/camera/{token}/frame` | Accept a JPEG frame using an active camera capability token. |
 
-Camera-frame ingestion is `POST /camera/{token}/frame`; the camera token is a capability secret. The separate camera service also provides `GET /c/{token}`, `GET /enroll/{token}`, `POST /api/camera/{token}/frame`, and `POST /api/enroll/{token}`. Public enrollment requires a valid one-time invitation, explicit consent, and one or more photos. The main app mirrors the enrollment API at `/api/v1/enroll/{token}` so integrations can use the versioned API root.
+Camera and enrollment tokens are capability secrets; do not expose them in logs or shared links. The separate camera service also provides `GET /c/{token}`, `GET /enroll/{token}`, `POST /api/camera/{token}/frame`, and `POST /api/enroll/{token}` outside the admin API. Public enrollment requires a valid one-time invitation, explicit consent, and one or more photos.
 
 ### People and activity
 
@@ -87,6 +88,7 @@ Camera-frame ingestion is `POST /camera/{token}/frame`; the camera token is a ca
 | `POST` | `/admin/enrollment-links` | Create a time-limited phone enrollment invitation. |
 | `GET` | `/admin/enrollment-links/{token}/qr` | Return an invitation QR code. |
 | `DELETE` | `/admin/enrollment-links/{token}` | Revoke an invitation. |
+| `POST` | `/enroll/{token}` | Create a profile from a one-time invitation, consent, and uploaded photos. |
 
 ### Review samples and datasets
 
