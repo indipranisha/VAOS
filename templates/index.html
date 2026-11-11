@@ -4,26 +4,27 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VAOS · Video Analytics - Operating System</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-0.10.16">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.0.4">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
 </head>
-<body class="training-shell dashboard-shell">
+<body class="training-shell dashboard-shell{% if settings_only|default(false) %} settings-page{% endif %}">
   <header class="topbar training-sidebar">
     <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
     <p class="sidebar-subtitle">VIDEO ANALYTICS OS</p>
     <nav class="primary-nav" aria-label="Main navigation">
-      <a class="nav-link active" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</a>
-      <a class="nav-link" href="/live-system"><span class="nav-icon" aria-hidden="true">◉</span>Live system</a>
+      <a class="nav-link{% if not settings_only|default(false) %} active{% endif %}" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+
       <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
       <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
       <a class="nav-link" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
-      <a class="nav-link" href="#engine-settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+      <a class="nav-link{% if settings_only|default(false) %} active{% endif %}" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
     </nav>
     <div class="sidebar-bottom"><div class="admin-sidebar-tools">{% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}<button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local analytics engine</span><span class="version-chip">v{{ version }}</span></div></div>
   </header>
 
   <main class="page-wrap dashboard-page">
-    <section class="intro-row">
+    {% if settings_only %}<section class="intro-row settings-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>Settings</h2><p class="lead">Manage cameras, core detection controls, model selection, services, and separate camera and dashboard tunnels.</p></div></section>{% endif %}
+    <section class="intro-row dashboard-only">
       <div>
         <p class="eyebrow">CONTROL ROOM</p>
         <h2>Observe repeat sightings.<br><span class="muted-heading">Keep the data on your PC.</span></h2>
@@ -36,7 +37,7 @@
       </div>
     </section>
 
-    <section class="dashboard-overview" aria-label="System overview">
+    <section class="dashboard-overview dashboard-only" aria-label="System overview">
       <article class="overview-card overview-cameras"><div class="overview-card-top"><span class="metric-label">CAMERAS ONLINE</span><span class="stat-orb">◉</span></div><strong id="metric-cameras">—</strong><small id="metric-cameras-detail">Waiting for camera status</small><canvas class="mini-chart" id="chart-cameras" width="260" height="42" aria-label="Recent camera availability"></canvas></article>
       <article class="overview-card overview-sightings"><div class="overview-card-top"><span class="metric-label">MATCHES TODAY</span><span class="stat-orb">⌖</span></div><strong id="metric-sightings">—</strong><small>Logged in the local database · UTC</small><canvas class="mini-chart" id="chart-sightings" width="260" height="42" aria-label="Matches today trend"></canvas></article>
       <article class="overview-card overview-objects"><div class="overview-card-top"><span class="metric-label">OBJECT TYPES ACTIVE</span><span class="stat-orb">▦</span></div><strong id="metric-objects">—</strong><small id="metric-objects-detail">Across connected cameras</small><canvas class="mini-chart" id="chart-objects" width="260" height="42" aria-label="Recent object activity trend"></canvas></article>
@@ -50,7 +51,7 @@
       <span>Use only with informed permission and in locations where you are authorised to operate. Profile photos and face templates for enrolled volunteers are stored locally in the database; unknown faces and camera frames are not saved.</span>
     </section>
 
-    <section class="grid-two">
+    <section class="grid-two dashboard-only">
       <article class="panel">
         <div class="panel-heading">
           <div><p class="eyebrow">01 / INPUT</p><h3>Add a camera</h3></div>
@@ -86,7 +87,7 @@
       </article>
     </section>
 
-    <section class="panel section-panel">
+    <section class="panel section-panel dashboard-only">
       <div class="section-title-row">
         <div><p class="eyebrow">CAMERAS</p><h3>Camera links</h3></div>
         <button class="button button-secondary button-small" id="refresh-btn">Refresh</button>
@@ -101,7 +102,7 @@
       <div id="enrollment-result" class="result-box hidden" aria-live="polite"></div>
     </section>
 
-    <section class="panel section-panel" id="settings">
+    <section class="panel section-panel settings-only" id="settings">
       <div class="section-title-row">
         <div><p class="eyebrow">SETTINGS · PEOPLE</p><h3>Enrolled participants</h3></div>
         <span class="subtle-tag">Photos stored locally</span>
@@ -109,7 +110,7 @@
       <div id="participant-list" class="empty-state">Loading enrolled participants…</div>
     </section>
 
-    <section class="panel section-panel engine-settings-panel" id="engine-settings">
+    <section class="panel section-panel engine-settings-panel settings-only" id="engine-settings">
       <div class="section-title-row"><div><p class="eyebrow">SETTINGS · CORE ENGINE</p><h3>Detection and processing controls</h3></div><span class="subtle-tag">Saved locally · next frame</span></div>
       <p class="helper">These controls tune the live engine. Turning a detector off stops that analysis path; training samples and existing profiles remain intact.</p>
       <form id="engine-settings-form" class="engine-settings-grid">
@@ -126,7 +127,7 @@
       </form>
     </section>
 
-    <section class="panel section-panel" id="system-settings">
+    <section class="panel section-panel settings-only" id="system-settings">
       <div class="section-title-row"><div><p class="eyebrow">SETTINGS · SYSTEM</p><h3>Model and services</h3></div></div>
       <div id="system-service-lights" class="service-lights" aria-label="Service status"></div>
       <div class="training-controls"><label for="live-model-choice">Live object model</label><select id="live-model-choice"><option value="yolo26m">Base YOLO26m</option><option value="custom">Your custom best.pt</option></select><button class="button button-primary" id="apply-model-choice">Apply model choice</button><button class="button button-secondary" id="restart-services" {% if production_mode %}hidden{% endif %}>Restart services</button></div>
@@ -135,9 +136,16 @@
       <div class="section-title-row tunnel-control-heading"><div><p class="eyebrow">PUBLIC CAMERA LINK</p><h4>{% if production_mode %}Camera site{% else %}Tunnel controls{% endif %}</h4></div><span id="tunnel-state-badge" class="subtle-tag">Checking…</span></div>
       <div class="training-controls tunnel-controls" {% if production_mode %}hidden{% endif %}><button type="button" class="button button-secondary" id="tunnel-pause">Pause public access</button><button type="button" class="button button-secondary" id="tunnel-start">Start / resume</button><button type="button" class="button button-danger" id="tunnel-stop">Stop tunnel</button><button type="button" class="button button-secondary" id="tunnel-restart">Restart tunnel</button></div>
       <p id="tunnel-action-status" class="helper" aria-live="polite">{% if production_mode %}The public camera address is managed by the production HTTPS reverse proxy. Control service availability through your deployment platform.{% else %}Pause temporarily blocks camera and enrollment pages while keeping the same tunnel URL. Stop disconnects the tunnel. Start resumes or creates it; Restart creates a fresh temporary URL.{% endif %}</p>
+      <div class="dashboard-tunnel-card" id="dashboard-tunnel-controls" {% if production_mode %}hidden{% endif %}>
+        <div class="section-title-row tunnel-control-heading"><div><p class="eyebrow">PUBLIC ADMIN LINK</p><h4>Main dashboard tunnel · port 8000</h4></div><span id="admin-tunnel-state-badge" class="subtle-tag">Checking…</span></div>
+        <p class="helper">This link opens the VAOS admin dashboard on a temporary public HTTPS address. Admin sign-in remains required. The camera tunnel on port 8001 is managed separately and is not changed by these controls. The dashboard tunnel stops automatically when the VAOS launcher exits.</p>
+        <div class="admin-tunnel-url-row"><a id="admin-tunnel-url" class="admin-tunnel-url" href="#" target="_blank" rel="noopener noreferrer" aria-label="Public dashboard tunnel URL">Not connected</a><button type="button" class="button button-secondary" id="admin-tunnel-copy" disabled>Copy link</button></div>
+        <div class="training-controls tunnel-controls"><button type="button" class="button button-primary" id="admin-tunnel-start">Start dashboard tunnel</button><button type="button" class="button button-danger" id="admin-tunnel-stop" disabled>Stop dashboard tunnel</button><button type="button" class="button button-secondary" id="admin-tunnel-restart" disabled>Restart dashboard tunnel</button></div>
+        <p id="admin-tunnel-action-status" class="helper" aria-live="polite">Dashboard tunnel is stopped. Your camera tunnel is unchanged.</p>
+      </div>
     </section>
 
-    <section class="panel section-panel" id="model-enrichment">
+    <section class="panel section-panel settings-only" id="model-enrichment">
       <div class="section-title-row"><div><p class="eyebrow">CUSTOM MODEL WORKFLOW</p><h3>Build or update your best.pt</h3></div><span id="enrichment-state" class="state-indicator" data-state="stopped"><i></i><span>Stopped</span></span></div>
       <p class="helper">Train a custom detector using a model you choose, public COCO examples, and the live detections you have confirmed.</p>
       <div class="enrichment-steps" aria-label="Model update steps">
@@ -156,7 +164,7 @@
       <div id="enrichment-message" class="result-box" aria-live="polite">Choose reviewed samples alone or combine them with a ready dataset to update best.pt.</div>
     </section>
 
-    <section class="panel section-panel">
+    <section class="panel section-panel dashboard-only">
       <div class="section-title-row">
         <div><p class="eyebrow">ACTIVITY</p><h3>Recent sightings</h3></div>
         <span id="sighting-refresh-status" class="subtle-tag">Auto-refresh · every 5 sec</span>
@@ -225,6 +233,53 @@ async function refreshTunnelUrl() {
     if (current !== $('base-url').value) await loadCameras();
   } catch { }
 }
+async function refreshAdminTunnel() {
+  try {
+    const data = await api('/api/admin/admin-tunnel');
+    const state = data.status || 'stopped';
+    const badge = $('admin-tunnel-state-badge');
+    badge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+    badge.className = `subtle-tag ${state === 'running' ? 'badge-green' : state === 'managed' ? 'badge-gray' : ''}`;
+    const link = $('admin-tunnel-url');
+    if (data.url) { link.href = data.url; link.textContent = data.url; link.classList.add('is-ready'); }
+    else { link.removeAttribute('href'); link.textContent = 'Not connected'; link.classList.remove('is-ready'); }
+    $('admin-tunnel-copy').disabled = !data.url;
+    $('admin-tunnel-start').disabled = ['running','starting','restarting'].includes(state);
+    $('admin-tunnel-stop').disabled = ['stopped','stopping','managed'].includes(state);
+    $('admin-tunnel-restart').disabled = ['stopped','starting','stopping','restarting','managed'].includes(state);
+    if (data.message && !['starting','stopping','restarting'].includes(state)) $('admin-tunnel-action-status').textContent = data.message;
+  } catch (error) {
+    $('admin-tunnel-state-badge').textContent = 'Unavailable';
+    $('admin-tunnel-action-status').textContent = error.message;
+  }
+}
+async function controlAdminTunnel(action) {
+  const status = $('admin-tunnel-action-status');
+  for (const id of ['admin-tunnel-start','admin-tunnel-stop','admin-tunnel-restart']) $(id).disabled = true;
+  status.textContent = `Requesting dashboard tunnel ${action}…`; status.classList.remove('error');
+  try {
+    const before = await api('/api/admin/admin-tunnel');
+    const originalUrl = before.url || '';
+    const result = await api(`/api/admin/admin-tunnel/${action}`, {method:'POST'});
+    status.textContent = result.message || `Dashboard tunnel ${action} requested.`;
+    let stoppedChecks = 0;
+    for (let attempt=0; attempt<100; attempt++) {
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      await refreshAdminTunnel();
+      const current = await api('/api/admin/admin-tunnel');
+      if ((action==='start' && current.status==='running' && current.url) || (action==='stop' && current.status==='stopped') || (action==='restart' && current.status==='running' && current.url && current.url!==originalUrl)) break;
+      if (current.status==='stopped' && action!=='stop') {
+        stoppedChecks++;
+        if (stoppedChecks>=5) { status.textContent=current.message || 'The dashboard tunnel could not start.'; break; }
+      } else stoppedChecks=0;
+    }
+  } catch (error) { status.textContent=error.message; status.classList.add('error'); }
+  finally { await refreshAdminTunnel(); }
+}
+$('admin-tunnel-start').addEventListener('click',()=>controlAdminTunnel('start'));
+$('admin-tunnel-stop').addEventListener('click',()=>{if(confirm('Stop the public dashboard link? The camera tunnel and local dashboard will keep running.'))controlAdminTunnel('stop');});
+$('admin-tunnel-restart').addEventListener('click',()=>{if(confirm('Restart the public dashboard tunnel? Its temporary URL will change. The camera tunnel is unchanged.'))controlAdminTunnel('restart');});
+$('admin-tunnel-copy').addEventListener('click',async()=>{const url=$('admin-tunnel-url').href;if(!url||url==='#')return;try{await navigator.clipboard.writeText(url);$('admin-tunnel-action-status').textContent='Dashboard link copied.';}catch{$('admin-tunnel-action-status').textContent='Select and copy the dashboard link.';}});
 let enrollmentStream = null, capturedEnrollmentPhoto = null;
 $('enroll-camera-start').addEventListener('click', async () => {
   try {
@@ -366,13 +421,14 @@ $('tunnel-start').addEventListener('click',()=>controlTunnel('start'));
 $('tunnel-stop').addEventListener('click',()=>{if(confirm('Stop the camera tunnel? Camera links will stop working and the public URL will be removed. Local VAOS services will keep running.'))controlTunnel('stop');});
 $('tunnel-restart').addEventListener('click',()=>{if(confirm('Restart the camera tunnel? The temporary public URL will change. Local VAOS services will keep running.'))controlTunnel('restart');});
 async function refreshAll() { await Promise.all([loadCameras(), loadParticipants(), loadEvents(), loadDiagnostics(), loadModelSelection(), loadEngineSettings(), loadModelSources(), loadHuggingFaceModels()]); }
-async function bootDashboard(){await refreshTunnelUrl();await refreshAll();}
+async function bootDashboard(){await Promise.all([refreshTunnelUrl(),refreshAdminTunnel()]);await refreshAll();}
 bootDashboard().catch(err => { document.querySelectorAll('.empty-state').forEach(e => e.textContent = err.message); });
 async function refreshSightingsLoop() { try { await loadEvents(); } catch { $('sighting-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshSightingsLoop, 5000); } }
 async function refreshObjectsLoop() { try { await loadDiagnostics(); } catch { $('object-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshObjectsLoop, 5000); } }
 setTimeout(refreshSightingsLoop, 5000);
 setTimeout(refreshObjectsLoop, 5000);
 setInterval(refreshTunnelUrl, 3000);
+setInterval(refreshAdminTunnel, 3000);
 </script>
 </body>
 </html>

@@ -10,12 +10,12 @@
     <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
     <p class="sidebar-subtitle">VIDEO ANALYTICS OS</p>
     <nav class="primary-nav" aria-label="Main navigation">
-      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Dashboard</a>
-      <a class="nav-link" href="/live-system"><span class="nav-icon" aria-hidden="true">◉</span>Live system</a>
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+
       <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
       <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
       <a class="nav-link active" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
-      <a class="nav-link" href="/#engine-settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+      <a class="nav-link{% if settings_only|default(false) %} active{% endif %}" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
     </nav>
     <div class="sidebar-bottom"><div class="admin-sidebar-tools">{% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}<button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local analytics engine</span><span class="version-chip">v{{ version }}</span></div></div>
   </header>

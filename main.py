@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hmac
+import ipaddress
 import csv
 import json
 import logging
@@ -44,6 +45,10 @@ PASSWORD_PATH = DATA_DIR / "admin_password.txt"
 TUNNEL_URL_PATH = DATA_DIR / "public_camera_url.txt"
 TUNNEL_STATE_PATH = DATA_DIR / "tunnel_state.json"
 LAUNCHER_COMMAND_PATH = DATA_DIR / "launcher_command.json"
+ADMIN_TUNNEL_STATE_PATH = DATA_DIR / "admin_tunnel_state.json"
+ADMIN_TUNNEL_URL_PATH = DATA_DIR / "public_admin_url.txt"
+ADMIN_TUNNEL_COMMAND_PATH = DATA_DIR / "admin_tunnel_command.json"
+ADMIN_TUNNEL_MANAGER_PATH = APP_DIR / "admin_tunnel_manager.ps1"
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
@@ -77,7 +82,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.0.1"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
 CAMERA_INTERNAL_URL = os.getenv("VAOS_CAMERA_INTERNAL_URL", "http://127.0.0.1:8001").strip().rstrip("/")
@@ -114,6 +119,10 @@ security = HTTPBasic(auto_error=False)
 
 model_lock = threading.RLock()
 recognition_lock = threading.Lock()
+admin_auth_lock = threading.Lock()
+admin_auth_failures: dict[str, list[float]] = {}
+ADMIN_AUTH_FAILURE_LIMIT = 10
+ADMIN_AUTH_FAILURE_WINDOW = 900.0
 face_detector = None
 face_recognizer = None
 object_detector = None
@@ -332,7 +341,7 @@ def get_or_create_admin_password() -> str:
 ADMIN_PASSWORD = "" if os.getenv("CAMERA_SERVICE_IMPORT") == "1" else get_or_create_admin_password()
 
 
-def require_admin(credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
+def require_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
     if credentials is None:
         raise HTTPException(
             status_code=401,
@@ -342,11 +351,35 @@ def require_admin(credentials: HTTPBasicCredentials | None = Depends(security)) 
     username_ok = hmac.compare_digest(credentials.username.encode(), b"admin")
     password_ok = hmac.compare_digest(credentials.password.encode(), ADMIN_PASSWORD.encode())
     if not (username_ok and password_ok):
+        raw_ip = request.headers.get("cf-connecting-ip", "")
+        try:
+            client_key = str(ipaddress.ip_address(raw_ip)) if raw_ip else str(request.client.host if request.client else "unknown")
+        except ValueError:
+            client_key = str(request.client.host if request.client else "unknown")
+        now = time.monotonic()
+        with admin_auth_lock:
+            attempts = [attempt for attempt in admin_auth_failures.get(client_key, []) if now - attempt < ADMIN_AUTH_FAILURE_WINDOW]
+            if len(attempts) >= ADMIN_AUTH_FAILURE_LIMIT:
+                admin_auth_failures[client_key] = attempts
+                raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.", headers={"Retry-After": "900"})
+            attempts.append(now)
+            admin_auth_failures[client_key] = attempts
+            if len(admin_auth_failures) > 512:
+                for key, values in list(admin_auth_failures.items()):
+                    if not any(now - attempt < ADMIN_AUTH_FAILURE_WINDOW for attempt in values):
+                        admin_auth_failures.pop(key, None)
         raise HTTPException(
             status_code=401,
             detail="Incorrect dashboard credentials",
             headers={"WWW-Authenticate": "Basic realm=\"VAOS Admin\""},
         )
+    raw_ip = request.headers.get("cf-connecting-ip", "")
+    try:
+        client_key = str(ipaddress.ip_address(raw_ip)) if raw_ip else str(request.client.host if request.client else "unknown")
+    except ValueError:
+        client_key = str(request.client.host if request.client else "unknown")
+    with admin_auth_lock:
+        admin_auth_failures.pop(client_key, None)
     return credentials.username
 
 
@@ -901,6 +934,11 @@ def dashboard(request: Request, _: str = Depends(require_admin)):
     })
 
 
+@app.get("/settings", response_class=HTMLResponse)
+def settings_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "index.html", {"threshold": get_engine_settings()["match_threshold"], "cooldown": get_engine_settings()["event_cooldown_seconds"], "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "version": APP_VERSION, "production_mode": PRODUCTION_MODE, "settings_only": True})
+
+
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
@@ -1209,6 +1247,134 @@ def control_tunnel(action: str, _: str = Depends(require_admin)):
     except OSError as exc:
         raise HTTPException(status_code=503, detail="Could not update tunnel state on disk.") from exc
     return request_launcher_command(f"tunnel_{action}")
+
+
+def _admin_tunnel_launcher():
+    if os.name != "nt":
+        raise HTTPException(status_code=409, detail="The temporary dashboard tunnel is available only through the Windows launcher.")
+    try:
+        import psutil
+        current = psutil.Process(os.getpid())
+        for parent in current.parents():
+            if parent.name().casefold() not in {"powershell.exe", "pwsh.exe"}:
+                continue
+            command = " ".join(parent.cmdline()).casefold()
+            expected = str(APP_DIR / "start_windows.ps1").casefold()
+            if expected in command:
+                return parent.pid, parent.create_time()
+    except Exception as exc:
+        logger.warning("Could not identify the Windows launcher for the dashboard tunnel: %s", exc)
+    raise HTTPException(status_code=409, detail="Start VAOS with start_windows.bat first so the dashboard tunnel stops automatically when the launcher exits.")
+
+
+def _admin_tunnel_manager_alive(state: dict[str, Any]) -> bool:
+    try:
+        import psutil
+        manager_pid = int(state.get("manager_pid", 0))
+        manager = psutil.Process(manager_pid)
+        if not manager.is_running() or manager.name().casefold() not in {"powershell.exe", "pwsh.exe"}:
+            return False
+        command = " ".join(manager.cmdline()).casefold()
+        return str(ADMIN_TUNNEL_MANAGER_PATH).casefold() in command
+    except Exception:
+        return False
+
+
+def _read_admin_tunnel_state() -> dict[str, str]:
+    if PRODUCTION_MODE:
+        return {"status": "managed", "message": "Production dashboard access is managed by your HTTPS deployment."}
+    try:
+        state = json.loads(ADMIN_TUNNEL_STATE_PATH.read_text(encoding="utf-8"))
+        if not isinstance(state, dict):
+            state = {}
+    except (OSError, json.JSONDecodeError):
+        state = {}
+    status = str(state.get("status", "stopped"))
+    heartbeat = state.get("heartbeat_at")
+    if status in {"starting", "running", "stopping", "restarting"} and heartbeat:
+        try:
+            last_heartbeat = datetime.fromisoformat(str(heartbeat))
+            if last_heartbeat.tzinfo is None:
+                last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_heartbeat).total_seconds() > 12:
+                if _admin_tunnel_manager_alive(state):
+                    if status != "running":
+                        status = "starting"
+                    state["message"] = "Dashboard tunnel manager is active; waiting for its latest connection status."
+                else:
+                    status = "stopped"
+                    state["message"] = "Dashboard tunnel manager is no longer responding. Start the tunnel to reconnect."
+        except ValueError:
+            status = "stopped"
+    try:
+        url = ADMIN_TUNNEL_URL_PATH.read_text(encoding="ascii").strip()
+    except OSError:
+        url = ""
+    parts = urlsplit(url)
+    if parts.scheme != "https" or not parts.hostname or not parts.hostname.endswith(".trycloudflare.com"):
+        url = ""
+    if status != "running":
+        url = ""
+    return {"status": status, "message": str(state.get("message", "Dashboard tunnel is stopped.")), "url": url}
+
+
+def _request_admin_tunnel_action(action: str) -> dict[str, str]:
+    if PRODUCTION_MODE:
+        raise HTTPException(status_code=409, detail="Production dashboard access is managed by your HTTPS deployment platform.")
+    if action not in {"start", "stop", "restart"}:
+        raise HTTPException(status_code=404, detail="Unknown dashboard tunnel action")
+    state = _read_admin_tunnel_state()
+    if action == "start" and state["status"] == "running":
+        return {**state, "message": "The dashboard tunnel is already running."}
+    if state["status"] in {"starting", "stopping", "restarting"}:
+        raise HTTPException(status_code=409, detail="Wait for the current dashboard tunnel action to finish.")
+    if ADMIN_TUNNEL_COMMAND_PATH.exists():
+        raise HTTPException(status_code=409, detail="A dashboard tunnel request is already queued.")
+    try:
+        launcher_pid, launcher_started = _admin_tunnel_launcher()
+        temporary = ADMIN_TUNNEL_COMMAND_PATH.with_suffix(".json.new")
+        temporary.write_text(json.dumps({"command": action, "requested_at": utc_now()}), encoding="utf-8")
+        temporary.replace(ADMIN_TUNNEL_COMMAND_PATH)
+        heartbeat = ""
+        try:
+            existing = json.loads(ADMIN_TUNNEL_STATE_PATH.read_text(encoding="utf-8"))
+            heartbeat = str(existing.get("heartbeat_at", "")) if isinstance(existing, dict) else ""
+        except (OSError, json.JSONDecodeError):
+            pass
+        heartbeat_is_fresh = False
+        if heartbeat:
+            try:
+                last_heartbeat = datetime.fromisoformat(heartbeat)
+                if last_heartbeat.tzinfo is None:
+                    last_heartbeat = last_heartbeat.replace(tzinfo=timezone.utc)
+                heartbeat_is_fresh = (datetime.now(timezone.utc) - last_heartbeat).total_seconds() <= 12
+            except ValueError:
+                pass
+        if not heartbeat_is_fresh:
+            if not ADMIN_TUNNEL_MANAGER_PATH.is_file():
+                ADMIN_TUNNEL_COMMAND_PATH.unlink(missing_ok=True)
+                raise HTTPException(status_code=503, detail="Dashboard tunnel manager file is missing.")
+            powershell = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
+            args = [powershell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ADMIN_TUNNEL_MANAGER_PATH), "-LauncherPid", str(launcher_pid), "-LauncherStartedAt", str(launcher_started), "-DataDir", str(DATA_DIR), "-ToolsDir", str(APP_DIR / "tools")]
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            subprocess.Popen(args, cwd=str(APP_DIR), stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags, close_fds=True)
+    except HTTPException:
+        raise
+    except (OSError, ValueError) as exc:
+        logger.exception("Could not request a dashboard tunnel action")
+        raise HTTPException(status_code=503, detail="Could not start the dashboard tunnel manager. Check the VAOS launcher and logs.") from exc
+    pending = {"start": "starting", "stop": "stopping", "restart": "restarting"}[action]
+    return {"status": pending, "message": f"Dashboard tunnel {action} requested. The camera tunnel is unchanged."}
+
+
+@app.get("/api/admin/admin-tunnel")
+def admin_tunnel_status(_: str = Depends(require_admin)):
+    return _read_admin_tunnel_state()
+
+
+@app.post("/api/admin/admin-tunnel/{action}")
+def control_admin_tunnel(action: str, _: str = Depends(require_admin)):
+    return _request_admin_tunnel_action(action)
 
 
 @app.get("/api/admin/cameras/{token}/qr")

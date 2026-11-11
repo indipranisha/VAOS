@@ -1,5 +1,12 @@
 # Release notes
 
+## 1.0.1
+
+- Add separate Settings controls for a public HTTPS link to the main admin dashboard, with an independently managed URL and tunnel process from the camera tunnel.
+- Keep the dashboard tunnel connected through in-app service reloads and stop it when the Windows launcher exits.
+- Throttle repeated failed admin sign-in attempts.
+- Separate dashboard and Settings navigation, tighten training and activity layouts, and improve compact training/model summaries.
+
 ## 1.0.0
 
 - Adopt VAOS as the product identity across the app, launcher and setup guides.
