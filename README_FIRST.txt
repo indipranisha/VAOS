@@ -1,6 +1,6 @@
 START HERE
 ==========
-VAOS — Video Analytics - Operating System
+VAOS 1.0.0 — Video Analytics Operating System
 
 1. Extract the folder.
 2. Install Python 3.12 if needed (python.org; enable Add Python to PATH).
@@ -12,5 +12,5 @@ VAOS — Video Analytics - Operating System
 8. The dashboard shows camera health, model status, object activity, enrolled profiles, and sightings. Object detection uses NVIDIA GPU 0 when available, with CPU fallback.
 9. Read README.md for full setup and privacy notes.
 
-This is an experimental POC. Use face matching only with informed permission and appropriate authorisation.
+Face templates and profile photos are sensitive biometric data. Use only with informed consent and appropriate authorization. See README.md for production deployment, privacy and operations guidance.
 

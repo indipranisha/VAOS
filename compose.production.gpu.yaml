@@ -1,0 +1,23 @@
+services:
+  vaos-admin:
+    build:
+      args:
+        TORCH_INDEX_URL: ${VAOS_TORCH_INDEX_URL:?Set VAOS_TORCH_INDEX_URL to a CUDA-enabled PyTorch wheel index supported by your server}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+  vaos-camera:
+    build:
+      args:
+        TORCH_INDEX_URL: ${VAOS_TORCH_INDEX_URL:?Set VAOS_TORCH_INDEX_URL to a CUDA-enabled PyTorch wheel index supported by your server}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

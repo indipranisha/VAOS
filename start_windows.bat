@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Starting the local app and temporary camera tunnel...
+echo Starting VAOS and its temporary camera tunnel...
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0start_windows.ps1"
 if errorlevel 1 (
   echo.

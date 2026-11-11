@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 .env
 .env.*
+production.env
 data/
 !data/models/
 !data/models/.gitkeep

@@ -37,7 +37,7 @@ from starlette.concurrency import run_in_threadpool
 
 APP_DIR = Path(__file__).resolve().parent
 INSTANCE_ID = hashlib.sha256(str(APP_DIR).casefold().encode("utf-8")).hexdigest()[:16]
-DATA_DIR = APP_DIR / "data"
+DATA_DIR = Path(os.getenv("VAOS_DATA_DIR", str(APP_DIR / "data"))).expanduser().resolve()
 MODEL_DIR = DATA_DIR / "models"
 DB_PATH = DATA_DIR / "app.db"
 PASSWORD_PATH = DATA_DIR / "admin_password.txt"
@@ -49,7 +49,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-logger = logging.getLogger("camera-poc")
+logger = logging.getLogger("vaos")
 
 # OpenCV Zoo model files. YuNet is used for detection, SFace for matching.
 MODEL_URLS = {
@@ -63,6 +63,7 @@ MODEL_URLS = {
 # override both locations without editing the source (for example, an absolute
 # path supplied by the user).
 MODEL_DIR = Path(os.getenv("MODEL_DIR", str(APP_DIR))).expanduser()
+MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
 MODEL_PATHS = {
     "yunet": MODEL_DIR / "face_detection_yunet_2023mar.onnx",
@@ -76,7 +77,17 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "0.10.16"
+APP_VERSION = "1.0.0"
+PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
+PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
+CAMERA_INTERNAL_URL = os.getenv("VAOS_CAMERA_INTERNAL_URL", "http://127.0.0.1:8001").strip().rstrip("/")
+if PRODUCTION_MODE:
+    camera_url_parts = urlsplit(PUBLIC_CAMERA_URL)
+    if camera_url_parts.scheme != "https" or not camera_url_parts.hostname or camera_url_parts.username or camera_url_parts.password or camera_url_parts.path not in {"", "/"} or camera_url_parts.query or camera_url_parts.fragment:
+        raise RuntimeError("Production requires VAOS_PUBLIC_CAMERA_URL set to the HTTPS camera-site origin, for example https://camera.example.com")
+    internal_status_token = os.getenv("VAOS_INTERNAL_STATUS_TOKEN", "")
+    if len(internal_status_token) < 32 or internal_status_token.startswith("REPLACE_"):
+        raise RuntimeError("Production requires a unique VAOS_INTERNAL_STATUS_TOKEN with at least 32 characters.")
 MATCH_THRESHOLD = float(os.getenv("MATCH_THRESHOLD", "0.42"))
 EVENT_COOLDOWN_SECONDS = int(os.getenv("EVENT_COOLDOWN_SECONDS", "120"))
 ENGINE_SETTING_DEFAULTS = {
@@ -292,6 +303,15 @@ def is_enrollment_link_valid(token: str) -> bool:
 
 
 def get_or_create_admin_password() -> str:
+    configured = os.getenv("VAOS_ADMIN_PASSWORD", "")
+    if PRODUCTION_MODE:
+        if len(configured) < 32 or configured.startswith("REPLACE_"):
+            raise RuntimeError("Production requires VAOS_ADMIN_PASSWORD with at least 32 characters. Set a unique secret before starting VAOS.")
+        return configured
+    if configured:
+        if len(configured) < 12:
+            raise RuntimeError("VAOS_ADMIN_PASSWORD must contain at least 12 characters when configured.")
+        return configured
     if PASSWORD_PATH.exists():
         saved = PASSWORD_PATH.read_text(encoding="utf-8").strip()
         if len(saved) == 5 and saved.isascii() and saved.isdigit():
@@ -317,7 +337,7 @@ def require_admin(credentials: HTTPBasicCredentials | None = Depends(security)) 
         raise HTTPException(
             status_code=401,
             detail="Sign in to the local dashboard",
-            headers={"WWW-Authenticate": "Basic realm=\"Local Camera POC 5-digit PIN\""},
+            headers={"WWW-Authenticate": "Basic realm=\"VAOS Admin\""},
         )
     username_ok = hmac.compare_digest(credentials.username.encode(), b"admin")
     password_ok = hmac.compare_digest(credentials.password.encode(), ADMIN_PASSWORD.encode())
@@ -325,7 +345,7 @@ def require_admin(credentials: HTTPBasicCredentials | None = Depends(security)) 
         raise HTTPException(
             status_code=401,
             detail="Incorrect dashboard credentials",
-            headers={"WWW-Authenticate": "Basic realm=\"Local Camera POC 5-digit PIN\""},
+            headers={"WWW-Authenticate": "Basic realm=\"VAOS Admin\""},
         )
     return credentials.username
 
@@ -512,7 +532,7 @@ def ensure_model_files() -> None:
         # the extension when constructing FaceRecognizerSF/FaceDetectorYN.
         tmp_path = path.with_name(f"{path.stem}.part{path.suffix}")
         try:
-            request = urllib.request.Request(url, headers={"User-Agent": "LocalCameraRecognitionPOC/0.2", "Accept": "application/octet-stream"})
+            request = urllib.request.Request(url, headers={"User-Agent": "VAOS/1.0.0", "Accept": "application/octet-stream"})
             with urllib.request.urlopen(request, timeout=60) as response, tmp_path.open("wb") as output:
                 content_type = response.headers.get("Content-Type", "").lower()
                 if "text/html" in content_type:
@@ -875,29 +895,30 @@ def dashboard(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "index.html", {
         "threshold": settings["match_threshold"],
         "cooldown": settings["event_cooldown_seconds"],
-        "admin_password": ADMIN_PASSWORD,
+        "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD,
         "version": APP_VERSION,
+        "production_mode": PRODUCTION_MODE,
     })
 
 
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
 
 
 @app.get("/training/activity", response_class=HTMLResponse)
 def ml_training_activity_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "training_activity.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "training_activity.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
 
 
 @app.get("/datasets", response_class=HTMLResponse)
 def dataset_manager_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
 
 
 @app.get("/live-system", response_class=HTMLResponse)
 def live_system_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "live_system.html", {"version": APP_VERSION, "admin_password": ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "live_system.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
 
 
 @app.get("/health")
@@ -985,7 +1006,7 @@ def diagnostics(_: str = Depends(require_admin)):
     camera_service_running = False
     if internal_token:
         request = urllib.request.Request(
-            "http://127.0.0.1:8001/internal/model-status",
+            f"{CAMERA_INTERNAL_URL}/internal/model-status",
             headers={"X-VAOS-Internal-Token": internal_token},
         )
         try:
@@ -1101,6 +1122,8 @@ def request_service_restart(_: str = Depends(require_admin)):
 
 
 def request_launcher_command(command: str) -> dict[str, str]:
+    if PRODUCTION_MODE:
+        raise HTTPException(status_code=409, detail="Service restarts are managed by the production host. Use the deployment platform to restart VAOS.")
     try:
         if LAUNCHER_COMMAND_PATH.exists():
             raise HTTPException(status_code=409, detail="Another launcher action is already in progress.")
@@ -1114,6 +1137,8 @@ def request_launcher_command(command: str) -> dict[str, str]:
 
 
 def read_tunnel_state() -> dict[str, str]:
+    if PRODUCTION_MODE and PUBLIC_CAMERA_URL:
+        return {"status": "running", "message": "Production camera site is configured through the HTTPS reverse proxy."}
     try:
         state = json.loads(TUNNEL_STATE_PATH.read_text(encoding="utf-8"))
         if isinstance(state, dict):
@@ -1140,6 +1165,8 @@ def public_camera_paused() -> bool:
 
 @app.get("/api/admin/tunnel")
 def tunnel_status(_: str = Depends(require_admin)):
+    if PRODUCTION_MODE:
+        return {"url": PUBLIC_CAMERA_URL, "status": "running", "message": "Production camera site is configured through the HTTPS reverse proxy.", "managed_by_platform": True}
     try:
         url = TUNNEL_URL_PATH.read_text(encoding="ascii").strip()
     except OSError:
@@ -1153,6 +1180,8 @@ def tunnel_status(_: str = Depends(require_admin)):
 
 @app.post("/api/admin/tunnel/{action}")
 def control_tunnel(action: str, _: str = Depends(require_admin)):
+    if PRODUCTION_MODE:
+        raise HTTPException(status_code=409, detail="Production camera access is managed by the HTTPS reverse proxy and deployment platform; temporary tunnel controls are unavailable.")
     if action not in {"pause", "start", "stop", "restart"}:
         raise HTTPException(status_code=404, detail="Unknown tunnel action")
     state = read_tunnel_state()
@@ -2341,7 +2370,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
     internal_token = os.getenv("VAOS_INTERNAL_STATUS_TOKEN", "")
     live_model: dict[str, Any] = {"available": False, "loaded": False, "custom_model_active": False, "message": "Camera worker status is unavailable until the updated launcher is restarted."}
     if internal_token:
-        request = urllib.request.Request("http://127.0.0.1:8001/internal/model-status", headers={"X-VAOS-Internal-Token": internal_token})
+        request = urllib.request.Request(f"{CAMERA_INTERNAL_URL}/internal/model-status", headers={"X-VAOS-Internal-Token": internal_token})
         try:
             with urllib.request.urlopen(request, timeout=1.0) as response:
                 worker = json.loads(response.read().decode("utf-8"))
@@ -3691,7 +3720,12 @@ async def receive_frame(token: str, request: Request):
 
 @app.on_event("startup")
 def announce_startup():
-    logger.info("Dashboard: http://127.0.0.1:8000")
-    logger.info("Admin username: admin")
-    logger.info("Admin password is stored locally in %s", PASSWORD_PATH)
+    logger.info("VAOS %s admin service started", APP_VERSION)
+    if PRODUCTION_MODE:
+        logger.info("Production administrator site is configured behind the deployment HTTPS proxy")
+        logger.info("Production camera site: %s", PUBLIC_CAMERA_URL)
+    else:
+        logger.info("Dashboard: http://127.0.0.1:8000")
+        logger.info("Admin username: admin")
+        logger.info("Local password file: %s", PASSWORD_PATH)
     logger.info("Models download on first enrollment or incoming camera frame.")

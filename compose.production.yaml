@@ -1,0 +1,79 @@
+name: vaos
+
+services:
+  vaos-admin:
+    build:
+      context: .
+      args:
+        INSTALL_OBJECT_DETECTION: ${VAOS_INSTALL_OBJECT_DETECTION:-true}
+        TORCH_INDEX_URL: ${VAOS_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    command: ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
+    environment: &vaos-environment
+      VAOS_ENV: production
+      VAOS_ADMIN_PASSWORD: ${VAOS_ADMIN_PASSWORD:?Set VAOS_ADMIN_PASSWORD in production.env}
+      VAOS_PUBLIC_CAMERA_URL: https://${VAOS_CAMERA_DOMAIN:?Set VAOS_CAMERA_DOMAIN in production.env}
+      VAOS_CAMERA_INTERNAL_URL: http://vaos-camera:8001
+      VAOS_INTERNAL_STATUS_TOKEN: ${VAOS_INTERNAL_STATUS_TOKEN:?Set VAOS_INTERNAL_STATUS_TOKEN in production.env}
+      VAOS_DATA_DIR: /var/lib/vaos
+      MODEL_DIR: /var/lib/vaos/models
+      YOLO_CONFIG_DIR: /var/lib/vaos/ultralytics
+      OBJECT_DETECTOR_DEVICE: ${OBJECT_DETECTOR_DEVICE:-auto}
+      VAOS_HEALTH_PORT: "8000"
+    volumes:
+      - vaos-data:/var/lib/vaos
+    expose:
+      - "8000"
+    restart: unless-stopped
+    networks:
+      - vaos-backend
+
+  vaos-camera:
+    build:
+      context: .
+      args:
+        INSTALL_OBJECT_DETECTION: ${VAOS_INSTALL_OBJECT_DETECTION:-true}
+        TORCH_INDEX_URL: ${VAOS_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cpu}
+    command: ["python", "-m", "uvicorn", "camera_service:app", "--host", "0.0.0.0", "--port", "8001", "--proxy-headers", "--forwarded-allow-ips=*"]
+    environment:
+      <<: *vaos-environment
+      VAOS_HEALTH_PORT: "8001"
+    volumes:
+      - vaos-data:/var/lib/vaos
+    expose:
+      - "8001"
+    restart: unless-stopped
+    depends_on:
+      vaos-admin:
+        condition: service_healthy
+    networks:
+      - vaos-backend
+
+  vaos-proxy:
+    image: caddy:2
+    environment:
+      VAOS_ADMIN_DOMAIN: ${VAOS_ADMIN_DOMAIN:?Set VAOS_ADMIN_DOMAIN in production.env}
+      VAOS_CAMERA_DOMAIN: ${VAOS_CAMERA_DOMAIN:?Set VAOS_CAMERA_DOMAIN in production.env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    restart: unless-stopped
+    depends_on:
+      vaos-admin:
+        condition: service_healthy
+      vaos-camera:
+        condition: service_healthy
+    networks:
+      - vaos-backend
+
+volumes:
+  vaos-data:
+  caddy-data:
+  caddy-config:
+
+networks:
+  vaos-backend:

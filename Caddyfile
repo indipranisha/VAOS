@@ -1,0 +1,19 @@
+{$VAOS_ADMIN_DOMAIN} {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+	}
+	reverse_proxy vaos-admin:8000
+}
+
+{$VAOS_CAMERA_DOMAIN} {
+	encode zstd gzip
+	header {
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy same-origin
+	}
+	reverse_proxy vaos-camera:8001
+}

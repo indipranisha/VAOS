@@ -1,4 +1,4 @@
-"""Public camera-only ASGI service. Keep the admin app on localhost:8000."""
+"""Public VAOS camera-site ASGI service."""
 from __future__ import annotations
 
 import logging
@@ -14,8 +14,8 @@ from starlette.concurrency import run_in_threadpool
 os.environ["CAMERA_SERVICE_IMPORT"] = "1"
 import main as core
 
-logger = logging.getLogger("camera-poc.public")
-app = FastAPI(title="Camera Station", docs_url=None, redoc_url=None, openapi_url=None)
+logger = logging.getLogger("vaos.public")
+app = FastAPI(title="VAOS Camera Station", version=core.APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=str(core.APP_DIR / "static")), name="static")
 
 
@@ -30,7 +30,7 @@ async def pause_public_camera_access(request: Request, call_next):
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "app": "camera-station", "instance_id": core.INSTANCE_ID, "version": core.APP_VERSION}
+    return {"status": "ok", "app": "vaos-camera", "instance_id": core.INSTANCE_ID, "version": core.APP_VERSION}
 
 
 @app.get("/internal/model-status")

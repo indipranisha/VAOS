@@ -40,12 +40,12 @@ $instanceId = ([System.BitConverter]::ToString($sha256.ComputeHash($instanceByte
 $sha256.Dispose()
 $adminStatus = $null
 $cameraStatus = $null
-try { $adminStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2; $adminHealthy = $adminStatus.app -in @('vaos-admin','local-camera-recognition-poc') } catch { }
-try { $cameraStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health' -TimeoutSec 2; $cameraHealthy = $cameraStatus.app -eq 'camera-station' } catch { }
+try { $adminStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2; $adminHealthy = $adminStatus.app -eq 'vaos-admin' } catch { }
+try { $cameraStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health' -TimeoutSec 2; $cameraHealthy = $cameraStatus.app -eq 'vaos-camera' } catch { }
 $adminThisFolder = $adminHealthy -and $adminStatus.instance_id -eq $instanceId -and $adminStatus.version -eq $expectedAppVersion
 $cameraThisFolder = $cameraHealthy -and $cameraStatus.instance_id -eq $instanceId -and $cameraStatus.version -eq $expectedAppVersion
 if ($adminThisFolder -and $cameraThisFolder) {
-  Write-Host 'This copy of the camera app is already running. Opening its dashboard.' -ForegroundColor Yellow
+  Write-Host 'This VAOS installation is already running. Opening its dashboard.' -ForegroundColor Yellow
   Start-Process 'http://127.0.0.1:8000'
   exit 0
 }
@@ -109,7 +109,7 @@ function Start-AppServices {
   $null = Wait-ForLocalService 'http://127.0.0.1:8000/health' 'vaos-admin' $script:admin 'VAOS admin service'
   $script:camera = Start-Process -FilePath $script:python -ArgumentList @('-m','uvicorn','camera_service:app','--host','127.0.0.1','--port','8001') -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $cameraLog -RedirectStandardError $cameraErrorLog -PassThru
   $children.Add($script:camera)
-  $null = Wait-ForLocalService 'http://127.0.0.1:8001/health' 'camera-station' $script:camera 'Public camera service'
+  $null = Wait-ForLocalService 'http://127.0.0.1:8001/health' 'vaos-camera' $script:camera 'Public camera service'
 }
 
 function Stop-Tunnel {
