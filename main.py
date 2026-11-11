@@ -30,7 +30,7 @@ import numpy as np
 import qrcode
 import qrcode.image.svg
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -82,7 +82,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
 CAMERA_INTERNAL_URL = os.getenv("VAOS_CAMERA_INTERNAL_URL", "http://127.0.0.1:8001").strip().rstrip("/")
@@ -953,9 +953,9 @@ def dataset_manager_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
 
 
-@app.get("/live-system", response_class=HTMLResponse)
+@app.get("/live-system")
 def live_system_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "live_system.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
+    return RedirectResponse(url="/#system-overview", status_code=303)
 
 
 @app.get("/health")

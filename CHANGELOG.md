@@ -1,5 +1,9 @@
 # Release notes
 
+## 1.0.3
+
+- Route the legacy Live System address into the unified Control Room overview so the dashboard and live system no longer appear as separate views.
+
 ## 1.0.2
 
 - Replace legacy short local admin passwords with a random 32-byte credential before startup.
