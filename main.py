@@ -93,6 +93,8 @@ ENGINE_SETTING_DEFAULTS = {
 MAX_IMAGE_BYTES = 6 * 1024 * 1024
 MAX_ENROLLMENT_PHOTOS = 10
 MAX_ENROLLMENT_TOTAL_BYTES = 30 * 1024 * 1024
+MAX_ML_SAMPLES = 50_000
+TRAINING_EPOCH_OPTIONS = (10, 15, 20, 25, 30, 35, 40, 45, 50)
 
 app = FastAPI(title="VAOS (Video Analytics - Operating System)", version=APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
@@ -750,8 +752,11 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
         # crops are retained, never the full camera frame.
         with db_connection() as db:
             capture_enabled = db.execute("SELECT value FROM app_settings WHERE key='ml_capture_enabled'").fetchone()
+            sample_count = int(db.execute("SELECT COUNT(*) FROM ml_samples").fetchone()[0])
         if capture_enabled and capture_enabled["value"] == "1":
             for obj in objects:
+                if sample_count >= MAX_ML_SAMPLES:
+                    break
                 capture_key = (token, obj["label"])
                 if time.monotonic() - last_ml_capture.get(capture_key, 0.0) < 3:
                     continue
@@ -767,8 +772,10 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
                 if ok:
                     with db_connection() as db:
                         normalized_box = f"{(x1-left)/max(1,right-left):.6f},{(y1-top)/max(1,bottom-top):.6f},{box_width/max(1,right-left):.6f},{box_height/max(1,bottom-top):.6f}"
-                        db.execute("INSERT INTO ml_samples(created_at,camera_token,suggested_label,image,bbox,confidence) VALUES (?,?,?,?,?,?)", (utc_now(), token, obj["label"], encoded_crop.tobytes(), normalized_box, float(obj["score"])))
-                    last_ml_capture[capture_key] = time.monotonic()
+                        inserted = db.execute("INSERT INTO ml_samples(created_at,camera_token,suggested_label,image,bbox,confidence) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM ml_samples) < ?", (utc_now(), token, obj["label"], encoded_crop.tobytes(), normalized_box, float(obj["score"]), MAX_ML_SAMPLES)).rowcount
+                    if inserted:
+                        sample_count += 1
+                        last_ml_capture[capture_key] = time.monotonic()
         if engine_settings["object_tracking_enabled"]:
             now_track = time.monotonic()
             existing_tracks = [track for track in live_tracks.get(token, []) if now_track - track["seen"] <= 5.0]
@@ -2381,7 +2388,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
             training_state.update(launcher_progress)
             training_state["progress_source"] = "launcher_output"
     reviewable_total = sum(int(row["n"]) for row in totals if row["review_state"] in {"pending", "later"})
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": None, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "dataset_prepare": dict(ml_dataset_prepare_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "training_epoch_options": list(TRAINING_EPOCH_OPTIONS), "supports_custom_training_epochs": True, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "dataset_prepare": dict(ml_dataset_prepare_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.get("/api/admin/ml/logs")
@@ -2408,7 +2415,16 @@ def list_ml_training_history(run_id: str | None = None, _: str = Depends(require
                 if not rows:
                     continue
                 newest_epoch = max(int(float(row.get("epoch") or 0)) for row in rows)
-                runs.append({"id": run_path.name, "epochs": len(rows), "last_epoch": newest_epoch, "updated_at": datetime.fromtimestamp(result_path.stat().st_mtime, timezone.utc).isoformat()})
+                run_metadata: dict[str, Any] = {}
+                run_metadata_path = run_path / "vaos_run.json"
+                if run_metadata_path.is_file() and run_metadata_path.stat().st_size <= 128 * 1024:
+                    try:
+                        saved_metadata = json.loads(run_metadata_path.read_text(encoding="utf-8"))
+                        if isinstance(saved_metadata, dict):
+                            run_metadata = saved_metadata
+                    except (OSError, json.JSONDecodeError):
+                        logger.debug("Could not load metadata for training run %s", run_path.name, exc_info=True)
+                runs.append({"id": run_path.name, "epochs": len(rows), "last_epoch": newest_epoch, "updated_at": datetime.fromtimestamp(result_path.stat().st_mtime, timezone.utc).isoformat(), "dataset_name": str(run_metadata.get("dataset_name", "")), "dataset_source": str(run_metadata.get("dataset_source", "")), "initial_model": str(run_metadata.get("initial_model", "")), "samples": run_metadata.get("samples")})
             except (OSError, UnicodeDecodeError, ValueError, csv.Error):
                 logger.debug("Skipping unreadable training history file %s", result_path, exc_info=True)
     runs.sort(key=lambda item: item["updated_at"], reverse=True)
@@ -3053,12 +3069,13 @@ def batch_review_ml_samples(payload: dict[str, Any], _: str = Depends(require_ad
     return {"ok": True, "updated": cur.rowcount, "label": label if choice == "change_label" else None}
 
 
-def run_ml_training(device_choice: str, dataset_source: str, initial_model: str = "auto", resource_mode: bool = False) -> None:
+def run_ml_training(device_choice: str, dataset_source: str, initial_model: str = "auto", resource_mode: bool = False, requested_epochs: int | None = None) -> None:
     global ml_training_state
     job_started = time.monotonic()
     write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
     try:
-        epochs_total = 20 if dataset_source.startswith("dataset:") or dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
+        default_epochs = 20 if dataset_source.startswith("dataset:") or dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
+        epochs_total = int(requested_epochs) if requested_epochs is not None else default_epochs
         if dataset_source.startswith("dataset:"):
             dataset_id = dataset_source.split(":", 1)[1]
             imported = load_public_dataset_imports().get(dataset_id)
@@ -3225,6 +3242,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             device_label = f"CPU · {cpu_threads} thread{'s' if cpu_threads != 1 else ''}"
         job_kind = "enrichment" if resource_mode else "training"
         ml_training_state = {"status": "running", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "data_yaml": str(yaml_path), "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
+        write_training_log("INFO", "Training dataset resolved", source=dataset_source, dataset_name=dataset_name, images=sample_count, classes=len(labels), epochs=epochs_total, device=device_label)
         model = YOLO(model_file)
         def scalar(value: Any) -> float | None:
             try:
@@ -3342,6 +3360,12 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         model.add_callback("on_train_epoch_end", update_epoch)
         write_training_log("INFO", "Model fit started", model=Path(model_file).name, device=ml_training_state["device"], images=sample_count, epochs=epochs_total)
         run_name = f"vaos_objects_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        run_dir = ML_DATA_DIR / "runs" / run_name
+        run_dir.mkdir(parents=True, exist_ok=True)
+        run_metadata = {"run_id": run_name, "dataset_source": dataset_source, "dataset_name": dataset_name, "epochs_requested": epochs_total, "initial_model": Path(model_file).name, "device": device_label, "samples": sample_count, "started_at": utc_now()}
+        (run_dir / "vaos_run.json").write_text(json.dumps(run_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        ml_training_state.update({"run_id": run_name, "initial_model": Path(model_file).name})
+        write_training_log("INFO", "Training run initialized", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, initial_model=Path(model_file).name)
         cpu_worker_budget = max(0, (os.cpu_count() or 1) - 2)
         try:
             import psutil
@@ -3382,17 +3406,17 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         except Exception:
             logger.exception("Could not summarize per-class training labels")
             class_counts, invalid_class_ids = {}, None
-        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "classes": labels, "class_counts": class_counts, "invalid_class_ids": invalid_class_ids, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": Path(model_file).name, "resource_mode": bool(resource_mode), "workers": training_workers, "batch": training_batch}
+        metadata = {"trained_at": utc_now(), "samples": sample_count, "dataset_source": dataset_name, "dataset_id": dataset_source, "run_id": run_name, "classes": labels, "class_counts": class_counts, "invalid_class_ids": invalid_class_ids, "device": device_label, "epochs": epochs_total, "metrics": final_metrics, "base_model": Path(model_file).name, "base_model_source": Path(model_file).name, "resource_mode": bool(resource_mode), "workers": training_workers, "batch": training_batch}
         metadata_tmp = active / "metadata.json.new"
         metadata_tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         metadata_tmp.replace(active / "metadata.json")
-        ml_training_state = {"status": "stopped" if stopped_early else "complete", "job_kind": job_kind, "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
-        write_training_log("INFO", "Training finished", status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=int(time.monotonic() - job_started))
+        ml_training_state = {"status": "stopped" if stopped_early else "complete", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "run_id": run_name, "initial_model": Path(model_file).name, "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
+        write_training_log("INFO", "Training finished", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=int(time.monotonic() - job_started))
     except Exception as exc:
         logger.exception("VAOS object model training failed")
         error_message = str(exc)[:400] or exc.__class__.__name__
         write_training_log("ERROR", "Training failed", error=error_message, elapsed_seconds=int(time.monotonic() - job_started))
-        ml_training_state = {"status": "error", "job_kind": "enrichment" if resource_mode else "training", "message": error_message, "progress": int(ml_training_state.get("progress", 0)), "epoch": ml_training_state.get("epoch", 0), "epochs": ml_training_state.get("epochs", 0), "stats": ml_training_state.get("stats", {}), "device": ml_training_state.get("device", device_choice.upper())}
+        ml_training_state = {"status": "error", "job_kind": "enrichment" if resource_mode else "training", "source": dataset_source, "dataset_name": ml_training_state.get("dataset_name", ""), "dataset_id": ml_training_state.get("dataset_id", ""), "run_id": ml_training_state.get("run_id", ""), "epochs": ml_training_state.get("epochs", requested_epochs or 0), "message": error_message, "progress": int(ml_training_state.get("progress", 0)), "epoch": ml_training_state.get("epoch", 0), "stats": ml_training_state.get("stats", {}), "device": ml_training_state.get("device", device_choice.upper())}
     finally:
         ml_training_lock.release()
 
@@ -3401,6 +3425,12 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
 def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     device_choice = str(payload.get("device", "cpu:1"))
     resource_mode = bool(payload.get("resource_mode", False))
+    try:
+        requested_epochs = int(payload.get("epochs", 20))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="Choose an epoch count from 10 to 50 in steps of five.")
+    if requested_epochs not in TRAINING_EPOCH_OPTIONS:
+        raise HTTPException(status_code=400, detail="Choose an epoch count from 10, 15, 20, 25, 30, 35, 40, 45, or 50.")
     if not (device_choice.startswith("cpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and not (device_choice.startswith("gpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))):
         raise HTTPException(status_code=400, detail="Choose an available CPU thread count or GPU from the device list")
     inventory = training_device_inventory()
@@ -3444,17 +3474,19 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     if initial_model not in {"auto", "best.pt", "yolo26m"}:
         raise HTTPException(status_code=400, detail="Choose best.pt or YOLO26m as the starting model.")
     active_record = load_public_dataset_imports().get(dataset_source.split(":", 1)[1], {}) if is_registered_dataset else {}
-    ml_training_state.update({"status": "preparing", "source": dataset_source, "dataset_id": dataset_source.split(":", 1)[1] if is_registered_dataset else "", "dataset_name": str(active_record.get("name", "")), "data_yaml": str(active_record.get("data_yaml", "")), "message": "Training request accepted. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
-    write_training_log("INFO", "Training requested", source=dataset_source, device=device_choice, checkpoint=initial_model, resource_mode=resource_mode)
+    source_labels = {"reviewed": "Human-reviewed camera samples", "coco2017": "COCO 2017", "combined": "COCO 2017 + human-reviewed camera samples", "uvh26_combined": "UVH-26 + human-reviewed camera samples", "combined_kaggle": "COCO 2017 + Kaggle Auto + human-reviewed samples", "combined_vehicle": "COCO 2017 + UVH-26 + Kaggle Auto + human-reviewed samples"}
+    dataset_name = str(active_record.get("name") or source_labels.get(dataset_source, dataset_source))
+    ml_training_state.update({"status": "preparing", "source": dataset_source, "dataset_id": dataset_source.split(":", 1)[1] if is_registered_dataset else "", "dataset_name": dataset_name, "epochs": requested_epochs, "data_yaml": str(active_record.get("data_yaml", "")), "message": f"Training request accepted · {dataset_name} · {requested_epochs} epochs. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
+    write_training_log("INFO", "Training requested", source=dataset_source, dataset_name=dataset_name, epochs=requested_epochs, device=device_choice, checkpoint=initial_model, resource_mode=resource_mode)
     try:
-        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode), name="vaos-ml-training", daemon=True).start()
+        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode, requested_epochs), name="vaos-ml-training", daemon=True).start()
     except Exception as exc:
         ml_training_lock.release()
         ml_training_state.update({"status": "error", "message": f"Could not launch the training worker: {exc}"})
         logger.exception("Could not launch the VAOS training worker")
         write_training_log("ERROR", "Training worker could not be launched", error=str(exc)[:400])
         raise HTTPException(status_code=503, detail="VAOS could not start its background training worker. See the Training activity log and admin service error log.") from exc
-    return {"status": "preparing", "message": "Training setup started."}
+    return {"status": "preparing", "message": f"Training setup started · {dataset_name} · {requested_epochs} epochs.", "dataset_name": dataset_name, "epochs": requested_epochs}
 
 
 @app.get("/api/admin/ml/model-sources")

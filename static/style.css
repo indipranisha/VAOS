@@ -916,6 +916,7 @@ body.vaos-dark .topbar-spacer { flex: 1 1 auto; }
 .activity-severity { display: inline-flex; justify-content: center; padding: 3px 6px; border-radius: 5px; color: #496177; background: #e9eef3; font-size: 8px; font-weight: 800; }
 .severity-error { color: #a63838; background: #fdecec; }.severity-warning { color: #8b6016; background: #fff3d8; }.severity-info { color: #2c6b79; background: #e4f3f5; }
 .activity-log-main { min-width: 0; }.activity-log-main > strong { color: var(--ops-ink); font-size: 10px; font-weight: 650; }
+.activity-dataset-tag { display: inline-flex; margin-top: 4px; padding: 2px 6px; border: 1px solid #d8e3ef; border-radius: 999px; color: #48647d; background: #edf4fa; font-size: 8px; line-height: 1.35; }
 .activity-log-main pre { max-height: 150px; margin: 7px 0 0; overflow: auto; padding: 8px; border-radius: 6px; color: #53677c; background: #eef2f6; font-size: 9px; white-space: pre-wrap; }
 .activity-log-entry time { color: var(--ops-muted); font-size: 9px; text-align: right; }
 .activity-pagination { margin-top: 10px; }
@@ -933,6 +934,7 @@ body.vaos-dark .training-activity-page h2, body.vaos-dark .training-activity-pag
 body.vaos-dark .live-metric-card strong, body.vaos-dark .activity-summary-card > strong,
 body.vaos-dark .live-camera-identity strong, body.vaos-dark .live-camera-facts strong,
 body.vaos-dark .activity-log-main > strong { color: #edf4fa; }
+body.vaos-dark .activity-dataset-tag { border-color: #34495d; color: #bfd4e6; background: #182a3b; }
 body.vaos-dark .live-model-card, body.vaos-dark .live-camera-row, body.vaos-dark .activity-log-entry { border-color: #2a3c4d; background: #111d2a; }
 body.vaos-dark .live-model-file, body.vaos-dark .live-model-meta, body.vaos-dark .live-camera-identity small,
 body.vaos-dark .live-camera-facts small, body.vaos-dark .live-camera-objects,
