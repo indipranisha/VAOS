@@ -82,7 +82,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
 CAMERA_INTERNAL_URL = os.getenv("VAOS_CAMERA_INTERNAL_URL", "http://127.0.0.1:8001").strip().rstrip("/")
@@ -318,21 +318,20 @@ def get_or_create_admin_password() -> str:
             raise RuntimeError("Production requires VAOS_ADMIN_PASSWORD with at least 32 characters. Set a unique secret before starting VAOS.")
         return configured
     if configured:
-        if len(configured) < 12:
-            raise RuntimeError("VAOS_ADMIN_PASSWORD must contain at least 12 characters when configured.")
+        if len(configured) < 20:
+            raise RuntimeError("VAOS_ADMIN_PASSWORD must contain at least 20 characters when configured.")
         return configured
     if PASSWORD_PATH.exists():
         saved = PASSWORD_PATH.read_text(encoding="utf-8").strip()
-        if len(saved) == 5 and saved.isascii() and saved.isdigit():
+        if len(saved) >= 20:
             return saved
-    password = "".join(secrets.choice("0123456789") for _ in range(5))
+    password = secrets.token_urlsafe(32)
     PASSWORD_PATH.write_text(password + "\n", encoding="utf-8")
     try:
         os.chmod(PASSWORD_PATH, 0o600)
     except OSError:
         pass
-    logger.warning("New dashboard password created in %s", PASSWORD_PATH)
-    logger.warning("Dashboard username: admin | password: %s", password)
+    logger.warning("Dashboard password was generated or upgraded. It is stored in %s.", PASSWORD_PATH)
     return password
 
 

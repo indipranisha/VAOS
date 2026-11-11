@@ -1,5 +1,10 @@
 # Release notes
 
+## 1.0.2
+
+- Replace legacy short local admin passwords with a random 32-byte credential before startup.
+- Print the current admin credential after an in-app service reload so it remains recoverable from the launcher.
+
 ## 1.0.1
 
 - Add separate Settings controls for a public HTTPS link to the main admin dashboard, with an independently managed URL and tunnel process from the camera tunnel.

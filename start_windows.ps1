@@ -299,6 +299,8 @@ try {
             Write-Host 'Restarting VAOS services while keeping the camera tunnel connected...'
             Stop-AppServices
             Start-AppServices
+            $passwordFile = Join-Path $PSScriptRoot 'data\admin_password.txt'
+            if (Test-Path -LiteralPath $passwordFile) { Write-Host "Dashboard sign-in: admin / $((Get-Content -LiteralPath $passwordFile -Raw).Trim())" }
             Write-Host "VAOS services are back. Camera tunnel remains at $publicUrl"
           }
           'tunnel_start' { Start-Tunnel }
