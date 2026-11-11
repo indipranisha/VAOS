@@ -120,7 +120,6 @@ ML_MODEL_SOURCES_DIR = ML_DATA_DIR / "model_sources"
 ML_MODEL_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
 HF_YOLO_REPO_ID = "Ultralytics/YOLO26"
 HF_YOLO_FILES = {f"yolo26{size}.pt" for size in "nsmlx"}
-MAX_ML_SAMPLES = 5000
 ML_DATASETS_DIR = ML_DATA_DIR / "public_datasets"
 ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 ML_TRAINING_LOG_PATH = ML_DATA_DIR / "training.log"
@@ -235,7 +234,9 @@ def read_launcher_training_progress() -> dict[str, Any] | None:
             "epochs": epochs,
             "batch": batch,
             "batches": batches,
-            "progress": min(99, max(0, int(percent))),
+            "progress": min(99, max(0, int(((epoch - 1) + (batch / batches)) / epochs * 100))),
+            "epoch_progress": round(min(1.0, max(0.0, batch / batches)) * 100, 2),
+            "message": f"Epoch {epoch}/{epochs} · batch {batch:,}/{batches:,}",
             "output_rate": float(rate),
             "output_updated_at": modified_at,
         }
@@ -749,8 +750,7 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
         # crops are retained, never the full camera frame.
         with db_connection() as db:
             capture_enabled = db.execute("SELECT value FROM app_settings WHERE key='ml_capture_enabled'").fetchone()
-            sample_count = db.execute("SELECT COUNT(*) AS n FROM ml_samples").fetchone()["n"]
-        if capture_enabled and capture_enabled["value"] == "1" and sample_count < MAX_ML_SAMPLES:
+        if capture_enabled and capture_enabled["value"] == "1":
             for obj in objects:
                 capture_key = (token, obj["label"])
                 if time.monotonic() - last_ml_capture.get(capture_key, 0.0) < 3:
@@ -767,7 +767,7 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
                 if ok:
                     with db_connection() as db:
                         normalized_box = f"{(x1-left)/max(1,right-left):.6f},{(y1-top)/max(1,bottom-top):.6f},{box_width/max(1,right-left):.6f},{box_height/max(1,bottom-top):.6f}"
-                        db.execute("INSERT INTO ml_samples(created_at,camera_token,suggested_label,image,bbox,confidence) SELECT ?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM ml_samples)<?", (utc_now(), token, obj["label"], encoded_crop.tobytes(), normalized_box, float(obj["score"]), MAX_ML_SAMPLES))
+                        db.execute("INSERT INTO ml_samples(created_at,camera_token,suggested_label,image,bbox,confidence) VALUES (?,?,?,?,?,?)", (utc_now(), token, obj["label"], encoded_crop.tobytes(), normalized_box, float(obj["score"])))
                     last_ml_capture[capture_key] = time.monotonic()
         if engine_settings["object_tracking_enabled"]:
             now_track = time.monotonic()
@@ -2381,7 +2381,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
             training_state.update(launcher_progress)
             training_state["progress_source"] = "launcher_output"
     reviewable_total = sum(int(row["n"]) for row in totals if row["review_state"] in {"pending", "later"})
-    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "dataset_prepare": dict(ml_dataset_prepare_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
+    return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": None, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "dataset_prepare": dict(ml_dataset_prepare_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
 
 @app.get("/api/admin/ml/logs")
