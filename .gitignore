@@ -4,6 +4,9 @@ __pycache__/
 .env
 .env.*
 production.env
+mcp-config.json
+mcp-config.local.json
+.mcp.local.json
 data/
 !data/models/
 !data/models/.gitkeep

@@ -11,6 +11,7 @@ import secrets
 import shutil
 import sqlite3
 import subprocess
+import sys
 import threading
 import time
 import hashlib
@@ -18,6 +19,7 @@ import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.request
 import zipfile
+from copy import deepcopy
 from io import BytesIO
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -30,8 +32,9 @@ import numpy as np
 import qrcode
 import qrcode.image.svg
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
-from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -82,7 +85,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.1.0"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
 CAMERA_INTERNAL_URL = os.getenv("VAOS_CAMERA_INTERNAL_URL", "http://127.0.0.1:8001").strip().rstrip("/")
@@ -116,6 +119,22 @@ app = FastAPI(title="VAOS (Video Analytics - Operating System)", version=APP_VER
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 security = HTTPBasic(auto_error=False)
+api_bearer = HTTPBearer(auto_error=False, scheme_name="VAOSBearer", bearerFormat="VAOS API token")
+
+
+@app.middleware("http")
+async def versioned_api_alias(request: Request, call_next):
+    """Serve the stable /api/v1 URL family through the existing handlers."""
+    path = request.scope.get("path", "")
+    if path == "/api/v1":
+        request.scope["path"] = "/api"
+        request.scope["raw_path"] = b"/api"
+    elif path.startswith("/api/v1/"):
+        suffix = path[len("/api/v1"):]
+        target = "/health" if suffix == "/health" else "/api" + suffix
+        request.scope["path"] = target
+        request.scope["raw_path"] = target.encode("ascii", "ignore")
+    return await call_next(request)
 
 model_lock = threading.RLock()
 recognition_lock = threading.Lock()
@@ -340,7 +359,7 @@ def get_or_create_admin_password() -> str:
 ADMIN_PASSWORD = "" if os.getenv("CAMERA_SERVICE_IMPORT") == "1" else get_or_create_admin_password()
 
 
-def require_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
+def require_basic_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
     if credentials is None:
         raise HTTPException(
             status_code=401,
@@ -380,6 +399,189 @@ def require_admin(request: Request, credentials: HTTPBasicCredentials | None = D
     with admin_auth_lock:
         admin_auth_failures.pop(client_key, None)
     return credentials.username
+
+
+API_MCP_GROUPS = ("diagnostics", "cameras", "people", "events", "review", "training", "datasets", "models", "settings", "tunnels", "video")
+API_DEFAULTS: dict[str, Any] = {
+    "api_enabled": False,
+    "mcp_enabled": False,
+    "mcp_read_only": True,
+    "mcp_allowed_groups": list(API_MCP_GROUPS),
+    "mcp_allow_sensitive": False,
+    "mcp_allow_deletes": False,
+    "api_rate_limit": 120,
+    "api_token_default_days": 90,
+}
+_api_request_lock = threading.Lock()
+_api_request_times: dict[str, list[float]] = {}
+_api_token_touch: dict[str, float] = {}
+_api_last_audit_cleanup = 0.0
+
+
+def get_api_settings() -> dict[str, Any]:
+    settings = dict(API_DEFAULTS)
+    try:
+        with db_connection() as db:
+            rows = db.execute("SELECT key,value FROM app_settings WHERE key LIKE 'integration_%'").fetchall()
+        saved = {str(row["key"]): str(row["value"]) for row in rows}
+        settings["api_enabled"] = saved.get("integration_api_enabled", "0") == "1"
+        settings["mcp_enabled"] = saved.get("integration_mcp_enabled", "0") == "1"
+        settings["mcp_read_only"] = saved.get("integration_mcp_read_only", "1") == "1"
+        settings["mcp_allow_sensitive"] = saved.get("integration_mcp_allow_sensitive", "0") == "1"
+        settings["mcp_allow_deletes"] = saved.get("integration_mcp_allow_deletes", "0") == "1"
+        settings["api_rate_limit"] = min(600, max(30, int(saved.get("integration_api_rate_limit", "120"))))
+        settings["api_token_default_days"] = min(365, max(1, int(saved.get("integration_api_token_default_days", "90"))))
+        groups = json.loads(saved.get("integration_mcp_allowed_groups", json.dumps(API_MCP_GROUPS)))
+        settings["mcp_allowed_groups"] = [group for group in groups if group in API_MCP_GROUPS] if isinstance(groups, list) else list(API_MCP_GROUPS)
+    except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
+        logger.exception("Could not read API and MCP settings; using locked-down defaults")
+    return settings
+
+
+def _api_request_group(path: str) -> str:
+    normalized = path.split("?", 1)[0]
+    if normalized.startswith("/api/v1/health") or normalized.endswith("/status") or normalized.endswith("/logs") or normalized.endswith("/history"):
+        return "diagnostics" if normalized.endswith(("/health", "/status")) else "training"
+    if "/cameras" in normalized or "/camera/" in normalized or "/enrollment-links" in normalized:
+        return "cameras"
+    if "/participants" in normalized or "/enroll/" in normalized:
+        return "people"
+    if "/events" in normalized or "/sightings" in normalized:
+        return "events"
+    if "/samples" in normalized or "/review" in normalized or "/capture" in normalized:
+        return "review"
+    if "/train" in normalized or "/history" in normalized or "/logs" in normalized:
+        return "training"
+    if "/engine-settings" in normalized or "/model-selection" in normalized:
+        return "settings"
+    if "/datasets" in normalized or "/dataset" in normalized:
+        return "datasets"
+    if "/model" in normalized or "/huggingface" in normalized or "/enrichment" in normalized:
+        return "models"
+    if "/tunnel" in normalized or "/admin-tunnel" in normalized:
+        return "tunnels"
+    if "/video-review" in normalized:
+        return "video"
+    if "/services/" in normalized:
+        return "settings"
+    return "unclassified"
+
+
+def _redact_api_path(path: str) -> str:
+    """Remove capability tokens from paths before writing the audit trail."""
+    parts = path.split("?")[0].split("/")
+    secret_after = {
+        ("api", "camera"), ("api", "enroll"), ("api", "admin", "cameras"),
+        ("api", "admin", "enrollment-links"),
+    }
+    for prefix in secret_after:
+        if tuple(parts[1:1 + len(prefix)]) == prefix and len(parts) > len(prefix) + 1:
+            token_index = len(prefix) + 1
+            parts[token_index] = "[redacted]"
+            break
+    return "/".join(parts)[:240]
+
+
+def _record_api_access(token_hash: str, token_prefix: str, request: Request) -> None:
+    global _api_last_audit_cleanup
+    now = time.monotonic()
+    with _api_request_lock:
+        recent = [stamp for stamp in _api_request_times.get(token_hash, []) if now - stamp < 60]
+        limit = int(get_api_settings()["api_rate_limit"])
+        if len(recent) >= limit:
+            _api_request_times[token_hash] = recent
+            raise HTTPException(status_code=429, detail=f"API rate limit reached ({limit} requests per minute).", headers={"Retry-After": "60"})
+        recent.append(now)
+        _api_request_times[token_hash] = recent
+        last_touch = _api_token_touch.get(token_hash, 0.0)
+        should_touch = now - last_touch >= 60
+        if should_touch:
+            _api_token_touch[token_hash] = now
+    if should_touch:
+        try:
+            with db_connection() as db:
+                db.execute("UPDATE api_tokens SET last_used_at=? WHERE token_hash=? AND revoked_at IS NULL", (utc_now(), token_hash))
+        except sqlite3.Error:
+            logger.debug("Could not update API token last-used time", exc_info=True)
+    try:
+        with db_connection() as db:
+            db.execute("INSERT INTO api_access_log(timestamp,token_prefix,method,path) VALUES(?,?,?,?)", (utc_now(), token_prefix, request.method, _redact_api_path(request.url.path)))
+            if now - _api_last_audit_cleanup >= 300:
+                db.execute("DELETE FROM api_access_log WHERE id NOT IN (SELECT id FROM api_access_log ORDER BY id DESC LIMIT 5000)")
+                db.execute("DELETE FROM api_access_log WHERE timestamp < ?", ((datetime.now(timezone.utc) - timedelta(days=90)).isoformat(timespec="seconds"),))
+                _api_last_audit_cleanup = now
+    except sqlite3.Error:
+        logger.debug("Could not record API access audit entry", exc_info=True)
+
+
+def require_admin(
+    request: Request,
+    credentials: HTTPBasicCredentials | None = Depends(security),
+    bearer: HTTPAuthorizationCredentials | None = Depends(api_bearer),
+) -> str:
+    if bearer is None:
+        request.state.vaos_api_scope = "admin"
+        return require_basic_admin(request, credentials)
+    settings = get_api_settings()
+    if not settings["api_enabled"]:
+        raise HTTPException(status_code=403, detail="API access is disabled in Settings.")
+    supplied = bearer.credentials
+    token_hash = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+    try:
+        with db_connection() as db:
+            row = db.execute("SELECT token_hash,token_prefix,scopes,expires_at,revoked_at FROM api_tokens WHERE token_hash=?", (token_hash,)).fetchone()
+    except sqlite3.Error as exc:
+        logger.exception("Could not validate an API token")
+        raise HTTPException(status_code=503, detail="API token storage is unavailable.") from exc
+    if not row or row["revoked_at"] or (row["expires_at"] and row["expires_at"] <= utc_now()):
+        raise HTTPException(status_code=401, detail="API token is invalid, expired, or revoked.", headers={"WWW-Authenticate": "Bearer"})
+    try:
+        stored_access = json.loads(row["scopes"])
+        if isinstance(stored_access, dict):
+            token_scope = str(stored_access.get("access", "read"))
+            token_groups = [group for group in stored_access.get("groups", API_MCP_GROUPS) if group in API_MCP_GROUPS]
+        else:  # Accept tokens created by the earlier list-only format.
+            legacy_scopes = set(stored_access if isinstance(stored_access, list) else [])
+            token_scope = "control" if "control" in legacy_scopes else "read"
+            token_groups = [item[6:] for item in legacy_scopes if item.startswith("group:") and item[6:] in API_MCP_GROUPS] or list(API_MCP_GROUPS)
+    except (TypeError, json.JSONDecodeError):
+        token_scope, token_groups = "", []
+    if token_scope != "control" and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        raise HTTPException(status_code=403, detail="This API token is read-only. Issue a control token in Settings for write access.")
+    if token_scope not in {"read", "control"}:
+        raise HTTPException(status_code=403, detail="This API token has no valid access scope.")
+    request.state.vaos_api_scope = token_scope
+    request.state.vaos_api_groups = token_groups
+    request_path = request.url.path
+    if request_path not in {"/api/openapi.json", "/api/admin/integrations/mcp-policy"}:
+        required_group = _api_request_group(request_path)
+        if required_group not in token_groups:
+            raise HTTPException(status_code=403, detail=f"This API token is not allowed to access the '{required_group}' capability group.")
+    if not hmac.compare_digest(str(row["token_hash"]), token_hash):
+        raise HTTPException(status_code=401, detail="API token is invalid.")
+    # Do not accept bearer secrets over remote clear-text HTTP or trust forwarded
+    # scheme headers from arbitrary clients. Loopback is the local launcher/tunnel.
+    peer_ip = None
+    try:
+        peer_ip = ipaddress.ip_address(request.client.host) if request.client and request.client.host else None
+    except ValueError:
+        pass
+    peer_loopback = bool(peer_ip and peer_ip.is_loopback)
+    trusted_proxy = False
+    if peer_ip and not peer_loopback:
+        for network_text in os.getenv("VAOS_TRUSTED_PROXY_CIDRS", "").split(","):
+            try:
+                if peer_ip in ipaddress.ip_network(network_text.strip(), strict=False):
+                    trusted_proxy = True
+                    break
+            except ValueError:
+                continue
+    forwarded_https = trusted_proxy and request.headers.get("x-forwarded-proto", "").casefold() == "https"
+    cloudflare_https = trusted_proxy and '"scheme":"https"' in request.headers.get("cf-visitor", "").replace(" ", "").casefold()
+    if request.url.scheme != "https" and not peer_loopback and not forwarded_https and not cloudflare_https:
+        raise HTTPException(status_code=400, detail="Bearer API tokens require HTTPS when connecting remotely.")
+    _record_api_access(token_hash, str(row["token_prefix"]), request)
+    return "api:" + str(row["token_prefix"])
 
 
 @contextmanager
@@ -472,7 +674,9 @@ def init_db() -> None:
                 active INTEGER NOT NULL DEFAULT 1,
                 map_x REAL NOT NULL DEFAULT 0.5,
                 map_y REAL NOT NULL DEFAULT 0.5,
-                heading REAL NOT NULL DEFAULT 0
+                heading REAL NOT NULL DEFAULT 0,
+                source_type TEXT NOT NULL DEFAULT 'camera',
+                source_ref TEXT
             );
             CREATE TABLE IF NOT EXISTS participants (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -521,11 +725,30 @@ def init_db() -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_objects_timestamp ON object_sightings(timestamp DESC);
             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS api_tokens (
+                token_hash TEXT PRIMARY KEY,
+                token_prefix TEXT NOT NULL,
+                label TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                last_used_at TEXT,
+                revoked_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_api_tokens_prefix ON api_tokens(token_prefix);
+            CREATE TABLE IF NOT EXISTS api_access_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                token_prefix TEXT NOT NULL,
+                method TEXT NOT NULL,
+                path TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_api_access_log_timestamp ON api_access_log(timestamp DESC);
             CREATE TABLE IF NOT EXISTS ml_samples (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
                 camera_token TEXT NOT NULL, suggested_label TEXT NOT NULL,
                 image BLOB NOT NULL, bbox TEXT NOT NULL DEFAULT '0.5,0.5,0.9,0.9', confidence REAL NOT NULL DEFAULT 0,
-                review_state TEXT NOT NULL DEFAULT 'pending',
+                review_state TEXT NOT NULL DEFAULT 'pending', source_time_seconds REAL,
                 confirmed_label TEXT, FOREIGN KEY(camera_token) REFERENCES cameras(token) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_ml_samples_review ON ml_samples(review_state, id DESC);
@@ -535,12 +758,19 @@ def init_db() -> None:
         for name, declaration in (("map_x", "REAL NOT NULL DEFAULT 0.5"), ("map_y", "REAL NOT NULL DEFAULT 0.5"), ("heading", "REAL NOT NULL DEFAULT 0")):
             if name not in columns:
                 db.execute(f"ALTER TABLE cameras ADD COLUMN {name} {declaration}")
+        if "source_type" not in columns:
+            db.execute("ALTER TABLE cameras ADD COLUMN source_type TEXT NOT NULL DEFAULT 'camera'")
+        if "source_ref" not in columns:
+            db.execute("ALTER TABLE cameras ADD COLUMN source_ref TEXT")
+        db.execute("CREATE INDEX IF NOT EXISTS idx_cameras_source ON cameras(source_type, source_ref)")
         participant_columns = {row["name"] for row in db.execute("PRAGMA table_info(participants)").fetchall()}
         sample_columns = {row["name"] for row in db.execute("PRAGMA table_info(ml_samples)").fetchall()}
         if "bbox" not in sample_columns:
             db.execute("ALTER TABLE ml_samples ADD COLUMN bbox TEXT NOT NULL DEFAULT '0.5,0.5,0.9,0.9'")
         if "confidence" not in sample_columns:
             db.execute("ALTER TABLE ml_samples ADD COLUMN confidence REAL NOT NULL DEFAULT 0")
+        if "source_time_seconds" not in sample_columns:
+            db.execute("ALTER TABLE ml_samples ADD COLUMN source_time_seconds REAL")
         if "profile_photo" not in participant_columns:
             db.execute("ALTER TABLE participants ADD COLUMN profile_photo BLOB")
 
@@ -921,6 +1151,183 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
     }
 
 
+def process_video_review_frame(token: str, content: bytes, source_time_seconds: float, save_samples: bool) -> dict[str, Any]:
+    """Detect objects in a browser-decoded local video frame and optionally queue crops for review."""
+    image = decode_image(content)
+    engine_settings = get_engine_settings()
+    if not engine_settings["object_detection_enabled"]:
+        raise RuntimeError("Object detection is turned off in Settings. Enable it, then retry.")
+    with recognition_lock:
+        detector = get_object_detector()
+        if detector is None:
+            raise RuntimeError("The object detector is not ready. Check Model details and retry.")
+        objects = detector.infer(image, confidence=engine_settings["object_confidence"], image_size=engine_settings["object_image_size"])
+
+    with db_connection() as db:
+        remaining = max(0, MAX_ML_SAMPLES - int(db.execute("SELECT COUNT(*) FROM ml_samples").fetchone()[0])) if save_samples else 0
+    saved = 0
+    for obj in objects:
+        if not save_samples or remaining <= 0:
+            break
+        x1, y1, x2, y2 = (int(value) for value in obj["box"])
+        box_width, box_height = x2 - x1, y2 - y1
+        if box_width < 2 or box_height < 2:
+            continue
+        pad_x, pad_y = max(4, int(box_width * 0.18)), max(4, int(box_height * 0.18))
+        left, top = max(0, x1 - pad_x), max(0, y1 - pad_y)
+        right, bottom = min(image.shape[1], x2 + pad_x), min(image.shape[0], y2 + pad_y)
+        crop = image[top:bottom, left:right]
+        if crop.size == 0:
+            continue
+        ok, encoded = cv2.imencode(".jpg", crop, [cv2.IMWRITE_JPEG_QUALITY, 88])
+        if not ok:
+            continue
+        normalized_box = f"{(x1-left)/max(1,right-left):.6f},{(y1-top)/max(1,bottom-top):.6f},{box_width/max(1,right-left):.6f},{box_height/max(1,bottom-top):.6f}"
+        with db_connection() as db:
+            inserted = db.execute(
+                "INSERT INTO ml_samples(created_at,camera_token,suggested_label,image,bbox,confidence,source_time_seconds) "
+                "SELECT ?,?,?,?,?,?,? WHERE (SELECT COUNT(*) FROM ml_samples) < ?",
+                (utc_now(), token, obj["label"], encoded.tobytes(), normalized_box, float(obj["score"]), max(0.0, source_time_seconds), MAX_ML_SAMPLES),
+            ).rowcount
+        if inserted:
+            saved += 1
+            remaining -= 1
+
+    return {
+        "objects": objects,
+        "frame_size": [int(image.shape[1]), int(image.shape[0])],
+        "samples_saved": saved,
+        "sample_limit_reached": save_samples and remaining <= 0,
+        "samples_enabled": save_samples,
+    }
+
+
+@app.get("/api/openapi.json", include_in_schema=False)
+def api_openapi_schema(_: str = Depends(require_admin)) -> dict[str, Any]:
+    """Serve an authenticated OpenAPI 3 contract for the stable versioned API."""
+    # FastAPI caches the generated schema. Transform a copy so repeated requests
+    # keep the underlying unversioned schema intact.
+    schema = deepcopy(app.openapi())
+    versioned_paths: dict[str, Any] = {}
+    for path, operations in schema.get("paths", {}).items():
+        if (not path.startswith("/api/") and path != "/health") or path in {"/api/openapi.json", "/api/docs"}:
+            continue
+        versioned_path = "/health" if path == "/health" else path[len("/api"):]
+        for method, operation in operations.items():
+            if not isinstance(operation, dict) or method not in {"get", "post", "put", "patch", "delete", "head", "options"}:
+                continue
+            if path.startswith("/api/admin/"):
+                if "/integrations" in path or "/api-tokens" in path:
+                    operation["security"] = [{"HTTPBasic": []}]
+                else:
+                    operation["security"] = [{"HTTPBasic": []}, {"VAOSBearer": []}]
+        versioned_paths[versioned_path] = operations
+    schema["paths"] = versioned_paths
+    schema["servers"] = [{"url": "/api/v1", "description": "VAOS stable API v1"}]
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})["VAOSBearer"] = {
+        "type": "http", "scheme": "bearer", "bearerFormat": "VAOS API token",
+        "description": "Short-lived or expiring token issued in VAOS Settings. Read tokens only perform safe HTTP methods.",
+    }
+    return schema
+
+
+@app.get("/api/docs", response_class=HTMLResponse, include_in_schema=False)
+def api_documentation(_: str = Depends(require_basic_admin)) -> HTMLResponse:
+    """Interactive, administrator-only API reference."""
+    return get_swagger_ui_html(openapi_url="/api/openapi.json", title="VAOS API reference")
+
+
+@app.get("/api/admin/integrations", include_in_schema=False)
+def read_api_integrations(_: str = Depends(require_basic_admin)) -> dict[str, Any]:
+    settings = get_api_settings()
+    with db_connection() as db:
+        tokens = db.execute("SELECT token_prefix,label,scopes,created_at,expires_at,last_used_at,revoked_at FROM api_tokens ORDER BY created_at DESC").fetchall()
+        accesses = db.execute("SELECT timestamp,token_prefix,method,path FROM api_access_log ORDER BY id DESC LIMIT 20").fetchall()
+    return {
+        "settings": settings,
+        "tokens": [{"prefix": row["token_prefix"], "label": row["label"], "scopes": json.loads(row["scopes"]), "created_at": row["created_at"], "expires_at": row["expires_at"], "last_used_at": row["last_used_at"], "revoked_at": row["revoked_at"]} for row in tokens],
+        "recent_access": [dict(row) for row in accesses],
+        "api_docs": "/api/docs",
+        "openapi": "/api/openapi.json",
+        "mcp_command": "python mcp_server.py",
+        "mcp_config_template": {"mcpServers": {"vaos": {"command": sys.executable, "args": [str(APP_DIR / "mcp_server.py")], "env": {"VAOS_BASE_URL": "http://127.0.0.1:8000", "VAOS_API_TOKEN": "PASTE_A_READ_OR_CONTROL_TOKEN_HERE"}}}},
+    }
+
+
+@app.post("/api/admin/integrations", include_in_schema=False)
+async def save_api_integrations(request: Request, _: str = Depends(require_basic_admin)) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Send integration settings as JSON.") from exc
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=400, detail="Integration settings must be a JSON object.")
+    groups = payload.get("mcp_allowed_groups", list(API_MCP_GROUPS))
+    if not isinstance(groups, list) or any(group not in API_MCP_GROUPS for group in groups):
+        raise HTTPException(status_code=400, detail="Choose valid MCP capability groups.")
+    try:
+        rate_limit = min(600, max(30, int(payload.get("api_rate_limit", 120))))
+        token_days = min(365, max(1, int(payload.get("api_token_default_days", 90))))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Rate limit or token lifetime is not valid.") from exc
+    updates = {
+        "integration_api_enabled": "1" if payload.get("api_enabled") is True else "0",
+        "integration_mcp_enabled": "1" if payload.get("mcp_enabled") is True else "0",
+        "integration_mcp_read_only": "1" if payload.get("mcp_read_only", True) is True else "0",
+        "integration_mcp_allow_sensitive": "1" if payload.get("mcp_allow_sensitive") is True else "0",
+        "integration_mcp_allow_deletes": "1" if payload.get("mcp_allow_deletes") is True else "0",
+        "integration_api_rate_limit": str(rate_limit),
+        "integration_api_token_default_days": str(token_days),
+        "integration_mcp_allowed_groups": json.dumps(list(dict.fromkeys(groups))),
+    }
+    with db_connection() as db:
+        db.executemany("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", list(updates.items()))
+    return {"settings": get_api_settings(), "message": "API and MCP controls saved. Changes apply to the next request."}
+
+
+@app.get("/api/admin/integrations/mcp-policy", include_in_schema=False)
+def read_mcp_policy(request: Request, _: str = Depends(require_admin)) -> dict[str, Any]:
+    settings = get_api_settings()
+    return {"api_enabled": settings["api_enabled"], "mcp_enabled": settings["mcp_enabled"], "read_only": settings["mcp_read_only"], "allowed_groups": settings["mcp_allowed_groups"], "token_groups": getattr(request.state, "vaos_api_groups", list(API_MCP_GROUPS)), "allow_sensitive": settings["mcp_allow_sensitive"], "allow_deletes": settings["mcp_allow_deletes"], "token_scope": getattr(request.state, "vaos_api_scope", "admin")}
+
+
+@app.post("/api/admin/api-tokens", include_in_schema=False)
+async def create_api_token(request: Request, _: str = Depends(require_basic_admin)) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+        label = str(payload.get("label", "")).strip()
+        scope = str(payload.get("scope", "read")).strip().lower()
+        lifetime = int(payload.get("expires_days", get_api_settings()["api_token_default_days"]))
+        groups = payload.get("groups", list(API_MCP_GROUPS))
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise HTTPException(status_code=400, detail="Provide a label, scope, and valid expiry.") from exc
+    if not label or len(label) > 80:
+        raise HTTPException(status_code=400, detail="Token label must be 1–80 characters.")
+    if scope not in {"read", "control"}:
+        raise HTTPException(status_code=400, detail="Token scope must be read or control.")
+    if not isinstance(groups, list) or not groups or any(group not in API_MCP_GROUPS for group in groups):
+        raise HTTPException(status_code=400, detail="Choose at least one valid API capability group.")
+    if not 1 <= lifetime <= 365:
+        raise HTTPException(status_code=400, detail="Token expiry must be from 1 to 365 days.")
+    token = "vaos_" + secrets.token_urlsafe(36)
+    token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    prefix = token[:14]
+    created = datetime.now(timezone.utc)
+    expires = (created + timedelta(days=lifetime)).isoformat(timespec="seconds")
+    with db_connection() as db:
+        db.execute("INSERT INTO api_tokens(token_hash,token_prefix,label,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?)", (token_hash, prefix, label, json.dumps({"access": scope, "groups": list(dict.fromkeys(groups))}), created.isoformat(timespec="seconds"), expires))
+    return {"token": token, "prefix": prefix, "label": label, "scopes": {"access": scope, "groups": list(dict.fromkeys(groups))}, "created_at": created.isoformat(timespec="seconds"), "expires_at": expires, "message": "Copy this token now. VAOS stores only its hash and cannot show it again."}
+
+
+@app.delete("/api/admin/api-tokens/{token_prefix}", include_in_schema=False)
+def revoke_api_token(token_prefix: str, _: str = Depends(require_basic_admin)) -> dict[str, Any]:
+    with db_connection() as db:
+        cursor = db.execute("UPDATE api_tokens SET revoked_at=? WHERE token_prefix=? AND revoked_at IS NULL", (utc_now(), token_prefix))
+    if cursor.rowcount == 0:
+        raise HTTPException(status_code=404, detail="Active API token not found.")
+    return {"ok": True, "message": f"API token {token_prefix} was revoked."}
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request, _: str = Depends(require_admin)):
     settings = get_engine_settings()
@@ -951,6 +1358,11 @@ def ml_training_activity_page(request: Request, _: str = Depends(require_admin))
 @app.get("/datasets", response_class=HTMLResponse)
 def dataset_manager_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
+
+
+@app.get("/video-review", response_class=HTMLResponse)
+def video_review_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "video_review.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
 
 
 @app.get("/live-system")
@@ -988,7 +1400,7 @@ def create_camera(payload: dict[str, Any], _: str = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Camera name must be 80 characters or fewer")
     token = secrets.token_urlsafe(24)
     with db_connection() as db:
-        index = db.execute("SELECT COUNT(*) AS n FROM cameras").fetchone()["n"]
+        index = db.execute("SELECT COUNT(*) AS n FROM cameras WHERE source_type='camera'").fetchone()["n"]
         map_x = 0.18 + (index % 4) * 0.21
         map_y = 0.25 + ((index // 4) % 3) * 0.28
         db.execute("INSERT INTO cameras(token, name, created_at, active,map_x,map_y) VALUES (?, ?, ?, 1,?,?)", (token, name, utc_now(), map_x, map_y))
@@ -998,7 +1410,7 @@ def create_camera(payload: dict[str, Any], _: str = Depends(require_admin)):
 @app.get("/api/admin/cameras")
 def list_cameras(_: str = Depends(require_admin)):
     with db_connection() as db:
-        rows = db.execute("SELECT token, name, created_at, active FROM cameras ORDER BY created_at DESC").fetchall()
+        rows = db.execute("SELECT token, name, created_at, active FROM cameras WHERE source_type='camera' ORDER BY created_at DESC").fetchall()
     return [dict(row) for row in rows]
 
 
@@ -1020,7 +1432,7 @@ def update_camera_map(token: str, payload: dict[str, Any], _: str = Depends(requ
 @app.get("/api/admin/status")
 def diagnostics(_: str = Depends(require_admin)):
     with db_connection() as db:
-        rows = db.execute("SELECT c.token,c.name,c.active,c.map_x,c.map_y,c.heading,s.last_frame_at,s.faces_detected,s.matched_count,s.objects_json,s.error FROM cameras c LEFT JOIN camera_status s ON c.token=s.camera_token ORDER BY c.created_at DESC").fetchall()
+        rows = db.execute("SELECT c.token,c.name,c.active,c.map_x,c.map_y,c.heading,s.last_frame_at,s.faces_detected,s.matched_count,s.objects_json,s.error FROM cameras c LEFT JOIN camera_status s ON c.token=s.camera_token WHERE c.source_type='camera' ORDER BY c.created_at DESC").fetchall()
         object_rows = db.execute("SELECT o.timestamp,o.class_name,o.count,o.confidence,c.name AS camera_name FROM object_sightings o JOIN cameras c ON c.token=o.camera_token ORDER BY o.id DESC LIMIT 60").fetchall()
         matches_today = int(db.execute("SELECT COUNT(*) FROM sightings WHERE timestamp LIKE ?", (datetime.now(timezone.utc).strftime("%Y-%m-%d") + "%",)).fetchone()[0])
         objects_last_hour = int(db.execute("SELECT COUNT(*) FROM object_sightings WHERE timestamp >= ?", ((datetime.now(timezone.utc) - timedelta(hours=1)).isoformat(timespec="seconds"),)).fetchone()[0])
@@ -2521,7 +2933,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
     label_filter = " AND lower(COALESCE(s.confirmed_label,s.suggested_label))=lower(?)" if label else ""
     label_params = (label,) if label else ()
     with db_connection() as db:
-        rows = db.execute("SELECT s.id,s.created_at,s.suggested_label,s.confidence,s.review_state,s.confirmed_label,COALESCE(s.confirmed_label,s.suggested_label) AS review_label,c.name AS camera_name FROM ml_samples s JOIN cameras c ON c.token=s.camera_token WHERE s.review_state IN ('pending','later')" + label_filter + " ORDER BY COALESCE(s.confirmed_label,s.suggested_label) COLLATE NOCASE,s.id DESC LIMIT ? OFFSET ?", (*label_params, limit, offset)).fetchall()
+        rows = db.execute("SELECT s.id,s.created_at,s.suggested_label,s.confidence,s.review_state,s.confirmed_label,s.source_time_seconds,COALESCE(s.confirmed_label,s.suggested_label) AS review_label,c.name AS camera_name FROM ml_samples s JOIN cameras c ON c.token=s.camera_token WHERE s.review_state IN ('pending','later')" + label_filter + " ORDER BY COALESCE(s.confirmed_label,s.suggested_label) COLLATE NOCASE,s.id DESC LIMIT ? OFFSET ?", (*label_params, limit, offset)).fetchall()
         totals = db.execute("SELECT review_state,COUNT(*) AS n FROM ml_samples GROUP BY review_state").fetchall()
         reviewable_class_counts = db.execute("SELECT COALESCE(confirmed_label,suggested_label) AS label,COUNT(*) AS n FROM ml_samples WHERE review_state IN ('pending','later') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL GROUP BY COALESCE(confirmed_label,suggested_label) ORDER BY label COLLATE NOCASE").fetchall()
         filtered_reviewable_total = int(db.execute("SELECT COUNT(*) FROM ml_samples s WHERE s.review_state IN ('pending','later')" + label_filter, label_params).fetchone()[0])
@@ -3860,6 +4272,64 @@ def stop_ml_training(_: str = Depends(require_admin)):
     ml_training_state["message"] = "Stop requested · training will finish the current epoch and save its checkpoint."
     write_training_log("WARNING", "Safe stop requested", epoch=ml_training_state.get("epoch", 0))
     return {"status": "stopping", "message": ml_training_state["message"]}
+
+
+@app.post("/api/admin/video-review/sessions")
+def create_video_review_session(payload: dict[str, Any], _: str = Depends(require_admin)):
+    if ml_training_lock.locked() or ml_training_state.get("status") in {"preparing", "running", "stopping"}:
+        raise HTTPException(status_code=409, detail="Video analysis is paused while model training is active so it does not compete for GPU or CPU resources.")
+    if str(payload.get("source_type", "")) != "local_video":
+        raise HTTPException(status_code=400, detail="For automated analysis, choose a local video file that you have permission to use.")
+    filename = str(payload.get("file_name", "")).replace("\\", "/").split("/")[-1].strip()
+    filename = "".join(character for character in filename if character.isprintable())[:100]
+    if not filename or filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="Choose a local video file first.")
+    name = f"Local video · {filename}"
+    with db_connection() as db:
+        token = secrets.token_urlsafe(24)
+        db.execute("INSERT INTO cameras(token,name,created_at,active,source_type,source_ref) VALUES(?,?,?,0,'local_video',?)", (token, name, utc_now(), filename))
+    return {"session_id": token, "name": name, "message": "Local video session ready. The original video stays in your browser; only cropped detections are saved if sample collection is enabled."}
+
+
+@app.post("/api/admin/video-review/sessions/{session_id}/frame")
+async def analyze_video_review_frame(session_id: str, request: Request, _: str = Depends(require_admin)):
+    if ml_training_lock.locked() or ml_training_state.get("status") in {"preparing", "running", "stopping"}:
+        raise HTTPException(status_code=409, detail="Video analysis paused because model training is active.")
+    with db_connection() as db:
+        session = db.execute("SELECT token FROM cameras WHERE token=? AND source_type='local_video'", (session_id,)).fetchone()
+    if not session:
+        raise HTTPException(status_code=404, detail="This video review session was not found. Select the local video file again to start a session.")
+    if "image/" not in request.headers.get("content-type", ""):
+        raise HTTPException(status_code=415, detail="Send a JPEG video frame.")
+    try:
+        source_time = float(request.headers.get("x-video-time", "0"))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="The video timestamp is invalid.") from exc
+    if not 0 <= source_time <= 86_400:
+        raise HTTPException(status_code=400, detail="The video timestamp is outside the supported range.")
+    content = await request.body()
+    try:
+        save_samples = request.headers.get("x-save-samples", "1") == "1"
+        result = await run_in_threadpool(process_video_review_frame, session_id, content, source_time, save_samples)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except cv2.error as exc:
+        logger.exception("Video frame analysis failed for session %s", session_id[:6])
+        raise HTTPException(status_code=422, detail="VAOS could not decode this video frame. Confirm the selected local file plays in the browser.") from exc
+    return result
+
+
+@app.post("/api/enroll/{token}", summary="Create a volunteer profile from a one-time enrollment invitation")
+async def public_enrollment_api(
+    token: str,
+    name: str = Form(...),
+    consent: str = Form(...),
+    photos: list[UploadFile] = File(...),
+):
+    """The invitation token is a limited capability; explicit consent is required."""
+    return await create_public_participant(token, name, consent, photos)
 
 
 @app.post("/api/camera/{token}/frame")

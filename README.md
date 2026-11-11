@@ -1,4 +1,4 @@
-# VAOS 1.0.0
+# VAOS 1.1.0
 
 **VAOS — Video Analytics Operating System** is a self-hosted video analytics application. Camera processing, face templates, reviewed samples, model files and event records are stored on the VAOS host.
 
@@ -57,6 +57,12 @@ Production mode rejects a missing/weak password or a non-HTTPS camera URL. It hi
 - Review third-party model/package licenses and applicable biometric/privacy requirements.
 - Validate in staging before operational use. This bundle is a deployable baseline; it does not provide high availability, multi-user roles, external identity management or compliance certification.
 
+## API and MCP integrations
+
+VAOS provides a versioned REST interface at `/api/v1`, a protected interactive API reference at `/api/docs`, and a generated OpenAPI document at `/api/openapi.json`. API access is off by default and can be configured in **Settings → API and AI agent access**. Create expiring read-only or control tokens there; secrets are displayed once and stored as hashes. See [the REST API guide](docs/API.md) for endpoint groups and [the MCP guide](docs/MCP.md) for the optional local agent bridge.
+
+The MCP bridge is an optional stdio subprocess and does not add a permanent service or port. Install it only when needed with `requirements-mcp.txt`. It starts read-only, checks the VAOS policy for each call, and requires separate opt-ins for sensitive actions and deletions. Keep tokens out of Git and use HTTPS for remote API access.
+
 ## Data and configuration
 
 Windows stores files in the project `data` directory by default. Containers set `VAOS_DATA_DIR=/var/lib/vaos` on a persistent volume. It holds the SQLite database, profile photos and face templates, model weights, datasets, reviewed samples, training runs and logs. Treat backups as sensitive biometric data.
@@ -68,6 +74,7 @@ Windows stores files in the project `data` directory by default. Containers set 
 | `VAOS_PUBLIC_CAMERA_URL` | HTTPS camera-site origin, required in production. |
 | `VAOS_CAMERA_INTERNAL_URL` | Private admin-to-camera diagnostics address; the container deployment sets this automatically. |
 | `VAOS_INTERNAL_STATUS_TOKEN` | Shared private token for admin-to-camera diagnostics. |
+| `VAOS_TRUSTED_PROXY_CIDRS` | Optional comma-separated proxy IP ranges allowed to supply trusted HTTPS-forwarding headers for remote API requests. Keep this limited to the actual reverse-proxy addresses. |
 | `VAOS_DATA_DIR` | Persistent directory for the database, models and training data. |
 | `MODEL_DIR` | Model-weight cache directory. |
 | `OBJECT_DETECTOR_DEVICE` | `auto` (default) or `cpu` for object detection. |
