@@ -1298,7 +1298,8 @@ def require_basic_admin(request: Request, credentials: HTTPBasicCredentials | No
                 raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.", headers={"Retry-After": "900"})
             attempts.append(now)
             admin_auth_failures[client_key] = attempts
-            if now - admin_auth_audit_last.get(client_key, 0.0) >= 60:
+            previous_failure = admin_auth_audit_last.get(client_key)
+            if previous_failure is None or now - previous_failure >= 60:
                 admin_auth_audit_last[client_key] = now
                 audit_failure = True
             if len(admin_auth_audit_last) > 512:

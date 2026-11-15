@@ -209,6 +209,12 @@ def _restrict_private_path(path: Path, *, directory: bool) -> None:
     if not sid:
         raise RuntimeError("Could not determine the current Windows account SID for the migration backup ACL.")
     inherited = "(OI)(CI)F" if directory else "F"
+    reset = subprocess.run(
+        ["icacls", str(path), "/reset"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if reset.returncode != 0:
+        raise RuntimeError("Could not reset inherited Windows ACLs on the migration backup path.")
     result = subprocess.run(
         ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:{inherited}", f"*S-1-5-18:{inherited}"],
         capture_output=True, text=True, timeout=10, check=False,
@@ -750,7 +756,7 @@ def counter_fallback_database_path(db_path: str | Path) -> Path:
 
 
 @contextmanager
-def _fallback_connection(path: Path, *, timeout_seconds: float = 0.25) -> Iterator[sqlite3.Connection]:
+def _fallback_connection(path: Path, *, timeout_seconds: float = 1.0) -> Iterator[sqlite3.Connection]:
     with _connection(path, timeout_seconds=timeout_seconds) as db:
         db.execute("PRAGMA synchronous=FULL")
         page_size = max(1, int(db.execute("PRAGMA page_size").fetchone()[0]))
