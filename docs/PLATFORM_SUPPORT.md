@@ -15,6 +15,8 @@ VAOS has source-level support paths for Windows, macOS and Linux, with CPU as th
 | Linux + NVIDIA CUDA | CUDA inference/training in the GPU Docker deployment | Compose has an NVIDIA runtime override and requires an explicitly selected compatible PyTorch wheel. It still requires clean-image build and GPU-host verification. |
 | AMD, Intel, and other accelerators | Not a supported release target yet | No complete device discovery, telemetry, install matrix, or hardware validation exists for these vendors. CPU fallback may work if their PyTorch build can import, but that is not accelerator support. |
 
+The isolated candidate workflow in [CI run 43765194760](https://github.com/indipranisha/VAOS/actions/runs/43765194760) passed on 2026-11-16: Windows/macOS/Ubuntu Python 3.12 contracts, MCP stdio integration on all three systems, a CPU container build/start smoke, and Chromium page/responsive checks. This verifies portability contracts and the CPU deployment path; it does not verify native MPS/CUDA drivers, physical cameras, or real device workloads.
+
 ## Native macOS and Linux quick start
 
 The Windows PowerShell launcher is not used on macOS/Linux. For a local single-machine development run, use Python 3.12 and two terminal windows in the repository root. This starts the admin service on loopback port 8000 and camera service on loopback port 8001; it does not create a public tunnel. Settings still lets you save the selected detector, but local model changes require restarting both Uvicorn services from those terminals or your process manager. The Windows-only restart and temporary tunnel buttons are hidden on macOS/Linux so they do not imply unsupported control.

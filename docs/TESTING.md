@@ -12,11 +12,11 @@ python -m py_compile main.py camera_service.py mcp_server.py
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed cross-platform result at source commit `775e42c` passed all six unit and MCP stdio jobs and the production CPU container smoke in [run 43762713511](https://github.com/indipranisha/VAOS/actions/runs/43762713511). The container job built both images, started isolated admin and camera services, verified their health endpoints, checked CPU detector imports, and exercised authenticated internal service status. An earlier attempt exposed a Dockerfile health-check syntax error, which was corrected before the successful run. CI does not deploy the application.
+GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed result at source commit `d8ec25c` passed all eight jobs in [run 43765194760](https://github.com/indipranisha/VAOS/actions/runs/43765194760): three OS unit-contract jobs, three MCP stdio jobs, a real Chromium UI smoke, and the production CPU-container smoke. The container job built both images, started isolated admin and camera services, verified their health endpoints, checked CPU detector imports, and exercised authenticated internal service status. CI does not deploy the application.
 
 ## Latest local verification (15 November 2026)
 
-The latest isolated Windows suite ran **300 tests: 298 passed and 2 were skipped in 62.728 seconds**. The skips were the POSIX file-permission assertion (not enforceable by the Windows filesystem) and the optional MCP SDK host test not installed in the existing environment; the SDK stdio-host integration separately passed in CI on Windows, macOS and Ubuntu. A four-process fallback-sidecar regression passed 20 consecutive repetitions on this Windows host. Python compilation, five JavaScript syntax checks, and a Markdown link scan (259 relative links across 58 files; none broken) passed. The seven-job cross-platform and container result is linked above. The CPU container build/start smoke passed in CI; Docker is not installed locally. No live service, user database, dataset, model, camera or training job was used.
+The latest isolated Windows suite ran **300 tests: 298 passed and 2 were skipped in 62.728 seconds**. The skips were the POSIX file-permission assertion (not enforceable by the Windows filesystem) and the optional MCP SDK host test not installed in the existing environment; the SDK stdio-host integration separately passed in CI on Windows, macOS and Ubuntu. After a Windows CI run exposed a timing-sensitive SQLite counter write, the focused four-process regression passed **10 consecutive repetitions** locally with a bounded five-second busy timeout; that fix also passed in the full eight-job CI run above. Python compilation, five JavaScript syntax checks, and a Markdown link scan (259 relative links across 58 files; none broken) passed. The production CPU-container build/start smoke passed in CI; Docker is not installed locally. No live service, user database, dataset, model, camera or training job was used.
 
 ## Covered now
 
@@ -33,15 +33,15 @@ The latest isolated Windows suite ran **300 tests: 298 passed and 2 were skipped
 - Portability contract coverage: `runtime_compat.py` is exercised with mocked CPU/CUDA/MPS inventory and platform path behavior. The OS matrix does not substitute for native Mac/Linux installation, camera access, driver, MPS/CUDA, low-memory, inference or training validation. The tested and untested targets are listed in [Platform support](PLATFORM_SUPPORT.md).
 - macOS/Linux local service-control contract: with the Windows launcher marked unavailable, the restart API fails clearly without writing a stale launcher command, Settings hides Windows-only restart/tunnel buttons, and the saved model choice explains the required manual service restart.
 
-These are contract/unit checks, not browser-based usability or production acceptance tests. A passing result does not mean a feature was tested on live GPU hardware.
+The browser job `tools/ci_ui_smoke.py` starts temporary CPU-only admin and camera services, checks 12 page routes plus navigation, creator links, keyboard focus and 390 px horizontal overflow on three pages, and uploads desktop/mobile screenshots as a GitHub Actions artifact. This complements the unit/API contracts; it is not a full persona-based usability or production acceptance test and does not test a live GPU.
 
 Historical checkpoint (13 November 2026, superseded): the repository-wide run passed **198 tests in 38.750 seconds**. That checkpoint covered a no-network CLI guide parser check, authenticated report API matrices, correlation and identity filters, MCP telemetry/privacy, dataset/training propagation, multi-process logs/counters, failure recovery, SIEM queue safety and the observability frontend contracts. External SIEM compatibility remains untested. All automated app tests use temporary data, and none launches training or opens a camera. The run emitted Starlette TestClient and Pydantic deprecation warnings, plus Python's expected duplicate-archive-member warning from a hostile-bundle rejection test. Do not infer browser, performance or production readiness from these test results; see [Feature 8 validation](observability/validation.md) and the Phase 1/2 review records.
 
 **Historical focused UI checkpoint (13 November 2026):** the standard `unittest` suite passed 248 tests in 50.443 seconds at that earlier checkpoint. A separate isolated browser review checked the Statistics & Observability page at 320×568, 320×720 and 390×844. This historical page check does not establish application-wide responsive or accessibility readiness.
 
-## Creator attribution manual checks
+## Creator attribution browser smoke and remaining manual checks
 
-Before release, test the actual source build in a browser at a desktop viewport (for example, 1440×900) and a phone viewport (for example, 390×844):
+The CI browser smoke checked the creator statement, metadata-backed website/LinkedIn `href` values and safe new-tab attributes on desktop, and confirmed that About renders without horizontal overflow at 390×844. It did not open the external sites or test every creator link at mobile size. Before release, complete these manual checks:
 
 1. Sign in and open **About VAOS** from the application navigation. Confirm Prateek Dubey and the **Founder and Original Creator** role are visible.
 2. Open the website and LinkedIn links. Confirm the browser destination matches VAOS_PROJECT_METADATA.json; the links open separately and do not replace the VAOS page.
@@ -49,7 +49,7 @@ Before release, test the actual source build in a browser at a desktop viewport 
 4. Inspect the dashboard, camera, enrollment, ML training, review, dataset, hardware, tracking, API and project pages. The compact footer attribution must not cover controls or require an acknowledgement.
 5. Confirm the README, documentation overview, credits, citation metadata and release notes retain the same attribution and contributor/licensing language.
 
-Record the browser version, viewport, link results and screenshots. These checks have not yet been run against the current source build; source inspection alone is not a pass.
+Record the browser version, viewport, external destination results and screenshots. The run's desktop and mobile screenshots are attached to [CI run 43765194760](https://github.com/indipranisha/VAOS/actions/runs/43765194760). The broader camera, enrollment and end-to-end user journeys remain open.
 ## Scope exclusions
 
 AI Model Arena and Ready-to-Run Vision Applications were deferred beyond v1.1.0 by product-owner direction. Their feature-specific suites are not v1.1.0 release gates.
