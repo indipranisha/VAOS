@@ -30,6 +30,25 @@ import main  # noqa: E402  (environment must be isolated before importing app)
 import observability_store  # noqa: E402
 
 
+@contextmanager
+def _pause_app_heartbeat_for_temp_database():
+    """Keep the live test-client heartbeat off a database while its folder is removed."""
+    stop_event = main.observability_heartbeat_stop
+    thread = main.observability_heartbeat_thread
+    was_running = bool(thread and thread.is_alive())
+    if stop_event:
+        stop_event.set()
+    try:
+        if was_running and thread:
+            thread.join(timeout=5)
+            if thread.is_alive():
+                raise RuntimeError("VAOS test heartbeat did not stop before temporary database cleanup.")
+        yield
+    finally:
+        if was_running and thread and not thread.is_alive():
+            main._start_observability_lifecycle()
+
+
 class ApiSecurityTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -566,7 +585,7 @@ class ApiSecurityTests(unittest.TestCase):
                 )
 
     def test_retention_policy_api_auth_confirms_shortening_and_audits_changes(self):
-        with tempfile.TemporaryDirectory(prefix="vaos-retention-api-") as folder:
+        with _pause_app_heartbeat_for_temp_database(), tempfile.TemporaryDirectory(prefix="vaos-retention-api-") as folder:
             database = Path(folder) / "observability.db"
             observability_store.initialize_database(database)
             old_time = (datetime.now(timezone.utc) - timedelta(days=60)).isoformat(timespec="seconds").replace("+00:00", "Z")

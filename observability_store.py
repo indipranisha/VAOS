@@ -129,7 +129,11 @@ def _connection(path: Path, *, timeout_seconds: float = 15) -> Iterator[sqlite3.
         yield connection
         connection.commit()
     except Exception:
-        connection.rollback()
+        # BEGIN IMMEDIATE can fail before a transaction exists. Calling
+        # rollback in that case can wait on the same busy database again,
+        # effectively doubling a caller's configured lock ceiling.
+        if connection.in_transaction:
+            connection.rollback()
         raise
     finally:
         connection.close()
