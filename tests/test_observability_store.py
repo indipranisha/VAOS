@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 import unittest
 from unittest.mock import patch
 from contextlib import closing
@@ -61,7 +62,7 @@ def _write_counter_batch_from_process(db_path: str, worker_id: int, ready, start
             )
         result.put((worker_id, "ok", ""))
     except Exception as exc:  # reported back to the parent test process
-        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}"))
+        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
 
 
 def _write_fallback_counter_from_process(db_path: str, worker_id: int, ready, start, result) -> None:
@@ -79,7 +80,7 @@ def _write_fallback_counter_from_process(db_path: str, worker_id: int, ready, st
             )
         result.put((worker_id, "ok", ""))
     except Exception as exc:  # reported back to the parent test process
-        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}"))
+        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
 
 
 def _write_security_fallback_from_process(db_path: str, worker_id: int, ready, start, result) -> None:

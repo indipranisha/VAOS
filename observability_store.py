@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -760,8 +761,51 @@ def counter_fallback_database_path(db_path: str | Path) -> Path:
 
 
 @contextmanager
+def _fallback_process_lock(path: Path, *, timeout_seconds: float = 5.0) -> Iterator[None]:
+    """Serialize cooperating processes before they contend on the fallback SQLite file."""
+    lock_path = path.with_name(path.name + ".lock")
+    if lock_path.is_symlink():
+        raise RuntimeError("Refusing to use a linked VAOS observability fallback lock.")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                lock_file.seek(0)
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the VAOS observability fallback lock.")
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the VAOS observability fallback lock.")
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
 def _fallback_connection(path: Path, *, timeout_seconds: float = 0.75) -> Iterator[sqlite3.Connection]:
-    with _connection(path, timeout_seconds=timeout_seconds) as db:
+    with _fallback_process_lock(path), _connection(path, timeout_seconds=timeout_seconds) as db:
         db.execute("PRAGMA synchronous=FULL")
         page_size = max(1, int(db.execute("PRAGMA page_size").fetchone()[0]))
         configured_page_limit = max(1, FALLBACK_COUNTER_MAX_BYTES // page_size)
