@@ -686,10 +686,10 @@ def buffer_counter_delta(
     bucket_epoch -= bucket_epoch % seconds
     bucket_start = datetime.fromtimestamp(bucket_epoch, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     path = Path(db_path).expanduser().resolve()
-    # Counter writes are on request/frame paths, but a quarter-second window
-    # was too short when independent admin/camera workers briefly contended.
-    # Keep a finite bound; callers retain their existing fallback on failure.
-    with _connection(path, timeout_seconds=1.0) as db:
+    # Counter writes are on request/frame paths, but a short wait was too
+    # small for independent workers on slower Windows filesystems. Keep the
+    # bound finite; callers retain their existing fallback on failure.
+    with _connection(path, timeout_seconds=2.0) as db:
         db.execute(
             "INSERT INTO observability_counter_buffer(buffer_id,metric_key,bucket_start,dimensions_json,delta,updated_at) VALUES(?,?,?,?,?,?) "
             "ON CONFLICT(metric_key,bucket_start,dimensions_json) DO UPDATE SET delta=observability_counter_buffer.delta+excluded.delta,updated_at=excluded.updated_at",
@@ -756,7 +756,7 @@ def counter_fallback_database_path(db_path: str | Path) -> Path:
 
 
 @contextmanager
-def _fallback_connection(path: Path, *, timeout_seconds: float = 0.5) -> Iterator[sqlite3.Connection]:
+def _fallback_connection(path: Path, *, timeout_seconds: float = 1.25) -> Iterator[sqlite3.Connection]:
     with _connection(path, timeout_seconds=timeout_seconds) as db:
         db.execute("PRAGMA synchronous=FULL")
         page_size = max(1, int(db.execute("PRAGMA page_size").fetchone()[0]))
