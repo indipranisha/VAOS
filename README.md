@@ -32,7 +32,7 @@ The Windows launcher installs local dependencies, optional object-detection supp
 
 ## Cross-platform support status
 
-The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. The current candidate passed Windows/macOS/Ubuntu contract and MCP stdio checks, an isolated CPU-container build/start smoke, and a limited Chromium desktop/mobile UI smoke in [CI run 43765194760](https://github.com/indipranisha/VAOS/actions/runs/43765194760). No local Mac/Linux device is available for native MPS, CUDA or camera verification. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [tested-versus-planned platform matrix](docs/PLATFORM_SUPPORT.md) for native setup steps and boundaries.
+The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. Candidate commit `9127524` passed Windows/macOS/Ubuntu contract and MCP stdio checks, an isolated CPU-container build/start smoke, and a limited Chromium desktop/mobile UI smoke in [CI run 43766504519](https://github.com/indipranisha/VAOS/actions/runs/43766504519). No local Mac/Linux device is available for native MPS, CUDA or camera verification. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [tested-versus-planned platform matrix](docs/PLATFORM_SUPPORT.md) for native setup steps and boundaries.
 
 ## Deploy on a production server
 

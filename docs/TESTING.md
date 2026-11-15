@@ -12,7 +12,7 @@ python -m py_compile main.py camera_service.py mcp_server.py
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed result at source commit `d8ec25c` passed all eight jobs in [run 43765194760](https://github.com/indipranisha/VAOS/actions/runs/43765194760): three OS unit-contract jobs, three MCP stdio jobs, a real Chromium UI smoke, and the production CPU-container smoke. The container job built both images, started isolated admin and camera services, verified their health endpoints, checked CPU detector imports, and exercised authenticated internal service status. CI does not deploy the application.
+GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed result at source commit `9127524` passed all eight jobs in [run 43766504519](https://github.com/indipranisha/VAOS/actions/runs/43766504519): three OS unit-contract jobs, three MCP stdio jobs, a real Chromium UI smoke, and the production CPU-container smoke. The container job built both images, started isolated admin and camera services, verified their health endpoints, checked CPU detector imports, and exercised authenticated internal service status. CI does not deploy the application.
 
 ## Latest local verification (15 November 2026)
 
@@ -49,7 +49,7 @@ The CI browser smoke checked the creator statement, metadata-backed website/Link
 4. Inspect the dashboard, camera, enrollment, ML training, review, dataset, hardware, tracking, API and project pages. The compact footer attribution must not cover controls or require an acknowledgement.
 5. Confirm the README, documentation overview, credits, citation metadata and release notes retain the same attribution and contributor/licensing language.
 
-Record the browser version, viewport, external destination results and screenshots. The run's desktop and mobile screenshots are attached to [CI run 43765194760](https://github.com/indipranisha/VAOS/actions/runs/43765194760). The broader camera, enrollment and end-to-end user journeys remain open.
+Record the browser version, viewport, external destination results and screenshots. The run's desktop and mobile screenshots are attached to [CI run 43766504519](https://github.com/indipranisha/VAOS/actions/runs/43766504519). The broader camera, enrollment and end-to-end user journeys remain open.
 ## Scope exclusions
 
 AI Model Arena and Ready-to-Run Vision Applications were deferred beyond v1.1.0 by product-owner direction. Their feature-specific suites are not v1.1.0 release gates.

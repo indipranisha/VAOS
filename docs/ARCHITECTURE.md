@@ -49,7 +49,7 @@ sequenceDiagram
   Handler-->>Client: Existing JSON/file response or validated error
 ```
 
-The current working source exposes 69 versioned paths and 82 HTTP operations; see [API guide](API.md). Integration/token administration and human MCP approval decisions are Basic-only. API access and MCP start disabled. MCP writes from MCP-designated tokens require exact-request approval. The official SDK v2.3 process/client boundary passed locally against a synthetic API fixture; named agent-host UI and cross-OS CI remain unverified.
+The current working source exposes 72 OpenAPI paths and 88 HTTP operations; see [API guide](API.md). Integration/token administration and human MCP approval decisions are Basic-only. API access and MCP start disabled. MCP writes from MCP-designated tokens require exact-request approval. The official SDK v2.3 stdio bridge passed CI integration checks on Windows, macOS and Ubuntu against a synthetic local API fixture; a named desktop-host UI journey and real VAOS-host token/approval flow remain unverified.
 
 ## Current v1.1.0 additions in the working tree
 
