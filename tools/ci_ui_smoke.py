@@ -168,11 +168,18 @@ def main() -> int:
                 page.set_viewport_size({"width": 390, "height": 844})
                 for route in ("/", "/about", "/training"):
                     page.goto(f"{base_url}{route}", wait_until="domcontentloaded", timeout=30_000)
-                    overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
-                    if overflow > 2:
-                        raise RuntimeError(f"{route} has {overflow}px of horizontal overflow at 390px viewport width.")
                     if route in {"/", "/about"}:
                         page.screenshot(path=str(screenshot_dir / f"{route.strip('/') or 'control-room'}-mobile.png"), full_page=True)
+                    overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")
+                    if overflow > 2:
+                        offenders = page.evaluate("""() => [...document.querySelectorAll('body *')]
+                          .map(el => { const r=el.getBoundingClientRect(); const s=getComputedStyle(el);
+                            return {tag:el.tagName.toLowerCase(),id:el.id,cls:typeof el.className==='string'?el.className:'',
+                              left:Math.round(r.left),right:Math.round(r.right),width:Math.round(r.width),position:s.position}; })
+                          .filter(x => x.right > innerWidth + 2 || x.left < -2)
+                          .sort((a,b) => (b.right-innerWidth)-(a.right-innerWidth))
+                          .slice(0,8)""")
+                        raise RuntimeError(f"{route} has {overflow}px of horizontal overflow at 390px viewport width; wide elements: {offenders}")
 
                 context.close()
                 browser.close()
