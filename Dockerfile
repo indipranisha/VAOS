@@ -33,6 +33,6 @@ COPY --chown=vaos:vaos docs ./docs
 USER 10001:10001
 EXPOSE 8000 8001
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
-  CMD-SHELL python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('VAOS_HEALTH_PORT','8000')+'/health',timeout=3)" || exit 1
+  CMD python -c "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:'+os.getenv('VAOS_HEALTH_PORT','8000')+'/health',timeout=3)" || exit 1
 
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips=*"]
