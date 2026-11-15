@@ -691,10 +691,10 @@ def buffer_counter_delta(
     bucket_epoch -= bucket_epoch % seconds
     bucket_start = datetime.fromtimestamp(bucket_epoch, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     path = Path(db_path).expanduser().resolve()
-    # Counter writes are on request/frame paths, but a short wait was too
-    # small for independent workers on slower Windows filesystems. Keep the
-    # bound finite; callers retain their existing fallback on failure.
-    with _connection(path, timeout_seconds=2.0) as db:
+    # Counter writes are on request/frame paths, but a two-second SQLite
+    # busy window still flaked under four independent Windows workers in CI.
+    # Keep contention bounded; callers retain their durable fallback on failure.
+    with _connection(path, timeout_seconds=5.0) as db:
         db.execute(
             "INSERT INTO observability_counter_buffer(buffer_id,metric_key,bucket_start,dimensions_json,delta,updated_at) VALUES(?,?,?,?,?,?) "
             "ON CONFLICT(metric_key,bucket_start,dimensions_json) DO UPDATE SET delta=observability_counter_buffer.delta+excluded.delta,updated_at=excluded.updated_at",
