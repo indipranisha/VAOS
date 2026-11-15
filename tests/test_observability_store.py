@@ -1228,7 +1228,10 @@ print("VAOS_RESTORE_STATE=" + json.dumps(state, sort_keys=True))
                 )
             elapsed = (datetime.now(timezone.utc) - started).total_seconds()
             blocker.rollback()
-        self.assertLess(elapsed, 1.5)
+        # Hosted macOS runners measured 1.94-2.06 s for the same bounded
+        # SQLITE_BUSY result, while Windows stayed below 1.5 s. Keep enough
+        # headroom for the observed platform difference without allowing a hang.
+        self.assertLess(elapsed, 3.0)
 
     def test_fallback_counter_sidecar_preserves_concurrent_process_writes(self):
         initialize_database(self.database)
