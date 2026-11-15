@@ -27,7 +27,7 @@ The candidate was assembled in an isolated worktree from the existing `staging` 
 | Markdown links | **259 local links checked across 58 Markdown files; 0 broken** | Relative-path verification only; external links and browser journeys are not validated by this check. |
 | Git whitespace check | `git diff --check` passed for the changes reviewed | Line-ending conversion warnings are present in this Windows checkout; no whitespace errors. |
 | GitHub cross-platform workflow | Run [`43725437541`](https://github.com/indipranisha/VAOS/actions/runs/43725437541) for commit `973f295` completed successfully: all six jobs passed (Windows/macOS/Ubuntu unit suites and MCP stdio integration). | Automated CPython 3.12 matrix only; native camera/GPU/device and user-host validation remain open. Earlier red runs exposed Windows SQLite contention and a macOS bounded-wait test; the fixes are included in the green commit and those earlier runs are not counted as passing. |
-| Docker / Compose build and startup | Not run; Docker CLI is not installed in this environment. | Static manifest checks do not substitute for an image build, health check, proxy/TLS test, or volume-restore exercise. |
+| Docker / Compose build and startup | Local Docker CLI is unavailable. The first CI CPU-image/admin-camera smoke attempt failed in under five seconds; a diagnostic retry is pending. | Container build/start evidence is not yet green; target proxy/TLS, persistent storage, migration and volume-restore remain unverified. |
 | Local running VAOS services | Left untouched | The previously observed listener/source identity is not confirmed by this isolated candidate. |
 
 ## Release blockers

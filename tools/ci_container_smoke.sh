@@ -36,10 +36,17 @@ cleanup() {
 }
 trap cleanup EXIT
 
+echo "[container-smoke] project=$project_name"
+docker --version
+docker compose version
+dc config --quiet
+echo "[container-smoke] building the production CPU detector images"
 dc build --pull vaos-admin vaos-camera
+echo "[container-smoke] starting isolated admin and camera services"
 dc up --detach --no-build vaos-admin vaos-camera
 
 healthy=false
+echo "[container-smoke] waiting for both service health checks"
 for attempt in $(seq 1 120); do
   all_healthy=true
   for service in vaos-admin vaos-camera; do
@@ -72,6 +79,7 @@ fi
 
 admin_id="$(dc ps --quiet vaos-admin)"
 camera_id="$(dc ps --quiet vaos-camera)"
+echo "[container-smoke] checking CPU dependencies and internal service authentication"
 docker exec "$admin_id" python -c 'import cv2,torch,ultralytics; assert cv2.__version__ and torch.__version__ and ultralytics.__version__; print("CPU detector runtime imports passed:", cv2.__version__, torch.__version__, ultralytics.__version__)'
 docker exec "$admin_id" python -c 'import json,urllib.request; r=json.load(urllib.request.urlopen("http://127.0.0.1:8000/health", timeout=5)); assert r.get("status")=="ok" and r.get("app")=="vaos-admin", r'
 docker exec "$camera_id" python -c 'import json,urllib.request; r=json.load(urllib.request.urlopen("http://127.0.0.1:8001/health", timeout=5)); assert r.get("status")=="ok" and r.get("app")=="vaos-camera", r'
