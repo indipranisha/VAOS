@@ -756,7 +756,7 @@ def counter_fallback_database_path(db_path: str | Path) -> Path:
 
 
 @contextmanager
-def _fallback_connection(path: Path, *, timeout_seconds: float = 0.5) -> Iterator[sqlite3.Connection]:
+def _fallback_connection(path: Path, *, timeout_seconds: float = 0.75) -> Iterator[sqlite3.Connection]:
     with _connection(path, timeout_seconds=timeout_seconds) as db:
         db.execute("PRAGMA synchronous=FULL")
         page_size = max(1, int(db.execute("PRAGMA page_size").fetchone()[0]))
