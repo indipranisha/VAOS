@@ -12,11 +12,11 @@ python -m py_compile main.py camera_service.py mcp_server.py
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions is configured to run these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. A separate optional job installs the pinned MCP SDK and launches the bridge through the SDK's stdio client. These are configured CI jobs; until their run results are recorded, this local work session does not count them as passing. CI does not deploy the application.
+GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed cross-platform result at source commit `973f295` passed all six unit and MCP stdio jobs in [run 43725437541](https://github.com/indipranisha/VAOS/actions/runs/43725437541). A production CPU container build and isolated admin/camera health smoke check were added afterward; their first CI result is pending. CI does not deploy the application.
 
 ## Latest local verification (15 November 2026)
 
-The latest isolated Windows suite ran **298 tests in 61.594 seconds: 296 passed and 2 were skipped**. The skips were the POSIX file-permission assertion (not enforceable by the Windows filesystem) and the optional real MCP SDK host integration (the pinned SDK is not installed in the project environment). The SDK v2.3 stdio-host integration separately passed against a synthetic loopback API fixture using hash-verified official PyPI artifacts in a temporary target. New packaging regressions verify that local Python imports required by app entry points are copied into the Docker image and that Ultralytics runtime dependencies are declared without replacing VAOS's contrib-headless OpenCV package. One earlier full run had a transient failure in the loopback SIEM dispatch assertion; the test passed alone, in 10 consecutive repetitions, and in both subsequent full suites. The initial cause was not established. The suite also exercises the non-Windows restart guard and Settings capability messaging, Diagnostics-only MCP defaults, and CPU/CUDA/MPS training-target resolver. Python compilation passed at this checkpoint. No live service, user database, dataset, model, camera or training job was used. This is Windows-only evidence; the configured macOS/Ubuntu CI results are not yet available.
+The latest isolated Windows suite ran **300 tests: 298 passed and 2 were skipped in 62.728 seconds**. The skips were the POSIX file-permission assertion (not enforceable by the Windows filesystem) and the optional MCP SDK host test not installed in the existing environment; the SDK stdio-host integration separately passed in CI on Windows, macOS and Ubuntu. A four-process fallback-sidecar regression passed 20 consecutive repetitions on this Windows host. Python compilation, five JavaScript syntax checks, and a Markdown link scan (259 relative links across 58 files; none broken) passed. The six-job cross-platform CI result is linked above. The new CPU container build/start smoke is not yet counted as passing. Docker is not installed locally. No live service, user database, dataset, model, camera or training job was used.
 
 ## Covered now
 
@@ -37,7 +37,7 @@ These are contract/unit checks, not browser-based usability or production accept
 
 Historical checkpoint (13 November 2026, superseded): the repository-wide run passed **198 tests in 38.750 seconds**. That checkpoint covered a no-network CLI guide parser check, authenticated report API matrices, correlation and identity filters, MCP telemetry/privacy, dataset/training propagation, multi-process logs/counters, failure recovery, SIEM queue safety and the observability frontend contracts. External SIEM compatibility remains untested. All automated app tests use temporary data, and none launches training or opens a camera. The run emitted Starlette TestClient and Pydantic deprecation warnings, plus Python's expected duplicate-archive-member warning from a hostile-bundle rejection test. Do not infer browser, performance or production readiness from these test results; see [Feature 8 validation](observability/validation.md) and the Phase 1/2 review records.
 
-**Current isolated repository run (13 November 2026):** the standard `unittest` suite passes **248 tests in 50.443 seconds**. The latest added regression checks the Statistics & Observability mobile CSS constraints. A separate isolated browser review visually checked that page at 320×568, 320×720 and 390×844; it is not automated browser coverage and does not establish application-wide responsive or accessibility readiness.
+**Historical focused UI checkpoint (13 November 2026):** the standard `unittest` suite passed 248 tests in 50.443 seconds at that earlier checkpoint. A separate isolated browser review checked the Statistics & Observability page at 320×568, 320×720 and 390×844. This historical page check does not establish application-wide responsive or accessibility readiness.
 
 ## Creator attribution manual checks
 
@@ -54,15 +54,14 @@ Record the browser version, viewport, link results and screenshots. These checks
 
 AI Model Arena and Ready-to-Run Vision Applications were deferred beyond v1.1.0 by product-owner direction. Their feature-specific suites are not v1.1.0 release gates.
 
-## Required release suites still to add
+## Further release evidence still to capture
 
-- Database migration and restore tests using a copy of every supported prior schema.
-- MCP SDK runtime/transport, approval lifecycle, tool scope and denial tests.
-- Tracking direction, jitter, occlusion, reconnect, retention, and webhook signature/retry tests.
-- Hardware-provider checks on available CPU/GPU environments; report unavailable hardware as skipped. The current active training run prevents a real-device benchmark in this work session.
-- Project bundle round-trip, path traversal, archive bomb, hash, privacy, and conflict tests.
-- Existing camera, consent, face, dataset import, training safe-stop, model selection, and launcher regression tests.
-- Isolated browser persona journeys, accessibility/keyboard checks, screenshots at supported viewport sizes, and performance measurements.
+- The automated database migration, MCP transport/approval, tracking-rule, hardware-report and project-bundle suites are present; they do not replace target-host restore, real webhook/receiver, physical camera or GPU checks.
+- Complete the isolated browser persona journeys, keyboard/accessibility review, screenshots at supported sizes, and representative performance measurements.
+- Validate Apple MPS and NVIDIA CUDA inference/training on actual devices; mocked CI cases are contract checks only. Record low-memory behavior and tested minimum profiles.
+- Rehearse a representative deployment backup, paired data-directory restore, migration and rollback on the target staging environment.
+- Run the new production CPU image build and two-service startup/health check in CI, then validate the GPU image on a compatible NVIDIA host if GPU deployment is intended.
+- Review exact platform-resolved dependencies and scan the release images, including the PyTorch/torchvision source that is outside the prior PyPI advisory scan.
 
 Do not mark staging ready until those applicable suites have recorded results and high-severity defects are resolved. See [the traceability matrix](TRACEABILITY_MATRIX.md) and [baseline audit](reviews/VAOS-1.1.0-baseline-audit.md).
 

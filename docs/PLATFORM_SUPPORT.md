@@ -8,10 +8,10 @@ VAOS has source-level support paths for Windows, macOS and Linux, with CPU as th
 
 | Environment | Intended operation | Current evidence and limits |
 | --- | --- | --- |
-| Windows + CPU | Admin/camera services, CPU inference and CPU training | Native Windows launcher is maintained. CPU and dataset-path selection have automated tests; the repository suite passed on this host on 2026-11-15. This does not certify camera hardware or a full ML run. |
+| Windows + CPU | Admin/camera services, CPU inference and CPU training | Native Windows launcher is maintained. The repository suite passed on this host on 2026-11-15; the CI unit and MCP stdio jobs also passed on Windows. This does not certify camera hardware or a full ML run. |
 | Windows + NVIDIA CUDA | CUDA inference and training | NVIDIA detection uses `nvidia-smi`; the current Windows launcher installs the Windows CUDA runtime. A two-GPU Windows training run is not release-certified. |
-| macOS + Apple Silicon | CPU or PyTorch MPS inference/training | MPS selection and fallback logic are simulated in unit tests; native startup commands are below. No Mac or Apple GPU is available in this verification environment. CI is configured, but a passing CI result and real-device check are still required. |
-| Linux + CPU | Services and CPU inference/training | Native manual startup commands and Docker deployment are documented. Ubuntu CI is configured; this environment has no working Linux distribution, so there is no local Linux result. |
+| macOS + Apple Silicon | CPU or PyTorch MPS inference/training | MPS selection and fallback logic are simulated in unit tests; the CI unit and MCP stdio jobs passed on a macOS runner. No Mac or Apple GPU is available in this verification environment, so MPS operation still requires a real-device check. |
+| Linux + CPU | Services and CPU inference/training | Native manual startup commands and Docker deployment are documented. The Ubuntu CI unit and MCP stdio jobs passed; this environment has no working Linux distribution, so there is no local Linux result. |
 | Linux + NVIDIA CUDA | CUDA inference/training in the GPU Docker deployment | Compose has an NVIDIA runtime override and requires an explicitly selected compatible PyTorch wheel. It still requires clean-image build and GPU-host verification. |
 | AMD, Intel, and other accelerators | Not a supported release target yet | No complete device discovery, telemetry, install matrix, or hardware validation exists for these vendors. CPU fallback may work if their PyTorch build can import, but that is not accelerator support. |
 
@@ -67,9 +67,9 @@ Apple unified memory is shared by the OS, GPU and other apps. VAOS reports wheth
 ## Cross-platform gaps before staging
 
 - Native service restart and temporary public tunnel controls are wired to the Windows PowerShell launcher. For local macOS/Linux development, stop and restart each Uvicorn service in its terminal; for production, use the container or host process manager. The Windows launcher controls are not portable yet.
-- The macOS and Linux clean-install, startup, camera, dataset, training and shutdown journeys need to pass in CI or on isolated target machines. Configured contract jobs are not yet recorded as passing results and cannot establish a real camera/GPU run.
+- The macOS and Linux native clean-install, camera, dataset, training and shutdown journeys still need isolated target machines. Passing CI unit/MCP contract jobs do not exercise those workflows or establish a real camera/GPU run.
 - Verify model checkpoint load/save, MPS fallback behavior, supported PyTorch/Ultralytics versions, and actual training stability on an Apple Silicon Mac.
-- Verify Linux CPU and NVIDIA Docker image builds, migrations, storage permissions, proxy configuration, and rollback on a representative host.
+- Verify Linux CPU and NVIDIA Docker image builds, migrations, storage permissions, proxy configuration, and rollback on a representative host. A production CPU image build and isolated two-service smoke check are now part of CI; they do not replace GPU-host or staging-host validation.
 - Decide and document tested minimum RAM/CPU/disk profiles from repeatable tests. Do not advertise support for arbitrary hardware or memory sizes.
 - Add hardware discovery and truthful telemetry for any additional GPU vendor before calling its accelerator supported.
 

@@ -51,3 +51,11 @@ jobs:
         run: python -m pip install -r requirements-mcp.txt
       - name: Exercise the real SDK host and VAOS stdio bridge
         run: python -m unittest discover -s tests -p "test_mcp_stdio_host.py" -v
+
+  production-cpu-container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and smoke-test isolated production admin and camera services
+        run: bash tools/ci_container_smoke.sh

@@ -11,7 +11,10 @@ ARG INSTALL_OBJECT_DETECTION=true
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt requirements-object-detection.txt ./
-RUN python -m pip install --no-cache-dir --upgrade pip \
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y libgl1 libglib2.0-0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && if [ "$INSTALL_OBJECT_DETECTION" = "true" ]; then \
          pip install --no-cache-dir --index-url "$TORCH_INDEX_URL" torch torchvision \
