@@ -1,10 +1,10 @@
 # VAOS v1.1.0 staging readiness report
 
-**Assessment date:** 2026-11-15
+**Assessment date:** 2026-11-16
 
 **Candidate branch:** [`codex/vaos-v1.1.0-candidate`](https://github.com/indipranisha/VAOS/tree/codex/vaos-v1.1.0-candidate)
 
-**Source commit validated by CI:** `973f29519cad247bfe9421517c0ef874d89b8eb8`
+**Source commit validated by CI:** `775e42cba0e6d5bf9033f44a38378b5239672eeb`
 
 **Decision:** **NO-GO for staging deployment.**
 
@@ -26,13 +26,13 @@ The candidate was assembled in an isolated worktree from the existing `staging` 
 | JavaScript syntax | Passed for **5** files with `node --check` | Syntax only; not browser accessibility or visual acceptance. |
 | Markdown links | **259 local links checked across 58 Markdown files; 0 broken** | Relative-path verification only; external links and browser journeys are not validated by this check. |
 | Git whitespace check | `git diff --check` passed for the changes reviewed | Line-ending conversion warnings are present in this Windows checkout; no whitespace errors. |
-| GitHub cross-platform workflow | Run [`43725437541`](https://github.com/indipranisha/VAOS/actions/runs/43725437541) for commit `973f295` completed successfully: all six jobs passed (Windows/macOS/Ubuntu unit suites and MCP stdio integration). | Automated CPython 3.12 matrix only; native camera/GPU/device and user-host validation remain open. Earlier red runs exposed Windows SQLite contention and a macOS bounded-wait test; the fixes are included in the green commit and those earlier runs are not counted as passing. |
-| Docker / Compose build and startup | Local Docker CLI is unavailable. The first CI CPU-image/admin-camera smoke attempt failed in under five seconds; a diagnostic retry is pending. | Container build/start evidence is not yet green; target proxy/TLS, persistent storage, migration and volume-restore remain unverified. |
+| GitHub cross-platform and production-container workflow | Run [`43762713511`](https://github.com/indipranisha/VAOS/actions/runs/43762713511) for commit `775e42c` completed successfully: all seven jobs passed (Windows/macOS/Ubuntu unit contracts, Windows/macOS/Ubuntu MCP stdio integration, and the production CPU-container smoke). | Automated CPython 3.12 matrix only; native camera/GPU/device and user-host validation remain open. Earlier red runs exposed Windows SQLite contention, a macOS bounded-wait test, and then a Dockerfile health-check syntax error; fixes are included in the green commit and those earlier runs are not counted as passing. |
+| Production CPU container build and isolated service smoke | The CI job built the CPU detector images, started isolated admin and camera services, waited for both health checks, imported OpenCV/PyTorch/Ultralytics (`4.14.0`, `2.15.0+cpu`, `8.4.183`), checked both `/health` endpoints and authenticated admin-to-camera internal model-status. | This is an isolated CI environment with no host ports; it does not verify target proxy/TLS, persistent storage, migration, backup/restore, GPU image or staging cutover. Local Docker is unavailable. |
 | Local running VAOS services | Left untouched | The previously observed listener/source identity is not confirmed by this isolated candidate. |
 
 ## Release blockers
 
-1. **No deployment target has been configured or exercised.** There is no supplied staging host/domain, TLS configuration, credentials, or isolated deployment environment. Docker is unavailable here, so image build, startup, health, persistent storage, migration and rollback are unverified.
+1. **No deployment target has been configured or exercised.** There is no supplied staging host/domain, TLS configuration, credentials, or isolated deployment environment. The production CPU image and two-service health/authentication smoke now pass in CI, but target storage, migration, backup/restore, proxy configuration and rollback are still unverified.
 2. **Native hardware and camera coverage remains open.** CI on three operating systems does not prove Apple Silicon/MPS, CUDA, low-memory training/inference, physical camera capture, or behavior across every GPU vendor and RAM size. CPU fallback and mocked device tests are not universal hardware certification.
 3. **MCP host usability is only partly evidenced.** The SDK stdio integration matrix checks the bridge boundary against a synthetic local API. A named desktop/editor host and the complete Settings token, permission, approval, revocation and recovery journey have not been verified.
 4. **Mandatory user-journey and accessibility evidence is incomplete.** Full beginner, student, researcher, API developer, camera workflow, MCP agent and community contributor journeys; keyboard/screen-size/accessibility review; and screenshots/recordings for those journeys are not recorded as a complete pass.

@@ -12,11 +12,11 @@ python -m py_compile main.py camera_service.py mcp_server.py
 python -m unittest discover -s tests -v
 ```
 
-GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed cross-platform result at source commit `973f295` passed all six unit and MCP stdio jobs in [run 43725437541](https://github.com/indipranisha/VAOS/actions/runs/43725437541). The first production CPU container smoke attempt in [run 43761182443](https://github.com/indipranisha/VAOS/actions/runs/43761182443) failed in under five seconds; unit and MCP jobs passed, but the container build did not produce usable diagnostics. Stage markers and preflight reporting are being added for the retry. CI does not deploy the application.
+GitHub Actions runs these checks on clean Windows, macOS and Ubuntu Python 3.12 workers for pushes and pull requests. The latest completed cross-platform result at source commit `775e42c` passed all six unit and MCP stdio jobs and the production CPU container smoke in [run 43762713511](https://github.com/indipranisha/VAOS/actions/runs/43762713511). The container job built both images, started isolated admin and camera services, verified their health endpoints, checked CPU detector imports, and exercised authenticated internal service status. An earlier attempt exposed a Dockerfile health-check syntax error, which was corrected before the successful run. CI does not deploy the application.
 
 ## Latest local verification (15 November 2026)
 
-The latest isolated Windows suite ran **300 tests: 298 passed and 2 were skipped in 62.728 seconds**. The skips were the POSIX file-permission assertion (not enforceable by the Windows filesystem) and the optional MCP SDK host test not installed in the existing environment; the SDK stdio-host integration separately passed in CI on Windows, macOS and Ubuntu. A four-process fallback-sidecar regression passed 20 consecutive repetitions on this Windows host. Python compilation, five JavaScript syntax checks, and a Markdown link scan (259 relative links across 58 files; none broken) passed. The six-job cross-platform CI result is linked above. The newly added CPU container build/start smoke failed in its first CI attempt and is being debugged; Docker is not installed locally. No live service, user database, dataset, model, camera or training job was used.
+The latest isolated Windows suite ran **300 tests: 298 passed and 2 were skipped in 62.728 seconds**. The skips were the POSIX file-permission assertion (not enforceable by the Windows filesystem) and the optional MCP SDK host test not installed in the existing environment; the SDK stdio-host integration separately passed in CI on Windows, macOS and Ubuntu. A four-process fallback-sidecar regression passed 20 consecutive repetitions on this Windows host. Python compilation, five JavaScript syntax checks, and a Markdown link scan (259 relative links across 58 files; none broken) passed. The seven-job cross-platform and container result is linked above. The CPU container build/start smoke passed in CI; Docker is not installed locally. No live service, user database, dataset, model, camera or training job was used.
 
 ## Covered now
 
@@ -60,7 +60,7 @@ AI Model Arena and Ready-to-Run Vision Applications were deferred beyond v1.1.0 
 - Complete the isolated browser persona journeys, keyboard/accessibility review, screenshots at supported sizes, and representative performance measurements.
 - Validate Apple MPS and NVIDIA CUDA inference/training on actual devices; mocked CI cases are contract checks only. Record low-memory behavior and tested minimum profiles.
 - Rehearse a representative deployment backup, paired data-directory restore, migration and rollback on the target staging environment.
-- Run the new production CPU image build and two-service startup/health check in CI, then validate the GPU image on a compatible NVIDIA host if GPU deployment is intended.
+- The production CPU image build and two-service startup/health check passed in CI; validate the GPU image on a compatible NVIDIA host if GPU deployment is intended.
 - Review exact platform-resolved dependencies and scan the release images, including the PyTorch/torchvision source that is outside the prior PyPI advisory scan.
 
 Do not mark staging ready until those applicable suites have recorded results and high-severity defects are resolved. See [the traceability matrix](TRACEABILITY_MATRIX.md) and [baseline audit](reviews/VAOS-1.1.0-baseline-audit.md).
