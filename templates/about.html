@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="About VAOS, its original creator, open-source community and license.">
+  <title>VAOS · About</title>
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+  <style>
+    .about-page{max-width:1050px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
+    .about-head{margin-bottom:18px}.about-head h1{margin:.2rem 0}.about-head p{max-width:760px}
+    .about-grid{display:grid;grid-template-columns:minmax(0,1.2fr) minmax(240px,.8fr);gap:14px;align-items:stretch}
+    .about-card{min-width:0;padding:20px;border:1px solid var(--ml-border);border-radius:12px;background:var(--ml-card,#101d2a)}
+    .about-card h2{margin:0 0 8px;color:var(--ml-text);font-size:17px}.about-card p{color:var(--ml-muted);font-size:11px;line-height:1.7}
+    .creator-name{margin:5px 0;color:var(--ml-text);font-size:22px;font-weight:750;letter-spacing:-.02em}
+    .creator-role{display:inline-flex;padding:5px 8px;border:1px solid var(--ml-border);border-radius:999px;color:var(--ml-cyan,#60d5cb);font-size:9px;font-weight:700}
+    .creator-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.creator-links a{display:inline-flex;align-items:center;gap:7px;min-height:38px;padding:8px 11px;border:1px solid var(--ml-border);border-radius:8px;color:var(--ml-text);background:rgb(255 255 255 / 2%);font-size:10px;font-weight:650;text-decoration:none}.creator-links a:hover{border-color:var(--ml-cyan,#60d5cb);text-decoration:underline;text-underline-offset:3px}.creator-links a:focus-visible{outline:3px solid var(--ml-cyan,#60d5cb);outline-offset:2px}
+    .about-attribution{padding:12px 14px;margin:16px 0 0;border-left:3px solid var(--ml-cyan,#60d5cb);border-radius:0 8px 8px 0;color:var(--ml-text);background:rgb(70 180 180 / 7%);font-size:11px;line-height:1.65}
+    .about-footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;margin-top:14px;color:var(--ml-muted);font-size:9px}.about-footer a{color:inherit}
+    .theme-light .about-card{background:#f8fafc}.theme-light .creator-links a{background:#fff}
+    @media(max-width:740px){.about-grid{grid-template-columns:1fr}.about-card{padding:16px}.creator-links a{flex:1 1 180px;justify-content:center}}
+  </style>
+</head>
+<body class="training-shell">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">PROJECT INFORMATION</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
+      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
+      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
+      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
+      <a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+      <a class="nav-link active" href="/about" aria-current="page"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a>
+          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Open-source project</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+  <main class="page-wrap about-page">
+    <section class="about-head"><p class="eyebrow">PROJECT / PEOPLE / COMMUNITY</p><h1>About VAOS</h1><p class="lead">VAOS is a local-first video analytics application built to be useful, inspectable and adaptable by its community.</p></section>
+    <div class="about-grid">
+      <section class="about-card" aria-labelledby="creator-heading">
+        <p class="eyebrow">ORIGINAL CREATOR</p>
+        <h2 id="creator-heading">About the creator</h2>
+        <p class="creator-name">{{ project.creator.name }}</p>
+        <span class="creator-role">{{ project.creator.role }}</span>
+        <p class="about-attribution">{{ project.creator_statement }}</p>
+        <div class="creator-links" aria-label="Creator links">
+          <a href="{{ project.creator.website }}" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>Creator website</a>
+          <a href="{{ project.creator.linkedin }}" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>LinkedIn profile</a>
+        </div>
+      </section>
+      <section class="about-card" aria-labelledby="community-heading">
+        <p class="eyebrow">OPEN SOURCE / COMMUNITY</p>
+        <h2 id="community-heading">Built in the open</h2>
+        <p>VAOS is released under the Apache License 2.0. You can use, change, fork and share the application under that license. Existing copyright notices and third-party model, dataset and dependency terms still apply.</p>
+        <p>Community contributions are welcome. Read the contribution guide before opening a pull request, and include tests or clear reproduction steps for behavior changes.</p>
+        <div class="creator-links"><a href="https://github.com/indipranisha/VAOS" target="_blank" rel="noopener noreferrer">VAOS source repository ↗</a><a href="/docs/CONTRIBUTING.md">Contribution guide</a><a href="/docs/LICENSE" target="_blank" rel="noopener noreferrer">Apache 2.0 license</a></div>
+      </section>
+    </div>
+    <footer class="about-footer"><span>VAOS v{{ version }} · Original creator: {{ project.creator.name }}</span><span><a href="/">Return to Control Room</a> · <a href="/settings">Settings</a></span></footer>
+  </main>
+  <script src="/static/theme.js?v=vaos-1.1.0"></script>
+</body>
+</html>

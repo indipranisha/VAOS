@@ -1,0 +1,11 @@
+cff-version: 1.2.0
+message: "If you use VAOS in research, please cite the project and retain its license notices."
+title: "VAOS — Video Analytics Operating System"
+version: 1.1.0
+license: Apache-2.0
+repository-code: "https://github.com/indipranisha/VAOS"
+url: "https://prateekdubey.in"
+authors:
+  - family-names: Dubey
+    given-names: Prateek
+    affiliation: "Founder and Original Creator of VAOS"

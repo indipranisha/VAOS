@@ -5,7 +5,12 @@ requests>=2.23.0
 scipy>=1.4.1
 psutil>=5.8.0
 polars>=0.20.0
-ultralytics-thop>=2.0.18
+# Ultralytics is installed with --no-deps so it cannot replace VAOS's
+# opencv-contrib-python-headless package with a competing cv2 distribution.
+# Keep its other runtime dependencies explicit here.
+ultralytics-thop>=2.2.3
+nvidia-ml-py>=12.0.0
+ultralytics-platform>=0.1.45; python_version >= "3.11"
 tqdm>=4.64
 pandas>=1.1,<4.0
 seaborn>=0.11

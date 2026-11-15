@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>VAOS · Video Review</title><link rel="stylesheet" href="/static/style.css?v=vaos-video-review-1">
+  <title>VAOS · Video Review</title><link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
 </head>
 <body class="training-shell video-review-shell">
@@ -14,9 +14,12 @@
       <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
       <a class="nav-link active" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
       <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
+      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
+      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
       <a class="nav-link" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
-      <a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
-    </nav>
+      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
     <div class="sidebar-bottom"><div class="admin-sidebar-tools">
       {% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}
       <button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button>
@@ -24,7 +27,7 @@
   </header>
 
   <main class="page-wrap training-page video-review-page">
-    <header class="ml-page-heading"><div><p class="eyebrow">VIDEO WORKSPACE / SAMPLE &amp; REVIEW</p><h2>Video review</h2><p class="lead">Fast-play an authorized local video, box detected objects, and send sample crops to the review queue.</p></div><span id="video-engine-state" class="engine-status"><span class="status-dot"></span> Checking detector</span></header>
+    <header class="ml-page-heading"><div><p class="eyebrow">VIDEO WORKSPACE / SAMPLE &amp; REVIEW</p><h2>Video review</h2><p class="lead">Fast-play an authorized local video, box detected objects, and send sample crops to the review queue.</p></div><div class="activity-live-status"><span id="video-engine-state" class="engine-status"><span class="status-dot"></span> Checking detector</span><a class="button button-secondary button-small" href="/statistics?report=inference">Inference report</a></div></header>
 
     <section class="video-review-notice"><strong>Use a video you can analyze</strong><span>YouTube links open in YouTube’s player for viewing. To run detection and save review crops, choose the original local video file that you own or have permission to use. VAOS analyzes it in your browser and does not upload or keep the full video.</span></section>
 
@@ -54,6 +57,7 @@
       </section>
     </div>
     <p class="footer-note">Analysis pauses during model training. Only cropped object detections are added to VAOS; the full local video is not sent to the server or retained.</p>
+      {% include "_creator_attribution.html" %}
   </main>
 
 <script src="https://www.youtube.com/iframe_api"></script>

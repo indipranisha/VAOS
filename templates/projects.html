@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>VAOS · Project bundles</title>
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+  <style>
+    .project-page{max-width:1260px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
+    .project-head,.project-actions,.project-row-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+    .project-head{margin-bottom:18px}.project-head h1{margin:.2rem 0}.project-head p{max-width:790px}
+    .project-grid{display:grid;grid-template-columns:minmax(280px,.85fr) minmax(0,1.15fr);align-items:start;gap:14px}
+    .project-card{min-width:0;padding:16px;border:1px solid var(--ml-border);border-radius:12px;background:var(--ml-card,#101d2a)}
+    .project-card h2{margin:0 0 6px;font-size:15px}.project-card>p{margin:0 0 12px;color:var(--ml-muted);font-size:10px;line-height:1.55}
+    .project-upload{display:grid;gap:10px}.project-upload input[type=file]{max-width:100%;padding:8px;border:1px dashed var(--ml-border);border-radius:8px;color:var(--ml-muted)}
+    .project-preview{margin-top:12px}.project-preview pre{max-height:260px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;padding:11px;border-radius:8px;background:var(--code-surface,#f2f5fa);font-size:10px}
+    .project-list{display:grid;gap:8px}.project-bundle-row{display:grid;gap:8px;padding:11px;border:1px solid var(--ml-border);border-radius:9px;background:rgb(255 255 255 / 2%)}
+    .project-bundle-row h3{margin:0;color:var(--ml-text);font-size:12px}.project-bundle-row p{margin:0;color:var(--ml-muted);font-size:9px;line-height:1.45;overflow-wrap:anywhere}
+    .project-notice{padding:12px;margin:14px 0;border:1px solid #627a98;border-radius:9px;color:var(--ml-text);background:rgb(76 120 170 / 10%);font-size:10px;line-height:1.55}
+    .project-status{min-height:22px;margin-top:8px}.project-ref-list{display:grid;gap:4px;margin:8px 0;color:var(--ml-muted);font-size:9px}
+    .theme-light .project-card{background:#f8fafc}.theme-light .project-bundle-row{background:#fff}
+    @media(max-width:850px){.project-grid{grid-template-columns:1fr}}
+  </style>
+</head>
+<body class="training-shell">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">PROJECT WORKSPACE</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
+      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
+      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
+      <a class="nav-link active" href="/projects" aria-current="page"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
+      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local project storage</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+  <main class="page-wrap project-page">
+    <section class="project-head"><div><p class="eyebrow">COMMUNITY / PORTABLE CONFIGURATION</p><h1>VAOS project bundles</h1><p class="lead">Share a small VAOS setup with another local installation. Bundles carry approved engine settings and names of local datasets and models so another person can see what the project expects.</p></div><button id="project-refresh" class="button button-secondary" type="button">Refresh saved bundles</button></section>
+    <div class="project-notice"><strong>Privacy by design.</strong> A bundle contains configuration only. It excludes passwords, API tokens, camera and tunnel links, face profiles, review images, model weights, dataset files and executable content. Dataset/model names are references, not included files. Importing only saves the bundle; applying settings is a separate step.</div>
+    <div class="project-grid">
+      <section class="project-card" aria-labelledby="project-export-title"><h2 id="project-export-title">Export this VAOS setup</h2><p>Download a portable configuration bundle of the current engine settings and names of registered datasets and models.</p><label class="engine-control" for="project-export-name">Bundle name</label><input id="project-export-name" maxlength="100" value="VAOS project" autocomplete="off"><div class="project-actions" style="margin-top:10px"><button id="project-export" class="button button-primary" type="button">Download .vaosproject</button></div><p class="helper">Export does not include model weights or image data. Check the contents before sharing it.</p><div id="project-export-status" class="project-status helper" role="status" aria-live="polite"></div></section>
+      <section class="project-card" aria-labelledby="project-import-title"><h2 id="project-import-title">Review and import a bundle</h2><p>VAOS checks the file and shows what it contains. The first step is preview-only and makes no changes.</p><form id="project-import-form" class="project-upload"><label for="project-file">Choose a VAOS project bundle</label><input id="project-file" name="file" type="file" accept=".vaosproject,application/vnd.vaos.project+zip,application/zip" required><button id="project-preview-button" class="button button-secondary" type="submit">Preview bundle</button></form><div id="project-import-status" class="project-status helper" role="status" aria-live="polite"></div><div id="project-preview" class="project-preview hidden"></div><div class="project-actions"><button id="project-save-import" class="button button-primary hidden" type="button" disabled>Save reviewed bundle</button></div></section>
+    </div>
+    <section class="project-card" style="margin-top:14px" aria-labelledby="project-saved-title"><div class="project-row-head"><div><h2 id="project-saved-title">Saved project bundles</h2><p>Saved bundles stay on this VAOS machine under its data folder. Removing a bundle does not remove any datasets or models it references.</p></div><span id="project-count" class="subtle-tag">Loading…</span></div><div id="project-list" class="project-list" aria-live="polite"><p class="helper">Loading saved bundles…</p></div></section>
+    <p class="helper" style="margin-top:12px">This page never runs scripts from a bundle. Applying settings updates only the listed camera/detection controls; dataset and model choices remain under your control. <a href="/docs/PROJECT_BUNDLES.md" target="_blank" rel="noopener noreferrer">Bundle format and safety guide</a> · <a href="/api-explorer">API Explorer</a>.</p>
+      {% include "_creator_attribution.html" %}
+  </main>
+  <script src="/static/theme.js?v=vaos-1.1.0"></script>
+  <script src="/static/projects.js?v=vaos-1.1.0"></script>
+</body>
+</html>

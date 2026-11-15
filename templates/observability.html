@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>VAOS · Statistics &amp; Observability</title>
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav-label-layout">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+</head>
+<body class="training-shell">
+  <a class="observability-skip-link" href="#obs-main">Skip to main content</a>
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">SYSTEM INSIGHTS</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">Control room</span></a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">ML training</span></a>
+      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span><span class="nav-label">Video review</span></a>
+      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span><span class="nav-label">Dataset preparation</span></a>
+      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span><span class="nav-label">Hardware</span></a>
+      <a class="nav-link" href="/statistics" aria-current="page"><span class="nav-icon" aria-hidden="true">▤</span><span class="nav-label">Statistics &amp; observability</span></a>
+      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Tracking rules</span></a>
+      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span><span class="nav-label">Project bundles</span></a>
+      <a class="nav-link" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span><span class="nav-label">Training activity</span></a>
+      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span><span class="nav-label">About VAOS</span></a>
+      <a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span><span class="nav-label">Settings</span></a>
+    </nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local statistics</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+  <main id="obs-main" class="page-wrap observability-page" tabindex="-1">
+    <section class="observability-header">
+      <div><p class="eyebrow">SYSTEM INSIGHTS / PERSISTENT ACTIVITY</p><h1>Statistics &amp; Observability</h1><p class="lead">Review what this VAOS installation has actually recorded across starts, training, hardware and service activity. Missing sensors and older unrecorded history are shown as unavailable.</p></div>
+      <div class="observability-actions"><label for="obs-period">Time period</label><select id="obs-period"><option value="lifetime">Lifetime</option><option value="24h">Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option><option value="custom">Custom UTC range</option></select><button id="obs-refresh" class="button button-secondary" type="button">Refresh</button></div>
+    </section>
+    <div id="obs-custom-range" class="observability-custom-range hidden"><label>From (your local time)<input id="obs-after" type="datetime-local"></label><label>To (your local time, exclusive)<input id="obs-before" type="datetime-local"></label><button id="obs-apply-range" class="button button-secondary" type="button">Apply range</button><span class="helper">Your selected times are converted to UTC before querying VAOS.</span></div>
+    <p id="obs-status" class="result-box" role="status" aria-live="polite">Loading locally recorded statistics…</p>
+    <p id="obs-installation-note" class="helper"></p>
+    <p id="obs-counter-queue-status" class="result-box" role="status" aria-live="polite">Checking local telemetry and security-audit recovery queues…</p>
+
+    <section aria-labelledby="obs-summary-title">
+      <div class="section-title-row"><div><p class="eyebrow">RECORDED ACTIVITY</p><h2 id="obs-summary-title">Installation overview</h2></div><span id="obs-updated" class="subtle-tag">Waiting for data</span></div>
+      <div id="obs-kpis" class="observability-kpis" aria-live="polite"></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-metrics-title">
+      <div class="section-title-row"><div><p class="eyebrow">DEFINITIONS &amp; PROVENANCE</p><h2 id="obs-metrics-title">Metric explorer</h2></div><div class="observability-actions"><label for="obs-metric-search">Search metrics</label><input id="obs-metric-search" type="search" placeholder="e.g. DFL loss, GPU energy"><button id="obs-expand-metric-groups" class="button button-secondary button-small" type="button" aria-controls="obs-metric-groups">Expand all</button><button id="obs-collapse-metric-groups" class="button button-secondary button-small" type="button" aria-controls="obs-metric-groups">Collapse all</button></div></div>
+      <p class="helper">Each metric shows its unit, source, scope and whether VAOS has data for it. “Unavailable” means it has not been reliably recorded; it does not mean zero.</p>
+      <div id="obs-metric-groups" class="observability-metric-groups"><p class="empty-state">Loading metric definitions…</p></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-series-title">
+      <div class="section-title-row"><div><p class="eyebrow">RECORDED VALUES</p><h2 id="obs-series-title">Metric history</h2></div><div class="observability-actions"><label for="obs-series-metric">Metric<select id="obs-series-metric"><option value="">No recorded metrics yet</option></select></label><label for="obs-series-group-by">Group lines by<select id="obs-series-group-by"><option value="">All values together</option></select></label><label for="obs-dimension-key">Filter dimension<select id="obs-dimension-key"><option value="">No dimension filter</option></select></label><label for="obs-dimension-value">Exact value<input id="obs-dimension-value" maxlength="120" placeholder="Optional"></label><label for="obs-series-aggregation">Aggregation<select id="obs-series-aggregation"><option value="raw">Raw points</option></select></label><label for="obs-series-interval">Time bucket<select id="obs-series-interval"><option value="minute">1 minute</option><option value="5min">5 minutes</option><option value="hour" selected>1 hour</option><option value="day">1 day</option></select></label></div></div>
+      <p class="helper">Group lines only by dimensions supported by the selected metric. Counter events can be summed; gauge choices follow each metric’s declared meaning. Exact filters apply before aggregation. Raw and grouped history is bounded to the newest 1,000 returned points; narrow the time range when the page reports truncation.</p>
+      <div id="obs-series-status" class="helper" role="status" aria-live="polite">Select a metric to load its history.</div>
+      <div class="observability-view-toggle" role="group" aria-label="Metric history view">
+        <button id="obs-series-view-chart" class="button button-primary button-small" type="button" aria-controls="obs-series-chart-panel" aria-pressed="true">Chart</button>
+        <button id="obs-series-view-table" class="button button-secondary button-small" type="button" aria-controls="obs-series-table-panel" aria-pressed="false">Table</button>
+      </div>
+      <div class="inline-actions" aria-label="Export metric history"><button id="obs-series-export-csv" class="button button-secondary button-small" type="button">Prepare CSV report</button><button id="obs-series-export-pdf" class="button button-secondary button-small" type="button">Prepare PDF report</button></div>
+      <p id="obs-series-export-status" class="helper" role="status" aria-live="polite">Metric exports use the central audited report service and the current metric controls.</p>
+      <div id="obs-series-chart-panel"><svg id="obs-series-chart" class="observability-chart" viewBox="0 0 900 240" role="img" aria-labelledby="obs-chart-title obs-chart-desc"><title id="obs-chart-title">Recorded metric history</title><desc id="obs-chart-desc">The chart will show recorded values over time.</desc><g id="obs-chart-content"></g></svg><div id="obs-series-legend" class="observability-chart-legend" role="list" aria-label="Metric chart series"></div></div>
+      <div id="obs-series-table-panel" class="hidden"><div class="observability-table-wrap"><table class="observability-table"><caption class="sr-only">Most recent recorded metric observations</caption><thead><tr><th scope="col">Timestamp (UTC)</th><th scope="col">Value</th><th scope="col">Dimensions</th><th scope="col">Source / provenance</th></tr></thead><tbody id="obs-series-rows"><tr><td colspan="4">No metric selected.</td></tr></tbody></table></div></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-lifecycle-title">
+      <div class="section-title-row"><div><p class="eyebrow">PROCESS HISTORY</p><h2 id="obs-lifecycle-title">Application lifecycle</h2></div><button id="obs-session-older" class="button button-secondary button-small" type="button" disabled>Load older sessions</button></div>
+      <p class="helper">An expired heartbeat is labelled “Unknown”; VAOS does not claim a crash unless the operating system or a verified exit event proves it.</p>
+      <p id="obs-session-message" class="helper" role="status" aria-live="polite">Loading lifecycle records…</p>
+      <div class="observability-table-wrap"><table class="observability-table"><caption class="sr-only">VAOS process sessions and their shutdown status</caption><thead><tr><th scope="col">Started (UTC)</th><th scope="col">Component</th><th scope="col">Version</th><th scope="col">Last heartbeat (UTC)</th><th scope="col">Shutdown</th><th scope="col">Known duration</th></tr></thead><tbody id="obs-session-rows"><tr><td colspan="6">Loading lifecycle records…</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-logs-title">
+      <div class="section-title-row"><div><p class="eyebrow">PERSISTENT REDACTED EVENTS</p><h2 id="obs-logs-title">Log explorer</h2></div><div class="inline-actions"><button id="obs-log-tail-toggle" class="button button-secondary button-small" type="button" aria-pressed="false">Start live tail</button><button id="obs-log-next" class="button button-secondary button-small" type="button" disabled>Next page</button></div></div>
+      <form id="obs-log-filters" class="observability-filters">
+        <label for="obs-log-search">Search text<input id="obs-log-search" type="search" maxlength="200" placeholder="Search message or event type"></label>
+        <label for="obs-log-level">Severity<select id="obs-log-level"><option value="">All levels</option><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select></label>
+        <label for="obs-log-component">Component<input id="obs-log-component" maxlength="80" placeholder="training"></label>
+        <label for="obs-log-type">Event type<input id="obs-log-type" maxlength="96" placeholder="training.epoch_completed"></label>
+        <label for="obs-log-session-id">Runtime session ID<input id="obs-log-session-id" maxlength="120" placeholder="Exact recorded session ID"></label>
+        <label for="obs-log-correlation-id">Correlation ID<input id="obs-log-correlation-id" maxlength="120" placeholder="Exact recorded value"></label>
+        <label for="obs-log-job-id">Training job ID<input id="obs-log-job-id" maxlength="120" placeholder="Exact recorded job ID"></label>
+        <label for="obs-log-dataset-id">Dataset ID<input id="obs-log-dataset-id" maxlength="120" placeholder="Exact recorded dataset ID"></label>
+        <label for="obs-log-model-id">Model ID<input id="obs-log-model-id" maxlength="120" placeholder="Exact recorded model ID"></label>
+        <button class="button button-secondary" type="submit">Search events</button>
+      </form>
+      <div class="observability-filters" aria-label="Saved Log Explorer filters">
+        <label for="obs-saved-log-filter-name">Save current filters as<input id="obs-saved-log-filter-name" type="text" maxlength="80" placeholder="e.g. Training errors"></label>
+        <button id="obs-save-log-filter" class="button button-secondary button-small" type="button">Save filter</button>
+        <label for="obs-saved-log-filters">Saved filters<select id="obs-saved-log-filters"><option value="">No saved filters</option></select></label>
+        <button id="obs-apply-log-filter" class="button button-secondary button-small" type="button" disabled>Apply saved filter</button>
+        <button id="obs-delete-log-filter" class="button button-secondary button-small" type="button" disabled>Delete saved filter</button>
+      </div>
+      <p id="obs-saved-log-filter-status" class="helper" role="status" aria-live="polite">Saved filters are private to the authenticated account and limited to 20.</p>
+      <div class="inline-actions" aria-label="Export filtered events">
+        <button id="obs-log-export-csv" class="button button-secondary button-small" type="button">Prepare CSV report</button>
+        <button id="obs-log-export-pdf" class="button button-secondary button-small" type="button">Prepare PDF report</button>
+        <button id="obs-log-export-ndjson" class="button button-secondary button-small" type="button">Download NDJSON</button>
+      </div>
+      <p class="helper">CSV and PDF use the central audited report service. NDJSON downloads at most 1,000 matching events; narrow filters if more match. With Lifetime selected, report exports use the retained 90-day event window.</p>
+      <p id="obs-log-live-status" class="helper" role="status" aria-live="polite">Live tail is paused. It polls the newest filtered events every 3 seconds while active. Correlation IDs are optional exact-match values, not universal trace IDs.</p>
+      <div id="obs-log-message" class="helper" role="status" aria-live="polite"></div>
+      <div class="observability-table-wrap"><table class="observability-table"><caption class="sr-only">Filtered VAOS operational event records</caption><thead><tr><th scope="col">Timestamp (UTC)</th><th scope="col">Level</th><th scope="col">Component / event</th><th scope="col">Message and safe details</th></tr></thead><tbody id="obs-log-rows"><tr><td colspan="4">Loading event records…</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-audit-title">
+      <div class="section-title-row"><div><p class="eyebrow">APPEND-ONLY SECURITY AUDIT</p><h2 id="obs-audit-title">Security events</h2></div><button id="obs-audit-verify" class="button button-secondary button-small" type="button">Verify audit integrity</button></div>
+      <p class="helper">This chain detects edits to recorded audit rows. It does not protect the file from a local administrator who can replace the database.</p>
+      <p id="obs-audit-integrity" class="helper" role="status" aria-live="polite">Integrity has not been checked in this page session.</p>
+      <form id="obs-audit-filters" class="observability-filters">
+        <label for="obs-audit-search">Search audit details<input id="obs-audit-search" type="search" maxlength="200" placeholder="Literal text"></label>
+        <label for="obs-audit-type">Event type<input id="obs-audit-type" maxlength="96" placeholder="auth.login_failed"></label>
+        <label for="obs-audit-outcome">Outcome<input id="obs-audit-outcome" maxlength="64" placeholder="denied"></label>
+        <label for="obs-audit-component">Component<input id="obs-audit-component" maxlength="80" placeholder="auth"></label>
+        <label for="obs-audit-actor-ref">Exact actor reference<input id="obs-audit-actor-ref" maxlength="120" placeholder="local-admin or api-token prefix"></label>
+        <button class="button button-secondary" type="submit">Search security events</button>
+        <button id="obs-audit-next" class="button button-secondary button-small" type="button" disabled>Next page</button>
+      </form>
+      <p id="obs-audit-message" class="helper" role="status" aria-live="polite"></p>
+      <div class="observability-table-wrap"><table class="observability-table"><caption class="sr-only">Filtered append-only VAOS security audit events</caption><thead><tr><th scope="col">Timestamp (UTC)</th><th scope="col">Outcome</th><th scope="col">Component / event</th><th scope="col">Actor reference</th><th scope="col">Details</th><th scope="col">Chain hash</th></tr></thead><tbody id="obs-audit-rows"><tr><td colspan="6">Loading security audit events…</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-retention-title">
+      <div class="section-title-row"><div><p class="eyebrow">LOCAL DATA POLICY</p><h2 id="obs-retention-title">Data retention</h2></div><span id="obs-retention-summary" class="subtle-tag">Loading policy</span></div>
+      <p id="obs-retention-warning" class="helper">Choose how long VAOS keeps event details, metric samples and completed delivery history. A shorter period can permanently redact or remove older operational details. Increasing a period does not restore details already expired. Lifetime counters and the append-only security audit are kept. Generated report files are separate copies: they remain available until their own 24-hour expiry and are not removed by this cleanup.</p>
+      <form id="obs-retention-form" class="observability-filters">
+        <label for="obs-retention-events">Operational event details<select id="obs-retention-events" disabled><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">365 days</option></select><span class="helper">Older event text and metadata are redacted; counter totals remain.</span></label>
+        <label for="obs-retention-metrics">Metric sample maximum<select id="obs-retention-metrics" disabled><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">365 days</option></select><span class="helper">Each metric’s own catalogue limit may be shorter.</span></label>
+        <label for="obs-retention-deliveries">Completed delivery history<select id="obs-retention-deliveries" disabled><option value="30">30 days</option><option value="90">90 days</option><option value="180">180 days</option><option value="365">365 days</option></select><span class="helper">Queued and retrying deliveries are not cleared by this setting.</span></label>
+        <button id="obs-retention-save" class="button button-primary" type="submit" disabled>Save retention settings</button>
+        <button id="obs-retention-apply" class="button button-secondary" type="button" disabled>Apply cleanup now</button>
+      </form>
+      <p id="obs-retention-message" class="helper" role="status" aria-live="polite">Loading the current retention policy…</p>
+    </section>
+
+    <section id="obs-report-section" class="panel section-panel" aria-labelledby="obs-reports-title">
+      <div class="section-title-row"><div><p class="eyebrow">CENTRAL REPORT SERVICE</p><h2 id="obs-reports-title">Reports &amp; exports</h2></div><span class="subtle-tag">CSV · PDF · expires 24 hours after request</span></div>
+      <p class="helper">Reports are generated in the background from the same filtered, redacted records shown here. Security-event exports require an administrator session or an API token with sensitive-read access enabled. VAOS records report requests and downloads.</p>
+      <form id="obs-report-form" class="observability-filters">
+        <label for="obs-report-type">Report type<select id="obs-report-type"><option value="">Loading report types…</option></select></label>
+        <label for="obs-report-format">File format<select id="obs-report-format"><option value="csv">CSV spreadsheet</option><option value="pdf">PDF document</option></select></label>
+        <label for="obs-report-metric" id="obs-report-metric-wrap" class="hidden">Metric<select id="obs-report-metric"><option value="">Choose a recorded metric</option></select></label>
+        <label for="obs-report-after">From (your local time)<input id="obs-report-after" type="datetime-local" required></label>
+        <label for="obs-report-before">To (your local time, exclusive)<input id="obs-report-before" type="datetime-local" required></label>
+        <label for="obs-report-level">Severity filter<select id="obs-report-level"><option value="">All severities</option><option>DEBUG</option><option>INFO</option><option>WARNING</option><option>ERROR</option><option>CRITICAL</option></select></label>
+        <label for="obs-report-outcome" id="obs-report-outcome-wrap" class="hidden">Audit outcome<input id="obs-report-outcome" maxlength="64" placeholder="e.g. denied"></label>
+        <label for="obs-report-actor-ref" id="obs-report-actor-ref-wrap" class="hidden">Exact actor reference<input id="obs-report-actor-ref" maxlength="120" placeholder="Recorded actor reference"></label>
+        <label for="obs-report-component">Component filter<input id="obs-report-component" maxlength="80" placeholder="e.g. training"></label>
+        <label for="obs-report-event-type">Event type filter<input id="obs-report-event-type" maxlength="96" placeholder="e.g. training.epoch_completed"></label>
+        <label for="obs-report-correlation-id" id="obs-report-correlation-wrap" class="hidden">Correlation ID filter<input id="obs-report-correlation-id" maxlength="120" placeholder="Exact recorded value"></label>
+        <label for="obs-report-search">Search filter<input id="obs-report-search" maxlength="200" placeholder="Optional text"></label>
+        <button class="button button-primary" type="submit">Generate report</button>
+      </form>
+        <p id="obs-report-coverage" class="helper" role="status" aria-live="polite">Report coverage will be shown after the available types load. Empty sources are reported as unavailable, not as zero.</p>
+        <p id="obs-report-message" class="helper" role="status" aria-live="polite">Choose a report type and format.</p>
+        <div class="observability-table-wrap"><table class="observability-table"><caption class="sr-only">Background report jobs and their completion status</caption><thead><tr><th scope="col">Requested (UTC)</th><th scope="col">Report</th><th scope="col">Filters</th><th scope="col">Status</th><th scope="col">Progress</th><th scope="col">Expires (UTC)</th><th scope="col">Actions</th></tr></thead><tbody id="obs-report-rows"><tr><td colspan="7">Loading reports…</td></tr></tbody></table></div>
+    </section>
+
+    <section class="panel section-panel" aria-labelledby="obs-siem-title">
+      <div class="section-title-row"><div><p class="eyebrow">OUTBOUND DELIVERY OFF BY DEFAULT</p><h2 id="obs-siem-title">SIEM &amp; SOAR integrations</h2></div><span id="obs-integration-summary" class="subtle-tag">Checking local configuration</span></div>
+      <p class="helper">Delivery is off by default. You can send redacted security events to a signed HTTPS JSON webhook, an RFC 5424 Syslog TLS receiver, or an OTLP/HTTP JSON logs endpoint. Request bodies, images, credentials and raw camera data are excluded. Destinations must use a public DNS name; HTTPS uses port 443 and Syslog TLS uses port 6514. VAOS validates receiver certificates and pins the resolved public address for each connection. OTLP uses the OpenTelemetry Logs JSON encoding; protocol support does not certify compatibility with any particular SIEM vendor.</p>
+      <p class="helper">The delivery queue is capped at 50,000 rows overall and 5,000 pending per destination. If full, VAOS keeps the local security event but skips its external send and counts it as dropped. Terminal delivery history is retained for up to 90 days. Removing a destination clears its endpoint and credential reference while preserving local event history.</p>
+      <form id="obs-integration-form" class="observability-filters">
+        <label for="obs-integration-name">Destination name<input id="obs-integration-name" maxlength="80" required placeholder="Security webhook"></label>
+        <label for="obs-integration-transport">Delivery format<select id="obs-integration-transport"><option value="https_json">Signed HTTPS JSON webhook</option><option value="syslog_tls">Syslog over TLS</option><option value="otlp">OpenTelemetry logs (OTLP/HTTP JSON)</option></select></label>
+        <label for="obs-integration-event-format" id="obs-integration-event-format-label">Event mapping<select id="obs-integration-event-format"><option value="json">VAOS JSON</option><option value="ndjson">NDJSON (one event per line)</option><option value="cef">CEF</option><option value="ecs">Elastic Common Schema (ECS-shaped JSON)</option></select></label>
+        <label for="obs-integration-url" id="obs-integration-url-label">HTTPS webhook URL<input id="obs-integration-url" type="url" maxlength="2048" required placeholder="https://siem.example.com/webhook"></label>
+        <label for="obs-integration-secret-ref" id="obs-integration-secret-label">HMAC key environment variable<input id="obs-integration-secret-ref" pattern="[A-Z][A-Z0-9_]{2,63}" maxlength="64" required placeholder="VAOS_SIEM_HMAC_KEY"></label>
+        <label class="observability-inline-check"><input id="obs-integration-enabled" type="checkbox"> Enable outbound delivery now</label>
+        <button id="obs-integration-save" class="button button-primary" type="submit">Save destination</button>
+        <button id="obs-integration-cancel" class="button button-secondary hidden" type="button">Cancel edit</button>
+      </form>
+      <p id="obs-integration-edit-help" class="helper">When editing, re-enter the complete receiver URL. VAOS does not reveal stored URL paths or credential names. Leave the credential field empty to keep its current environment-variable reference when the delivery type is unchanged.</p>
+      <p id="obs-integration-message" class="helper" role="status" aria-live="polite">No external destination is required to use VAOS. Enter environment-variable names only; never paste secret values here.</p>
+      <div class="observability-table-wrap"><table class="observability-table"><caption class="sr-only">External security-event destination and delivery queue status</caption><thead><tr><th scope="col">Destination</th><th scope="col">Transport</th><th scope="col">State / credential</th><th scope="col">Queue</th><th scope="col">Last successful delivery</th><th scope="col">Actions</th></tr></thead><tbody id="obs-integration-rows"><tr><td colspan="6">Loading integration status…</td></tr></tbody></table></div>
+    </section>
+    <p class="helper observability-footnote">VAOS records local observability data only. Where NVIDIA board-power readings are available, GPU energy is estimated from sampled watts; longer sampling gaps are excluded. This is not wall energy or energy attributed to a training job, and GPU utilization is never converted into watts.</p>
+    {% include "_creator_attribution.html" %}
+  </main>
+  <script src="/static/theme.js?v=vaos-1.1.0"></script>
+<script src="/static/observability.js?v=vaos-1.1.0-retention-read-epoch"></script>
+</body>
+</html>
