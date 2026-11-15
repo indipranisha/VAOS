@@ -59,3 +59,31 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build and smoke-test isolated production admin and camera services
         run: bash tools/ci_container_smoke.sh
+
+  browser-ui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install VAOS and browser-test dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-ui-test.txt
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+      - name: Exercise desktop/mobile UI in isolated local services
+        run: python tools/ci_ui_smoke.py
+        env:
+          VAOS_UI_ARTIFACT_DIR: ${{ runner.temp }}/vaos-ui-smoke
+      - name: Upload responsive UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vaos-ui-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/vaos-ui-smoke/*.png
+          if-no-files-found: warn
