@@ -26,7 +26,7 @@ flowchart LR
 - `main.py` contains the admin FastAPI app, REST handlers, HTML routes, SQLite access, model/dataset preparation, inference utilities, training lifecycle and tunnel commands.
 - `camera_service.py` serves public camera/enrollment pages and frame intake, with internal model-status calls to the admin service.
 - `templates/` and `static/` implement server-rendered pages with browser JavaScript/CSS; the current navigation is repeated in multiple templates rather than imported as a shared component.
-- Existing VAOS tables are created/upgraded by `init_db()` at application import/startup through additive checks. Feature 8 observability uses a separate additive schema ledger (`vaos_schema_migrations`, current version 10) and makes a verified online SQLite backup before changing a non-empty database. No live database was migrated in this work.
+- Existing VAOS tables are created/upgraded by `init_db()` at application import/startup through additive checks. Feature 8 observability uses a separate additive schema ledger (`vaos_schema_migrations`, current version 12) and makes a verified online SQLite backup before changing a non-empty database. No live database was migrated in this work.
 - Model and dataset binaries are local files. Training and imports use in-process threads/locks. A process crash can lose live job state; current code does not provide durable job recovery.
 - The optional MCP bridge calls documented REST endpoints; it is not an independent database or business-logic service and does not start VAOS.
 
