@@ -756,16 +756,21 @@ def counter_fallback_database_path(db_path: str | Path) -> Path:
 
 
 @contextmanager
-def _fallback_connection(path: Path, *, timeout_seconds: float = 1.25) -> Iterator[sqlite3.Connection]:
+def _fallback_connection(path: Path, *, timeout_seconds: float = 0.5) -> Iterator[sqlite3.Connection]:
     with _connection(path, timeout_seconds=timeout_seconds) as db:
         db.execute("PRAGMA synchronous=FULL")
         page_size = max(1, int(db.execute("PRAGMA page_size").fetchone()[0]))
         configured_page_limit = max(1, FALLBACK_COUNTER_MAX_BYTES // page_size)
-        page_limit = int(db.execute(f"PRAGMA max_page_count={configured_page_limit}").fetchone()[0])
         page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
-        if page_limit > configured_page_limit or page_count > configured_page_limit:
+        if page_count > configured_page_limit:
             raise RuntimeError("The VAOS observability fallback queue exceeded its SQLite page limit.")
         yield db
+        # Enforce the configured storage cap within the write transaction. The
+        # old per-connection PRAGMA max_page_count write contended with every
+        # fallback writer and could exceed the intended bounded lock wait.
+        page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
+        if page_count > configured_page_limit:
+            raise RuntimeError("The VAOS observability fallback queue exceeded its SQLite page limit.")
 
 
 def initialize_counter_fallback_store(db_path: str | Path) -> Path:

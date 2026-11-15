@@ -1189,6 +1189,29 @@ print("VAOS_RESTORE_STATE=" + json.dumps(state, sort_keys=True))
         self.assertLessEqual(sum(path.stat().st_size for path in fallback.parent.iterdir() if path.is_file()), store.FALLBACK_COUNTER_MAX_BYTES)
         self.assertEqual(overview(self.database)["kpis"]["api_requests"]["value"], 80)
 
+    def test_fallback_write_rolls_back_when_configured_page_cap_is_exceeded(self):
+        initialize_database(self.database)
+        store.initialize_counter_fallback_store(self.database)
+        fallback = store.counter_fallback_database_path(self.database)
+        with closing(sqlite3.connect(fallback)) as db:
+            page_size = int(db.execute("PRAGMA page_size").fetchone()[0])
+            initial_pages = int(db.execute("PRAGMA page_count").fetchone()[0])
+
+        with patch.object(store, "FALLBACK_COUNTER_MAX_BYTES", page_size * initial_pages):
+            with self.assertRaisesRegex(RuntimeError, "exceeded its SQLite page limit"):
+                for index in range(100):
+                    store.buffer_counter_fallback(
+                        self.database,
+                        metric_key="api.requests",
+                        dimensions={"route": f"/api/v1/page-cap-{index:03d}-" + ("x" * 90), "method": "GET", "status": 200},
+                        timestamp="2026-11-13T13:00:03Z",
+                    )
+
+        with closing(sqlite3.connect(fallback)) as db:
+            page_size = int(db.execute("PRAGMA page_size").fetchone()[0])
+            page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
+        self.assertLessEqual(page_size * page_count, page_size * initial_pages)
+
     def test_fallback_sidecar_busy_wait_is_bounded(self):
         initialize_database(self.database)
         store.initialize_counter_fallback_store(self.database)
