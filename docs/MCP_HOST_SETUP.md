@@ -6,7 +6,7 @@ This guide is for an administrator connecting an AI agent that supports local MC
 
 | Host / environment | Status |
 | --- | --- |
-| Official MCP Python SDK v2.3 `Client` using stdio | Passed locally on Windows/Python 3.12 against a synthetic loopback API fixture: the test launches `mcp_server.py` as a real subprocess, discovers tools/resources, reads policy, calls health, and checks token forwarding and argument-free telemetry. The separate GitHub Actions matrix is configured for Windows, macOS and Ubuntu but has not run; a green CI result is required before marking those runner combinations verified. |
+| Official MCP Python SDK v2.3 `Client` using stdio | Passed in [CI run 43766504519](https://github.com/indipranisha/VAOS/actions/runs/43766504519) on Windows/macOS/Ubuntu with Python 3.12 against a synthetic loopback API fixture: the test launches `mcp_server.py` as a real subprocess, discovers tools/resources, reads policy, calls health, and checks token forwarding and argument-free telemetry. |
 | Branded desktop/editor agent hosts | Not independently certified in this repository. Use the host's local stdio-server configuration and secret-storage guidance; a generic example appears below. Host-specific UI, config location and secret handling vary by product and version. |
 | Remote/public MCP endpoint | Not provided. The VAOS bridge is local stdio only. Do not expose the process or its token through a public tunnel. |
 
@@ -95,4 +95,4 @@ python -m pip install -r requirements-mcp.txt
 python -m unittest discover -s tests -p "test_mcp_stdio_host.py" -v
 ```
 
-The test uses a randomly assigned loopback port, a temporary telemetry database and synthetic API responses. It never reads the user's `data` folder or authenticates to a live VAOS service. The main dependency-free test suite skips this optional host integration unless the SDK is installed. CI runs the test on Windows, macOS and Ubuntu; actual host runners and their logs determine the final verified matrix.
+The test uses a randomly assigned loopback port, a temporary telemetry database and synthetic API responses. It never reads the user's `data` folder or authenticates to a live VAOS service. The main dependency-free test suite skips this optional host integration unless the SDK is installed. The cross-OS CI evidence verifies the MCP protocol/client boundary; it does not certify a branded desktop/editor host UI or the Settings-to-live-token approval workflow.
