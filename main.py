@@ -19,7 +19,6 @@ import sys
 import threading
 import time
 import hashlib
-import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.request
 import zipfile
@@ -42,7 +41,9 @@ import observability_reports
 import observability_siem
 from project_bundles import BundleError, build_bundle, inspect_bundle
 from project_metadata import PROJECT_METADATA
+from safe_http import open_without_redirect
 from runtime_compat import available_cpu_threads, default_datasets_dir, mps_is_available, resolve_inference_backend, resolve_training_device, training_resource_profile
+from safe_xml import UnsafeXmlError, parse_untrusted_xml
 from tracking_rules import evaluate_rules, validate_rule
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -294,6 +295,8 @@ ML_MODEL_SOURCES_DIR = ML_DATA_DIR / "model_sources"
 ML_MODEL_SOURCES_DIR.mkdir(parents=True, exist_ok=True)
 HF_YOLO_REPO_ID = "Ultralytics/YOLO26"
 HF_YOLO_FILES = {f"yolo26{size}.pt" for size in "nsmlx"}
+UVH26_DATASET_REPO_ID = "iisc-aim/UVH-26"
+UVH26_DATASET_REVISION = "59f82c57821e8a54dc40bc1f42e83909dbad0b70"
 ML_DATASETS_DIR = ML_DATA_DIR / "public_datasets"
 ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
 PROJECT_BUNDLE_DIR = DATA_DIR / "projects"
@@ -3041,7 +3044,7 @@ def diagnostics(_: str = Depends(require_admin)):
             headers={"X-VAOS-Internal-Token": internal_token},
         )
         try:
-            with urllib.request.urlopen(request, timeout=0.8) as response:
+            with open_without_redirect(request, timeout=0.8) as response:
                 worker_status = json.loads(response.read().decode("utf-8"))
             if isinstance(worker_status, dict) and isinstance(worker_status.get("models"), list):
                 runtime = worker_status
@@ -3089,7 +3092,7 @@ def hardware_intelligence(_: str = Depends(require_admin)) -> dict[str, Any]:
             headers={"X-VAOS-Internal-Token": internal_token},
         )
         try:
-            with urllib.request.urlopen(request, timeout=0.8) as response:
+            with open_without_redirect(request, timeout=0.8) as response:
                 worker_status = json.loads(response.read().decode("utf-8"))
             if isinstance(worker_status, dict) and isinstance(worker_status.get("models"), list):
                 runtime = worker_status
@@ -4895,7 +4898,7 @@ def prepare_uvh26_dataset() -> None:
 
             def download_uvh() -> None:
                 try:
-                    snapshot_download(repo_id="iisc-aim/UVH-26", repo_type="dataset", local_dir=str(local_dir), allow_patterns=allowed_patterns, max_workers=4)
+                    snapshot_download(repo_id=UVH26_DATASET_REPO_ID, repo_type="dataset", revision=UVH26_DATASET_REVISION, local_dir=str(local_dir), allow_patterns=allowed_patterns, max_workers=4)
                 except BaseException as exc:
                     download_error.append(exc)
                 finally:
@@ -5124,7 +5127,7 @@ def prepare_kaggle_auto_dataset() -> None:
         rows: list[tuple[Path, str, list[tuple[float, float, float, float]]]] = []
         for index, xml_path in enumerate(xml_files, start=1):
             try:
-                annotation = ET.parse(xml_path).getroot()
+                annotation = parse_untrusted_xml(xml_path)
                 filename = Path((annotation.findtext("filename") or "").strip()).name
                 image_path = images_by_name.get(filename.casefold())
                 if not filename or image_path is None:
@@ -5135,7 +5138,7 @@ def prepare_kaggle_auto_dataset() -> None:
                 width, height = int(size.findtext("width")), int(size.findtext("height"))
             except RuntimeError:
                 raise
-            except (ET.ParseError, AttributeError, TypeError, ValueError) as exc:
+            except (UnsafeXmlError, AttributeError, TypeError, ValueError) as exc:
                 raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} is malformed: {exc}") from exc
             if width <= 0 or height <= 0:
                 raise RuntimeError(f"Kaggle Auto annotation {xml_path.name} has invalid image dimensions.")
@@ -5392,7 +5395,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
     if internal_token:
         request = urllib.request.Request(f"{CAMERA_INTERNAL_URL}/internal/model-status", headers={"X-VAOS-Internal-Token": internal_token})
         try:
-            with urllib.request.urlopen(request, timeout=1.0) as response:
+            with open_without_redirect(request, timeout=1.0) as response:
                 worker = json.loads(response.read().decode("utf-8"))
             object_model = next((item for item in worker.get("models", []) if item.get("name") == "yolo26m"), {})
             live_model = {"available": True, "loaded": bool(worker.get("object_model_loaded")), "custom_model_active": bool(worker.get("custom_model_active")), "path": object_model.get("path", ""), "classes": object_model.get("classes", []), "device": worker.get("device", ""), "error": object_model.get("error")}

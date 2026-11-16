@@ -103,6 +103,7 @@ A face match is a similarity comparison against stored templates, not a probabil
 
 1. Identify the dataset's source, license, label format, allowed use, class mapping, and storage size before importing it.
 2. Use the dataset-preparation workflow to validate and convert source annotations. A “prepared” state means the checks reported by VAOS passed; it does not guarantee annotation quality or legal permission.
+   - The UVH-26 downloader uses a reviewed, fixed Hugging Face dataset revision so a later upstream change cannot silently alter the bytes used for a preparation. Updating that source revision is a deliberate code change and should be followed by a fresh dataset validation.
 3. Review detections and reviewed samples. Correct labels and reject unsuitable images. Keep training and validation data separated to avoid leakage.
 4. Choose a starting detector, dataset(s), epochs and available device in **ML Training**. Read the selected dataset/model names before submitting; the UI should preserve the selection for that run.
 5. Monitor the session's overall progress separately from epoch progress. Record loss and validation metrics per epoch, speed, device and the chosen sources. Stop only through the supported control when needed.
