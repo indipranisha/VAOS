@@ -82,6 +82,7 @@ Turn MCP off in Settings to reject bridge calls, or revoke the API token to imme
 - **The process exits immediately:** install `requirements-mcp.txt` in the exact interpreter used by the host and check the host's MCP server log. Keep standard output reserved for the MCP protocol; diagnostics go to standard error.
 - **401 Unauthorized:** confirm the token is not expired or revoked and belongs in `VAOS_API_TOKEN`.
 - **403 Forbidden:** enable API and MCP, mark the token as MCP-bound, and grant the needed group in both token and Settings policy. New configurations start with Diagnostics only.
+- **A tool reports `{"error": true, "detail": "..."}`:** VAOS rejected the requested capability or input before the action reached the REST API. Show the detail to the user, adjust Settings or correct the input, and retry only if appropriate. For write approval, follow the exact-request approval steps above.
 - **Plain HTTP rejected:** local loopback HTTP is permitted; any non-loopback VAOS origin must use HTTPS.
 - **The host cannot find the bridge:** use absolute command/script paths from the Settings template and verify the host account can read the project and its virtual environment.
 - **A write returns approval-required:** the action did not run. Review it in VAOS Settings and only then retry the identical call with its approval ID.

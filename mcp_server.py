@@ -489,7 +489,21 @@ def _instrument_tool(tool_name: str):
                     except Exception:
                         # Telemetry must never replace a tool's actual result or error.
                         print("VAOS MCP invocation telemetry could not be recorded; the tool result is preserved.", file=sys.stderr)
-        return SERVER.tool()(measured)
+
+        @wraps(function)
+        def mcp_handler(*args, **kwargs):
+            try:
+                return measured(*args, **kwargs)
+            except (PermissionError, ValueError) as exc:
+                # Expected policy/input rejections should be actionable to an
+                # MCP host, not collapsed by the SDK into a generic tool error.
+                # Keep the detail bounded and never include request secrets.
+                return json.dumps({"error": True, "detail": str(exc)[:500]}, ensure_ascii=False)
+
+        SERVER.tool()(mcp_handler)
+        # Keep the Python callable's exception contract for local callers/tests;
+        # only the protocol-facing handler converts expected rejections.
+        return measured
     return register
 
 
