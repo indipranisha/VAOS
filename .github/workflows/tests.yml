@@ -16,8 +16,10 @@ jobs:
         python-version: ['3.12']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
@@ -41,14 +43,21 @@ jobs:
         python-version: ['3.12']
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ matrix.python-version }}
           cache: pip
           cache-dependency-path: requirements-mcp.txt
       - name: Install the optional MCP SDK
         run: python -m pip install -r requirements-mcp.txt
+      - name: Audit installed MCP host dependencies against OSV
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python -m pip install --disable-pip-version-check pip-audit==2.10.1
+          pip-audit --vulnerability-service osv --progress-spinner off
       - name: Exercise the real SDK host and VAOS stdio bridge
         run: python -m unittest discover -s tests -p "test_mcp_stdio_host.py" -v
 
@@ -56,7 +65,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
       - name: Build and smoke-test isolated production admin and camera services
         run: bash tools/ci_container_smoke.sh
 
@@ -64,8 +75,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
         with:
           python-version: '3.12'
           cache: pip
@@ -82,7 +95,7 @@ jobs:
           VAOS_UI_ARTIFACT_DIR: ${{ runner.temp }}/vaos-ui-smoke
       - name: Upload responsive UI screenshots
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: vaos-ui-smoke-${{ github.run_id }}
           path: ${{ runner.temp }}/vaos-ui-smoke/*.png

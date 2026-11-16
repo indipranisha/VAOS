@@ -10,6 +10,7 @@ import threading
 from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from request_limits import RequestBodyLimitMiddleware
 from starlette.concurrency import run_in_threadpool
 
 # Prevent importing the private app from creating or logging its admin secret.
@@ -18,6 +19,7 @@ import main as core
 
 logger = logging.getLogger("vaos.public")
 app = FastAPI(title="VAOS Camera Station", version=core.APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(RequestBodyLimitMiddleware)
 app.mount("/static", StaticFiles(directory=str(core.APP_DIR / "static")), name="static")
 
 _camera_observability_lock = threading.Lock()

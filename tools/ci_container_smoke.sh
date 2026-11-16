@@ -85,4 +85,10 @@ docker exec "$admin_id" python -c 'import json,urllib.request; r=json.load(urlli
 docker exec "$camera_id" python -c 'import json,urllib.request; r=json.load(urllib.request.urlopen("http://127.0.0.1:8001/health", timeout=5)); assert r.get("status")=="ok" and r.get("app")=="vaos-camera", r'
 docker exec "$admin_id" python -c 'import json,os,urllib.request; req=urllib.request.Request("http://vaos-camera:8001/internal/model-status", headers={"X-VAOS-Internal-Token":os.environ["VAOS_INTERNAL_STATUS_TOKEN"]}); r=json.load(urllib.request.urlopen(req, timeout=10)); assert isinstance(r,dict), type(r)'
 
+echo "[container-smoke] auditing the built image's installed Python packages against OSV"
+docker exec "$admin_id" python -m venv /tmp/vaos-security-audit
+docker exec "$admin_id" /tmp/vaos-security-audit/bin/python -m pip install --disable-pip-version-check --no-cache-dir pip-audit==2.10.1
+docker exec "$admin_id" /tmp/vaos-security-audit/bin/python -m pip_audit --path /usr/local/lib/python3.12/site-packages --vulnerability-service osv --progress-spinner off
+docker exec "$admin_id" rm -rf /tmp/vaos-security-audit
+
 echo "Production CPU detector image started both isolated services; imports, admin/camera health and authenticated internal model-status checks passed."

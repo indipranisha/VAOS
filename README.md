@@ -24,15 +24,15 @@ Face templates are sensitive biometric data. Use only with informed consent and 
 
 1. Use Windows 10/11 and Python 3.12.
 2. Start `start_windows.bat` and leave its window open while VAOS is in use.
-3. Open `http://127.0.0.1:8000`. Sign in as `admin`; local setup creates a five-digit password, prints it in the launcher and stores it in `data/admin_password.txt`.
+3. Open `http://127.0.0.1:8000`. Sign in as `admin`; on a fresh data directory VAOS creates a long random password, prints it in the launcher and stores it in `data/admin_password.txt`. Protect that file.
 4. The launcher starts the separate camera service on port 8001 and creates a temporary HTTPS Quick Tunnel for phone camera access. The temporary URL changes when the tunnel is recreated. Keep camera-link tokens private.
 5. Create a camera link or QR code, enroll consenting participants, and use the **ML training** page for sample review and model training.
 
-The Windows launcher installs local dependencies, optional object-detection support and `cloudflared` when needed. First use may download models. Press Enter in the launcher window to stop the services and tunnel.
+The Windows launcher installs local dependencies and optional object-detection support. If `cloudflared` is not installed by the administrator, it downloads the pinned official release and verifies its published SHA-256 before executing it. First use may download models. Press Enter in the launcher window to stop the services and tunnel.
 
 ## Cross-platform support status
 
-The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. Candidate commit `9127524` passed Windows/macOS/Ubuntu contract and MCP stdio checks, an isolated CPU-container build/start smoke, and a limited Chromium desktop/mobile UI smoke in [CI run 43766504519](https://github.com/indipranisha/VAOS/actions/runs/43766504519). No local Mac/Linux device is available for native MPS, CUDA or camera verification. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [tested-versus-planned platform matrix](docs/PLATFORM_SUPPORT.md) for native setup steps and boundaries.
+The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. The latest completed candidate CI at writing is branch commit `4c06c0b` in [run 43799338324](https://github.com/indipranisha/VAOS/actions/runs/43799338324): Windows/macOS/Ubuntu contract and MCP stdio jobs, an isolated CPU-container build/start smoke, and a limited Chromium desktop/mobile UI smoke passed. CI does not certify physical cameras, native MPS/CUDA drivers, or real-device model workloads. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [tested-versus-planned platform matrix](docs/PLATFORM_SUPPORT.md) for setup steps and boundaries.
 
 ## Deploy on a production server
 
@@ -110,3 +110,12 @@ Windows stores files in the project `data` directory by default. Containers set 
 The face pipeline uses OpenCV Zoo YuNet and SFace. Object detection uses the configured Ultralytics YOLO model when optional dependencies are installed. Custom object training uses reviewed samples and datasets that pass VAOS preparation. Labels, class coverage and data quality affect results; more epochs alone do not guarantee better accuracy. Face similarity is not a probability. Do not treat model predictions as validated safety-critical decisions.
 
 YOLO and Ultralytics licensing may impose conditions on redistribution and deployment. Review licenses for all included and downloaded models/packages before commercial use.
+
+## Documentation
+
+- [Installation, upgrade and uninstall guide](docs/INSTALLATION.md)
+- [Complete user manual](docs/COMPLETE_USER_MANUAL.md)
+- [Configuration and environment-variable reference](docs/CONFIGURATION_REFERENCE.md)
+- [Security, privacy and VAPT/stability assessment](docs/SECURITY_PRIVACY.md) · [assessment details](docs/VAPT_STABILITY_1.1.0.md)
+- [API and MCP documentation](docs/API.md) · [MCP guide](docs/MCP.md)
+- [Current release status and staging gates](docs/PROJECT_STATUS.md) · [release-readiness report](docs/RELEASE_READINESS_1.1.0.md)

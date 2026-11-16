@@ -25,7 +25,7 @@ RUN apt-get update \
     && mkdir -p /var/lib/vaos/models /var/lib/vaos/ultralytics \
     && chown -R vaos:vaos /var/lib/vaos
 
-COPY --chown=vaos:vaos main.py camera_service.py check_gpu_runtime.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py observability_store.py observability_reports.py observability_siem.py VAOS_PROJECT_METADATA.json LICENSE CONTRIBUTING.md ./
+COPY --chown=vaos:vaos main.py camera_service.py request_limits.py check_gpu_runtime.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py observability_store.py observability_reports.py observability_siem.py VAOS_PROJECT_METADATA.json LICENSE CONTRIBUTING.md ./
 COPY --chown=vaos:vaos templates ./templates
 COPY --chown=vaos:vaos static ./static
 COPY --chown=vaos:vaos docs ./docs

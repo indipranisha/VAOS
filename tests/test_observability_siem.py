@@ -616,6 +616,26 @@ class ObservabilitySiemTests(unittest.TestCase):
         self.assertEqual(context.server_hostname, "logs.example.com")
         self.assertIsNotNone(tls.payload)
 
+    def test_syslog_tls_close_notify_does_not_wait_for_peer_reply(self):
+        class RawSocket:
+            def close(self): self.closed = True
+        class TlsSocket:
+            def __init__(self): self.payload = None; self.closed = False
+            def settimeout(self, value): self.timeout = value
+            def sendall(self, value): self.payload = value
+            def unwrap(self): raise TimeoutError("peer did not reply to close_notify")
+            def close(self): self.closed = True
+        class Context:
+            def __init__(self, tls): self.tls = tls
+            def wrap_socket(self, raw, server_hostname): return self.tls
+        tls = TlsSocket()
+        with patch.object(siem, "_resolve_public_ip", return_value="203.0.113.5"), \
+                patch.object(siem.socket, "create_connection", return_value=RawSocket()), \
+                patch.object(siem, "_create_tls_context", return_value=Context(tls)):
+            siem._send_syslog_tls("syslog-tls://logs.example.com", {"event_type": "integration.test", "message": "safe"})
+        self.assertIsNotNone(tls.payload)
+        self.assertTrue(tls.closed)
+
     def test_otlp_json_logs_use_otlp_fields_and_optional_bearer_token(self):
         class Response:
             status = 200

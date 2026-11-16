@@ -8,6 +8,8 @@ See [creator and community credits](CREDITS.md) for the creator's role and profi
 
 - [Project overview](PROJECT_OVERVIEW.md)
 - [Installation and upgrade entry point](INSTALLATION.md)
+- [Complete user manual: architecture, operation, data and uninstall](COMPLETE_USER_MANUAL.md)
+- [All environment variables and configuration](CONFIGURATION_REFERENCE.md)
 - [Beginner's quick start](QUICK_START.md)
 - [User guide](user-guide.md)
 - [Administrator guide](ADMIN_GUIDE.md)
@@ -34,6 +36,8 @@ See [creator and community credits](CREDITS.md) for the creator's role and profi
 - [Testing and validation](TESTING.md)
 - [Platform and MCP validation record](validation/platform-mcp.md)
 - [v1.1.0 staging readiness report](RELEASE_READINESS_1.1.0.md)
+- [v1.1.0 VAPT and stability assessment](VAPT_STABILITY_1.1.0.md)
+- [Complete user, installation and configuration guide](COMPLETE_USER_MANUAL.md), [install/uninstall](INSTALLATION.md), and [environment variables](CONFIGURATION_REFERENCE.md)
 - [Feature catalogue](FEATURE_CATALOG.md) and [traceability](TRACEABILITY_MATRIX.md)
 - [Current release status](PROJECT_STATUS.md) and [release notes](../CHANGELOG.md)
 - [License](../LICENSE) and [creator citation](../CITATION.cff)

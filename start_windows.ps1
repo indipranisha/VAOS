@@ -178,12 +178,19 @@ function Wait-ForLocalService([string]$url, [string]$expectedApp, [System.Diagno
 
 try {
   $startupPhase = 'checking Python setup'
+  $createdVenv = $false
   if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
     if (Get-Command py -ErrorAction SilentlyContinue) { & py -3.12 -m venv .venv }
     else { & python -m venv .venv }
     if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 was not found. Install it from https://www.python.org/downloads/ and enable Add Python to PATH.' }
+    $createdVenv = $true
   }
   $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+  if ($createdVenv) {
+    Write-Host 'Updating the Python package installer in the new virtual environment...'
+    & $python -m pip install --disable-pip-version-check --timeout 30 --retries 3 --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw 'The Python package installer could not be updated. Check internet access and try again before installing VAOS packages.' }
+  }
   $startupPhase = 'checking required packages and optional GPU support'
   New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'data') -Force | Out-Null
   $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
@@ -243,23 +250,42 @@ try {
   $startupPhase = 'preparing the temporary camera tunnel'
   $cloudflared = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
   if (-not $cloudflared) { $cloudflared = Get-Command cloudflared -ErrorAction SilentlyContinue }
-  if ($cloudflared) { $cloudflaredPath = $cloudflared.Source }
-  else {
+  if ($cloudflared) {
+    # A system-installed copy is trusted as an administrator-managed dependency.
+    # The copy downloaded into this installation is pinned and hash-verified below.
+    $cloudflaredPath = $cloudflared.Source
+    & $cloudflaredPath version *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'The cloudflared executable found on PATH could not report its version. Install cloudflared from a trusted package source or remove the invalid PATH entry.' }
+  } else {
     $toolsDir = Join-Path $PSScriptRoot 'tools'
     New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null
     $cloudflaredPath = Join-Path $toolsDir 'cloudflared.exe'
+    $cloudflaredVersion = '2026.11.0'
+    # SHA-256 published on the official cloudflare/cloudflared v2026.11.0 release.
+    $cloudflaredSha256 = 'd5c1d82031da6253dcdcff64c944cd0fe063016edeb2e4fd088075fc9bd52d0a'
     $cloudflaredWorks = $false
     if (Test-Path -LiteralPath $cloudflaredPath) {
-      & $cloudflaredPath version *> $null
-      $cloudflaredWorks = $LASTEXITCODE -eq 0
+      $existingHash = (Get-FileHash -LiteralPath $cloudflaredPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($existingHash -eq $cloudflaredSha256) {
+        $existingVersion = (& $cloudflaredPath version 2>&1 | Out-String)
+        $cloudflaredWorks = $LASTEXITCODE -eq 0 -and $existingVersion.Contains($cloudflaredVersion)
+      }
     }
     if (-not $cloudflaredWorks) {
-      Write-Host 'Downloading cloudflared from the official Cloudflare Windows release...'
+      Write-Host "Downloading cloudflared $cloudflaredVersion from its official pinned Windows release..."
       $cloudflaredTemp = "$cloudflaredPath.download-$PID"
-      Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile $cloudflaredTemp
-      if ((Get-Item -LiteralPath $cloudflaredTemp).Length -lt 1000000) { Remove-Item -LiteralPath $cloudflaredTemp -Force -ErrorAction SilentlyContinue; throw 'The cloudflared download was incomplete. Check internet access and run this file again.' }
-      & $cloudflaredTemp version *> $null
-      if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $cloudflaredTemp -Force -ErrorAction SilentlyContinue; throw 'The downloaded cloudflared file is not a valid Windows executable.' }
+      try {
+        $releaseUrl = "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe"
+        Invoke-WebRequest -UseBasicParsing -Uri $releaseUrl -OutFile $cloudflaredTemp
+        if ((Get-Item -LiteralPath $cloudflaredTemp).Length -lt 1000000) { throw 'The cloudflared download was incomplete.' }
+        $downloadHash = (Get-FileHash -LiteralPath $cloudflaredTemp -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($downloadHash -ne $cloudflaredSha256) { throw 'The cloudflared download did not match the SHA-256 published by its official release.' }
+        $downloadedVersion = (& $cloudflaredTemp version 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or -not $downloadedVersion.Contains($cloudflaredVersion)) { throw 'The downloaded cloudflared file did not report the pinned release version.' }
+      } catch {
+        Remove-Item -LiteralPath $cloudflaredTemp -Force -ErrorAction SilentlyContinue
+        throw "Could not verify the pinned cloudflared release. $($_.Exception.Message)"
+      }
       Move-Item -LiteralPath $cloudflaredTemp -Destination $cloudflaredPath -Force
     }
   }

@@ -51,6 +51,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicC
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
+from request_limits import RequestBodyLimitMiddleware
 from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 APP_DIR = Path(__file__).resolve().parent
@@ -132,6 +133,7 @@ MAX_ML_SAMPLES = 50_000
 TRAINING_EPOCH_OPTIONS = (10, 15, 20, 25, 30, 35, 40, 45, 50)
 
 app = FastAPI(title="VAOS (Video Analytics - Operating System)", version=APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(RequestBodyLimitMiddleware)
 
 
 class TrackingInputModel(BaseModel):

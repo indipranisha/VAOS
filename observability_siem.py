@@ -910,9 +910,18 @@ def _send_syslog_tls(endpoint: str, payload: dict[str, Any], *, event_format: st
         secure = context.wrap_socket(raw, server_hostname=host)
         secure.settimeout(timeout)
         secure.sendall(_syslog_message(payload, event_format))
-        # RFC 5425 requires the sender to close the TLS session when finished.
-        raw = secure.unwrap()
-        secure = None
+        # RFC 5425 requires a sender close_notify, but explicitly permits the
+        # sender not to wait for the receiver's reply. SSLSocket.unwrap() sends
+        # our close_notify and then waits for the peer; that wait is best effort
+        # because some valid syslog receivers close TCP without replying.
+        try:
+            raw = secure.unwrap()
+            secure = None
+        except TimeoutError:
+            logger.debug("Syslog TLS receiver did not reply to close_notify; closing after the outbound frame.")
+            secure.close()
+            secure = None
+            raw = None
     except (OSError, ssl.SSLError) as exc:
         raise RuntimeError("syslog_tls_delivery_failed") from exc
     finally:
