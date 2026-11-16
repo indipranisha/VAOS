@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>VAOS · Hardware Intelligence</title>
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+  <style>
+    .hardware-page{max-width:1500px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
+    .hardware-head,.hardware-head-actions,.hardware-card-head,.hardware-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+    .hardware-head{margin-bottom:18px}.hardware-head h1{margin:.2rem 0}.hardware-head p{max-width:800px}
+    .hardware-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:16px 0}
+    .hardware-value{font-size:1.5rem;font-weight:750;display:block;margin:8px 0}.hardware-card small{display:block;line-height:1.5}
+    .hardware-gpus{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
+    .hardware-recommendations{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+    .hardware-recommendations article{border:1px solid var(--line,#dce2ee);border-radius:12px;padding:14px;background:var(--surface,#fff)}
+    .hardware-recommendations p{margin:8px 0}.hardware-fact-list{display:grid;grid-template-columns:minmax(130px,220px) 1fr;gap:8px 16px}.hardware-fact-list dt{font-weight:650}.hardware-fact-list dd{margin:0;overflow-wrap:anywhere}
+    .hardware-status-line{min-height:24px}.hardware-warning{border-left:4px solid #d69e32}.hardware-muted{color:var(--muted,#667085)}
+    @media(max-width:1000px){.hardware-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.hardware-recommendations{grid-template-columns:1fr 1fr}}
+    @media(max-width:650px){.hardware-grid,.hardware-recommendations{grid-template-columns:1fr}.hardware-fact-list{grid-template-columns:1fr;gap:3px}.hardware-fact-list dd{margin-bottom:8px}}
+  </style>
+</head>
+<body class="training-shell">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">SYSTEM INSIGHTS</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
+      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link active" href="/hardware" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
+      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
+      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
+      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local diagnostics</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+  <main class="page-wrap hardware-page">
+    <section class="hardware-head"><div><p class="eyebrow">SYSTEM INSIGHTS / LOCAL DEVICE</p><h1>Hardware Intelligence</h1><p class="lead">See measured CPU, memory, storage, GPU and model-runtime details. Recommendations are cautious estimates and never change your settings.</p></div><div class="hardware-head-actions"><button id="hardware-refresh" class="button button-secondary" type="button">Refresh now</button><button id="hardware-export" class="button button-secondary" type="button">Download diagnostics</button><a class="button button-secondary" href="/statistics?report=hardware-energy">Hardware report</a><a class="button button-secondary" href="/settings">Settings</a></div></section>
+    <div id="hardware-message" class="result-box hardware-status-line" role="status" aria-live="polite">Loading local hardware facts…</div>
+    <section class="hardware-grid" aria-label="Hardware summary">
+      <article class="panel hardware-card"><div class="hardware-card-head"><span class="metric-label">PROCESSOR</span><span class="stat-orb" aria-hidden="true">◉</span></div><strong id="hardware-cpu" class="hardware-value">—</strong><small id="hardware-cpu-detail">Logical CPU threads</small></article>
+      <article class="panel hardware-card"><div class="hardware-card-head"><span class="metric-label">SYSTEM MEMORY</span><span class="stat-orb" aria-hidden="true">▤</span></div><strong id="hardware-ram" class="hardware-value">—</strong><small id="hardware-ram-detail">Used / total memory</small></article>
+      <article class="panel hardware-card"><div class="hardware-card-head"><span class="metric-label">DATA STORAGE</span><span class="stat-orb" aria-hidden="true">▣</span></div><strong id="hardware-storage" class="hardware-value">—</strong><small id="hardware-storage-detail">Measured on VAOS data volume</small></article>
+      <article class="panel hardware-card"><div class="hardware-card-head"><span class="metric-label">INFERENCE ACCELERATOR</span><span id="hardware-cuda-chip" class="subtle-tag">Checking</span></div><strong id="hardware-cuda" class="hardware-value">—</strong><small id="hardware-cuda-detail">CPU, NVIDIA CUDA, and Apple MPS are reported separately</small></article>
+    </section>
+    <section class="panel section-panel">
+      <div class="section-title-row"><div><p class="eyebrow">MEASURED DEVICE INVENTORY</p><h2>Available GPUs</h2></div><span id="hardware-gpu-count" class="subtle-tag">—</span></div>
+      <div id="hardware-gpus" class="hardware-gpus"><div class="empty-state">Reading GPU inventory…</div></div>
+      <p class="helper">NVIDIA devices and their telemetry are detected through NVIDIA tooling. Apple MPS availability is checked separately; Apple GPU utilization is not measured here. A detected accelerator does not prove that training or live inference is using it.</p>
+    </section>
+    <section class="panel section-panel">
+      <div class="section-title-row"><div><p class="eyebrow">COMPATIBILITY</p><h2>What VAOS can confirm</h2></div><span id="hardware-training-chip" class="subtle-tag">Checking training</span></div>
+      <dl id="hardware-facts" class="hardware-fact-list"><dt>Runtime</dt><dd>Waiting for hardware facts</dd></dl>
+    </section>
+    <section class="panel section-panel">
+      <div class="section-title-row"><div><p class="eyebrow">GUIDANCE · ESTIMATE ONLY</p><h2>Suggested starting settings</h2></div><span class="subtle-tag">Not applied automatically</span></div>
+      <div id="hardware-warnings" class="notice notice-warn hidden"></div>
+      <div class="hardware-recommendations">
+        <article><span class="metric-label">IMAGE SIZE</span><strong id="hardware-image-size" class="hardware-value">—</strong><p id="hardware-image-note" class="helper">—</p></article>
+        <article><span class="metric-label">BATCH AND DATA WORKERS</span><strong id="hardware-batch" class="hardware-value">—</strong><p id="hardware-workers" class="helper">—</p></article>
+        <article><span class="metric-label">WORKLOAD</span><strong class="hardware-value">Read before running</strong><p id="hardware-workload" class="helper">—</p></article>
+      </div>
+      <p id="hardware-limitations" class="helper hardware-muted"></p>
+    </section>
+    <p class="helper">These values are for your current local machine. VAOS does not install drivers, change power settings, run a benchmark, or start another training job from this page. <a href="/api-explorer">Explore the hardware API</a> · <a href="/docs/HARDWARE.md" target="_blank" rel="noopener noreferrer">Hardware guide</a>.</p>
+      {% include "_creator_attribution.html" %}
+  </main>
+  <script src="/static/theme.js?v=vaos-1.1.0"></script>
+  <script>
+  (()=>{
+    'use strict';
+    const $=id=>document.getElementById(id);let lastReport=null,refreshBusy=false;
+    const esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+    const fmt=value=>value===null||value===undefined||!Number.isFinite(Number(value))?'Not measured':Number(value).toLocaleString(undefined,{maximumFractionDigits:1});
+    function render(report){lastReport=report;const facts=report.facts||{},compat=report.compatibility||{},rec=report.recommendations||{},storage=facts.storage||{},gpus=Array.isArray(facts.gpus)?facts.gpus:[];
+      $('hardware-cpu').textContent=`${fmt(facts.cpu_logical_threads)} threads`;$('hardware-cpu-detail').textContent=`${facts.operating_system||'Unknown OS'} ${facts.os_release||''} · ${facts.architecture||'Unknown architecture'}`;
+      $('hardware-ram').textContent=facts.ram_percent===null?'Not measured':`${fmt(facts.ram_percent)}% used`;$('hardware-ram-detail').textContent=`${fmt(facts.ram_used_gb)} / ${fmt(facts.ram_total_gb)} GB`;
+      $('hardware-storage').textContent=storage.free_gb===null?'Not measured':`${fmt(storage.free_gb)} GB free`;$('hardware-storage-detail').textContent=`${storage.volume||'Unknown volume'} · ${fmt(storage.total_gb)} GB total · VAOS data volume`;
+      const backend=compat.inference_backend||compat.cuda_inference_status||'unknown',cudaLabel=backend==='cuda'?'NVIDIA CUDA active':backend==='mps'?'Apple MPS active':backend==='cpu'?'CPU active':'Not verified';$('hardware-cuda').textContent=cudaLabel;$('hardware-cuda-chip').textContent=compat.nvidia_device_detected?'NVIDIA detected':compat.mps_device_detected?'Apple MPS available':'CPU available';$('hardware-cuda-detail').textContent=compat.cuda_inference_explanation||'Inference runtime status unavailable.';
+      $('hardware-gpu-count').textContent=`${gpus.length} detected`;$('hardware-gpus').innerHTML=gpus.length?gpus.map(gpu=>{const use=Number(gpu.utilization_percent),bar=Number.isFinite(use)?Math.max(0,Math.min(100,use)):0;return `<article class="panel hardware-card"><div class="hardware-card-head"><strong>${esc(gpu.name||'NVIDIA GPU')}</strong><span class="subtle-tag">${gpu.index===null?'Index unknown':`GPU ${esc(gpu.index)}`}</span></div><div class="meter-track" aria-label="GPU utilization"><span class="meter-fill meter-peach" style="width:${bar}%"></span></div><dl class="hardware-fact-list"><dt>Utilisation</dt><dd>${fmt(gpu.utilization_percent)}${gpu.utilization_percent===null?'':'%'}</dd><dt>VRAM</dt><dd>${fmt(gpu.memory_used_mb)} / ${fmt(gpu.memory_total_mb)} MB</dd><dt>Temperature</dt><dd>${fmt(gpu.temperature_c)}${gpu.temperature_c===null?'':' °C'}</dd><dt>Board power</dt><dd>${fmt(gpu.power_draw_w)}${gpu.power_draw_w===null?'':' W'}</dd></dl><small class="helper">${gpu.telemetry_measured?'NVIDIA telemetry measured':'Inventory only · current telemetry unavailable'}</small></article>`;}).join(''):'<div class="empty-state">No NVIDIA GPU telemetry is available. CPU operation remains supported.</div>';
+      const training=compat.training_status||'unknown',cudaRuntime=compat.cuda_runtime_status==='available'?'CUDA runtime confirmed':compat.cuda_runtime_status==='unavailable'?'CUDA runtime unavailable':'CUDA runtime not verified',mpsStatus=compat.mps_inference_status==='active'?'Apple MPS active':compat.mps_inference_status==='available_not_active'?'Apple MPS available, not active':'Apple MPS unavailable';$('hardware-training-chip').textContent=`Training · ${training}`;$('hardware-facts').innerHTML=`<dt>Operating system</dt><dd>${esc(facts.operating_system||'Unknown')} ${esc(facts.os_release||'')}</dd><dt>Python</dt><dd>${esc(facts.python_version||'Unknown')}</dd><dt>NVIDIA device</dt><dd>${compat.nvidia_device_detected?'Detected by system inventory':'Not detected'}</dd><dt>Apple MPS</dt><dd>${esc(mpsStatus)} · utilization is not measured here</dd><dt>PyTorch / CUDA runtime</dt><dd>${esc(cudaRuntime)} · this build does not run a CUDA benchmark from this page</dd><dt>Live object inference</dt><dd>${esc(cudaLabel)} · ${esc(compat.cuda_inference_explanation||'')}</dd><dt>Training job</dt><dd>${esc(training)}${training==='running'||training==='preparing'||training==='stopping'?` · ${esc(compat.training_device||'device unreported')}`:''}</dd><dt>Sample timestamp</dt><dd>${esc(report.observed_at||'Unknown')}</dd>`;
+      $('hardware-image-size').textContent=rec.image_size_pixels===null?'Do not start a second run':`${fmt(rec.image_size_pixels)} px`;$('hardware-image-note').textContent=rec.gpu_guidance||'No guidance available.';$('hardware-batch').textContent=esc(rec.batch_size||'Not available');$('hardware-workers').textContent=`Suggested data workers: ${fmt(rec.data_workers)} · estimate only.`;$('hardware-workload').textContent=training==='running'||training==='preparing'||training==='stopping'?'Training/preparation is active. Avoid another GPU workload.':'No VAOS training job is reported active.';$('hardware-workload').classList.toggle('error',!!(rec.workload_guidance||'').toLowerCase().includes('do not'));
+      const warnings=[rec.workload_guidance,rec.memory_guidance].filter(Boolean);const warning=$('hardware-warnings');warning.classList.toggle('hidden',!warnings.length);warning.innerHTML=warnings.map(text=>`<p>${esc(text)}</p>`).join('');$('hardware-limitations').textContent=rec.limitations||'No compatibility benchmark has been run.';
+      $('hardware-message').textContent=`Refreshed ${new Date(report.observed_at||Date.now()).toLocaleTimeString()} · measurements only; no system settings changed.`;
+    }
+    async function refresh(){if(refreshBusy)return;refreshBusy=true;$('hardware-refresh').disabled=true;try{const response=await fetch('/api/admin/hardware',{credentials:'same-origin',cache:'no-store'});if(!response.ok)throw Error(`Hardware report returned HTTP ${response.status}. Sign in and try again.`);render(await response.json());$('hardware-message').classList.remove('error');}catch(error){$('hardware-message').textContent=error.message||'Hardware information could not be loaded.';$('hardware-message').classList.add('error');}finally{$('hardware-refresh').disabled=false;refreshBusy=false;}}
+    $('hardware-refresh').addEventListener('click',refresh);$('hardware-export').addEventListener('click',()=>{if(!lastReport)return;const blob=new Blob([JSON.stringify(lastReport,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='vaos-hardware-diagnostics.json';link.click();URL.revokeObjectURL(url);});refresh();setInterval(refresh,10000);
+  })();
+  </script>
+</body>
+</html>

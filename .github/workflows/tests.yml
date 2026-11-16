@@ -1,0 +1,104 @@
+name: VAOS checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-unit-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-latest now maps to arm64; use the supported Intel label for
+        # reliable macOS OS-level contract coverage during arm64 capacity limits.
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile application modules
+        run: python -m py_compile main.py camera_service.py request_limits.py safe_http.py safe_xml.py mcp_server.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py
+      - name: Run isolated API/security contract tests
+        run: python -m unittest discover -s tests -v
+      - name: Install CLI package and verify command entry point
+        run: |
+          python -m pip install --no-deps .
+          vaos --help
+
+  mcp-stdio-host-integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-mcp.txt
+      - name: Install the optional MCP SDK
+        run: python -m pip install -r requirements-mcp.txt
+      - name: Audit installed MCP host dependencies against OSV
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          python -m pip install --disable-pip-version-check pip-audit==2.10.1
+          pip-audit --vulnerability-service osv --progress-spinner off
+      - name: Exercise the real SDK host and VAOS stdio bridge
+        run: python -m unittest discover -s tests -p "test_mcp_stdio_host.py" -v
+
+  production-cpu-container-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Build and smoke-test isolated production admin and camera services
+        run: bash tools/ci_container_smoke.sh
+
+  browser-ui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install VAOS and browser-test dependencies
+        run: |
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -r requirements-ui-test.txt
+      - name: Install Chromium for Playwright
+        run: python -m playwright install --with-deps chromium
+      - name: Exercise desktop/mobile UI in isolated local services
+        run: python tools/ci_ui_smoke.py
+        env:
+          VAOS_UI_ARTIFACT_DIR: ${{ runner.temp }}/vaos-ui-smoke
+      - name: Upload responsive UI screenshots
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vaos-ui-smoke-${{ github.run_id }}
+          path: ${{ runner.temp }}/vaos-ui-smoke/*.png
+          if-no-files-found: warn

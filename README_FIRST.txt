@@ -1,16 +1,12 @@
-START HERE
-==========
-VAOS — Video Analytics - Operating System
+VAOS 1.1.0 — Video Analytics Operating System
 
-1. Extract the folder.
-2. Install Python 3.12 if needed (python.org; enable Add Python to PATH).
-3. Double-click start_windows.bat.
-4. Open http://127.0.0.1:8000 on the PC (private dashboard).
-5. Use username admin. The five-digit numeric password is printed in the terminal, saved in data\admin_password.txt, and shown at the top of the private dashboard after sign-in.
-6. The first setup installs the NVIDIA CUDA runtime on GPU systems and downloads YOLO26m automatically when object detection first runs. The dashboard can enroll from a photo or its live camera.
-7. The launcher creates the HTTPS camera-only tunnel and opens the dashboard. Keep the launcher window open; press Enter there to stop all services.
-8. The dashboard shows camera health, model status, object activity, enrolled profiles, and sightings. Object detection uses NVIDIA GPU 0 when available, with CPU fallback.
-9. Read README.md for full setup and privacy notes.
+Windows quick start:
+1. Use Windows 10/11 and Python 3.12.
+2. Double-click start_windows.bat and leave the terminal open.
+3. Open http://127.0.0.1:8000. Sign in as admin using the generated password printed by the launcher. The local password is also stored in data\admin_password.txt; protect that file.
+4. The launcher starts the camera service on port 8001 and may start a temporary HTTPS tunnel for camera-only links. It is not an admin tunnel. Treat camera URLs as secrets.
+5. Press Enter in the launcher terminal to stop its services and tunnel.
 
-This is an experimental POC. Use face matching only with informed permission and appropriate authorisation.
+Start with README.md, then follow docs/INSTALLATION.md for installation and updates, docs/COMPLETE_USER_MANUAL.md for application workflows and uninstall, docs/CONFIGURATION_REFERENCE.md for environment variables, and docs/PROJECT_STATUS.md for tested limitations and release status.
 
+Face photos and templates are sensitive biometric data. Obtain informed consent and protect data and backups. See docs/SECURITY_PRIVACY.md before enrollment or remote access.

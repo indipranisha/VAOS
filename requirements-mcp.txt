@@ -1,0 +1,5 @@
+# Optional only: the main VAOS application does not import or require MCP.
+# Keep the optional stdio bridge on the SDK minor version exercised by the
+# real-host integration matrix. Upgrade this bound only with a green matrix.
+# MCP Python SDK 2.3 supports Python 3.10+; this app's Windows setup uses 3.12.
+mcp>=2.3,<2.4

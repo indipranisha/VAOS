@@ -1,10 +1,10 @@
-# Vibe-coding guide for this POC
+# AI-assisted development guide
 
 This project is intentionally small enough to learn by changing one feature at a time. Use ChatGPT, Codex, Cursor, or another coding assistant with the project folder open.
 
 ## First prompt to give your coding assistant
 
-> Read `README.md`, `main.py`, `templates/index.html`, `templates/camera.html`, and `static/style.css` before changing anything. This is a beginner-owned local-first proof of concept. Explain the current architecture to me in plain language. Keep face processing on the host PC, use only explicitly enrolled participants who have given permission, never retain camera frames or unknown-face templates, and do not add external AI APIs by default. Do not rewrite the whole app. First list the smallest useful next improvements, with their files and how I can test each one. Make changes only after I select an improvement. Preserve the current startup workflow and update the README when behavior changes.
+> Read `README.md`, `main.py`, `templates/index.html`, `templates/camera.html`, and `static/style.css` before changing anything. This is a local-first vision application. Explain its current architecture in plain language. Keep face processing on the host PC, use only explicitly enrolled participants who have given permission, never retain camera frames or unknown-face templates, and do not add external AI APIs by default. Avoid replacing working functionality. First list the smallest useful next improvements, with their files and how I can test each one. Make changes only after I select an improvement. Preserve the current startup workflow and update the README when behavior changes.
 
 ## Recommended iteration order
 

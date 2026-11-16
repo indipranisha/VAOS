@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>VAOS · Tracking &amp; Event Rules</title>
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
+  <style>
+    .tracking-page{max-width:1500px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
+    .tracking-head,.tracking-head-actions,.tracking-card-head,.tracking-toolbar,.tracking-rule-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+    .tracking-head{margin-bottom:18px}.tracking-head h1{margin:.2rem 0}.tracking-head p{max-width:850px}
+    .tracking-grid{display:grid;grid-template-columns:minmax(340px,.85fr) minmax(0,1.3fr);gap:16px;align-items:start}
+    .tracking-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}.tracking-form label{display:grid;gap:5px}.tracking-form label.full{grid-column:1/-1}
+    .tracking-roi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.tracking-roi label{font-size:.82rem}
+    .tracking-rule-list,.tracking-events{display:grid;gap:10px}.tracking-rule,.tracking-event{padding:13px;border:1px solid var(--line,#dce2ee);border-radius:12px;background:var(--surface,#fff)}
+    .tracking-rule h3,.tracking-event h3{margin:0;font-size:1rem}.tracking-rule p,.tracking-event p{margin:6px 0}.tracking-meta{font-size:.83rem;color:var(--muted,#667085)}
+    .tracking-events{max-height:620px;overflow:auto}.tracking-rule-actions{justify-content:flex-end;margin-top:9px}.tracking-status{min-height:24px}
+    @media(max-width:980px){.tracking-grid{grid-template-columns:1fr}}
+    @media(max-width:560px){.tracking-form{grid-template-columns:1fr}.tracking-form label.full{grid-column:auto}.tracking-roi{grid-template-columns:1fr 1fr}}
+  </style>
+</head>
+<body class="training-shell">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">LIVE SYSTEM</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
+      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
+      <a class="nav-link active" href="/tracking" aria-current="page"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
+      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
+      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local object events</span><span class="version-chip">v{{ version }}</span></div></div>
+  </header>
+  <main class="page-wrap tracking-page">
+    <section class="tracking-head"><div><p class="eyebrow">LIVE SYSTEM / CAMERA EVENTS</p><h1>Tracking &amp; Event Rules</h1><p class="lead">Create camera rules for repeated object counts or a tracked object remaining inside a region. VAOS reuses its current detector and short-term tracker; track continuity is approximate and is not identity recognition.</p></div><div class="tracking-head-actions"><button id="tracking-refresh" class="button button-secondary" type="button">Refresh</button><a class="button button-secondary" href="/statistics?report=tracking-events">Event report</a><a class="button button-secondary" href="/api-explorer">API Explorer</a></div></section>
+    <div id="tracking-message" class="result-box tracking-status" role="status" aria-live="polite">Loading cameras and rules…</div>
+    <div class="tracking-grid">
+      <section class="panel section-panel">
+        <div class="section-title-row"><div><p class="eyebrow">RULE BUILDER</p><h2 id="tracking-form-title">Create a camera rule</h2></div><span class="subtle-tag">Camera detections only</span></div>
+        <p class="helper">Use an object label the active detector produces, such as person, truck, bus, car, or motorcycle. The region uses percentages of the camera frame.</p>
+        <form id="tracking-form" class="tracking-form">
+          <label class="full">Rule name<input id="tracking-name" maxlength="80" required placeholder="Example: people near the entry"></label>
+          <label>Object label<input id="tracking-class" maxlength="80" required list="tracking-known-classes" placeholder="person"><datalist id="tracking-known-classes"></datalist></label>
+          <label>Camera<select id="tracking-camera"><option value="">All active cameras</option></select></label>
+          <label>Rule type<select id="tracking-type"><option value="count_in_region">Object count in region</option><option value="dwell_in_region">Dwell time in region</option></select></label>
+          <label>Minimum confidence<select id="tracking-confidence"><option value="0.25">25%</option><option value="0.35" selected>35%</option><option value="0.5">50%</option><option value="0.7">70%</option></select></label>
+          <label id="tracking-count-field">Objects required<input id="tracking-count" type="number" min="1" max="100" value="2"></label>
+          <label>Confirm for consecutive frames<input id="tracking-frames" type="number" min="1" max="120" value="3"></label>
+          <label>Alert cooldown (seconds)<input id="tracking-cooldown" type="number" min="5" max="3600" value="60"></label>
+          <label id="tracking-dwell-field" class="hidden">Dwell time (seconds)<input id="tracking-dwell" type="number" min="1" max="3600" value="10"></label>
+          <fieldset class="tracking-roi full"><legend>Region of interest · frame percentages</legend>
+            <label>Left %<input id="tracking-left" type="number" min="0" max="99" value="0"></label>
+            <label>Top %<input id="tracking-top" type="number" min="0" max="99" value="0"></label>
+            <label>Right %<input id="tracking-right" type="number" min="1" max="100" value="100"></label>
+            <label>Bottom %<input id="tracking-bottom" type="number" min="1" max="100" value="100"></label>
+          </fieldset>
+          <label class="full"><span><input id="tracking-enabled" type="checkbox" checked> Enable rule</span></label>
+          <div class="inline-actions full"><button id="tracking-save" class="button button-primary" type="submit">Save rule</button><button id="tracking-cancel-edit" class="button button-secondary hidden" type="button">Cancel edit</button></div>
+        </form>
+      </section>
+      <div class="tracking-column">
+        <section class="panel section-panel">
+          <div class="tracking-card-head"><div><p class="eyebrow">ACTIVE CONFIGURATION</p><h2>Saved rules</h2></div><span id="tracking-rule-count" class="subtle-tag">0 rules</span></div>
+          <div id="tracking-rules" class="tracking-rule-list"><div class="empty-state">Loading saved rules…</div></div>
+        </section>
+        <section class="panel section-panel">
+          <div class="tracking-toolbar"><div><p class="eyebrow">RECENT ACTIVITY</p><h2>Rule alerts</h2></div><label>Camera<select id="tracking-event-camera"><option value="">All active cameras</option></select></label></div>
+          <div id="tracking-events" class="tracking-events"><div class="empty-state">Loading event history…</div></div>
+          <div class="inline-actions"><button id="tracking-more-events" class="button button-secondary hidden" type="button">Load older alerts</button></div>
+        </section>
+      </div>
+    </div>
+    <p class="helper">Events store rule metadata and counts, not video or image snapshots. A rule takes effect on incoming frames and may take a few seconds to refresh on camera services. Rule alerts are capped at the newest 5,000 records. Existing person sightings and object-sighting history remain separate.</p>
+      {% include "_creator_attribution.html" %}
+  </main>
+  <script src="/static/theme.js?v=vaos-1.1.0"></script>
+  <script src="/static/tracking.js?v=vaos-1.1.0"></script>
+</body>
+</html>

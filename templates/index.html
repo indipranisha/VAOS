@@ -4,26 +4,36 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VAOS · Video Analytics - Operating System</title>
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-mobile-nav">
+  <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
 </head>
-<body>
-  <header class="topbar">
-    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><svg class="vaos-logo" viewBox="0 0 48 48" role="img" aria-label="VAOS three-color logo"><rect x="3" y="3" width="42" height="42" rx="14" fill="#fff"/><path d="M11 12h26v7H11z" fill="#F28C7F"/><path d="M11 20h26v7H11z" fill="#5DBFB0"/><path d="M11 28h26v7H11z" fill="#8D85D8"/><circle cx="24" cy="23.5" r="5.4" fill="#344054"/><circle cx="24" cy="23.5" r="2" fill="#fff"/></svg><span>VAOS</span></a>
-    <div>
-      <div class="eyebrow">VIDEO ANALYTICS - OPERATING SYSTEM</div>
-      <h1>VAOS</h1>
-    </div>
-    <div class="topbar-spacer"></div>
-    <nav class="primary-nav" aria-label="Main navigation"><a class="nav-link active" href="/">Dashboard</a><a class="nav-link" href="#engine-settings">Settings</a><a class="nav-link" href="/training">ML training</a><span class="version-chip">v{{ version }}</span></nav>
-    <span class="status-pill"><span class="status-dot"></span> PC processing</span>
+<body class="training-shell dashboard-shell{% if settings_only|default(false) %} settings-page{% endif %}">
+  <header class="topbar training-sidebar">
+    <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
+    <p class="sidebar-subtitle">VIDEO ANALYTICS OS</p>
+    <nav class="primary-nav" aria-label="Main navigation">
+      <a class="nav-link{% if not settings_only|default(false) %} active{% endif %}" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
+
+      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
+      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
+      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
+      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
+      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
+      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
+      <a class="nav-link" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
+      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link{% if settings_only|default(false) %} active{% endif %}" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
+          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    <div class="sidebar-bottom"><div class="admin-sidebar-tools">{% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}<button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local analytics engine</span><span class="version-chip">v{{ version }}</span></div></div>
   </header>
 
-  <main class="page-wrap">
-    <section class="intro-row">
+  <main class="page-wrap dashboard-page">
+    {% if settings_only %}<section class="intro-row settings-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>Settings</h2><p class="lead">Manage cameras, core detection controls, model selection, services, and separate camera and dashboard tunnels.</p></div></section>{% endif %}
+    <section class="intro-row dashboard-only">
       <div>
         <p class="eyebrow">CONTROL ROOM</p>
         <h2>Observe repeat sightings.<br><span class="muted-heading">Keep the data on your PC.</span></h2>
         <p class="lead">Add a camera link, enroll a consenting participant, and review matches as they arrive.</p>
+        <a class="button button-secondary button-small" href="/statistics?report=lifetime-statistics">Create statistics report</a>
       </div>
       <div class="metric-card">
         <span class="metric-label">CURRENT MATCH THRESHOLD</span>
@@ -32,7 +42,7 @@
       </div>
     </section>
 
-    <section class="dashboard-overview" aria-label="System overview">
+    <section class="dashboard-overview dashboard-only" id="system-overview" aria-label="System overview">
       <article class="overview-card overview-cameras"><div class="overview-card-top"><span class="metric-label">CAMERAS ONLINE</span><span class="stat-orb">◉</span></div><strong id="metric-cameras">—</strong><small id="metric-cameras-detail">Waiting for camera status</small><canvas class="mini-chart" id="chart-cameras" width="260" height="42" aria-label="Recent camera availability"></canvas></article>
       <article class="overview-card overview-sightings"><div class="overview-card-top"><span class="metric-label">MATCHES TODAY</span><span class="stat-orb">⌖</span></div><strong id="metric-sightings">—</strong><small>Logged in the local database · UTC</small><canvas class="mini-chart" id="chart-sightings" width="260" height="42" aria-label="Matches today trend"></canvas></article>
       <article class="overview-card overview-objects"><div class="overview-card-top"><span class="metric-label">OBJECT TYPES ACTIVE</span><span class="stat-orb">▦</span></div><strong id="metric-objects">—</strong><small id="metric-objects-detail">Across connected cameras</small><canvas class="mini-chart" id="chart-objects" width="260" height="42" aria-label="Recent object activity trend"></canvas></article>
@@ -46,15 +56,7 @@
       <span>Use only with informed permission and in locations where you are authorised to operate. Profile photos and face templates for enrolled volunteers are stored locally in the database; unknown faces and camera frames are not saved.</span>
     </section>
 
-    <section class="admin-pin-panel" aria-label="Local admin password">
-      <div>
-        <p class="eyebrow">LOCAL ADMIN PASSWORD</p>
-        <strong class="admin-pin">{{ admin_password }}</strong>
-      </div>
-      <p>Five-digit PIN · shown only on this private dashboard</p>
-    </section>
-
-    <section class="grid-two">
+    <section class="grid-two dashboard-only">
       <article class="panel">
         <div class="panel-heading">
           <div><p class="eyebrow">01 / INPUT</p><h3>Add a camera</h3></div>
@@ -64,8 +66,8 @@
           <label for="camera-name">Camera label</label>
           <input id="camera-name" name="name" placeholder="e.g. Reception phone" maxlength="80" required>
           <label for="base-url">Public HTTPS camera URL</label>
-          <input id="base-url" type="url" inputmode="url" placeholder="Waiting for the camera tunnel…" autocomplete="off" readonly aria-readonly="true">
-          <small class="helper">This address is supplied by the Windows launcher and cannot be edited here. Do not tunnel port 8000; that is the private admin dashboard.</small>
+          <input id="base-url" type="url" inputmode="url" placeholder="Waiting for the configured HTTPS camera URL…" autocomplete="off" readonly aria-readonly="true">
+          <small class="helper">This HTTPS address is supplied by the active VAOS deployment and cannot be edited here. The private admin dashboard is not used for camera links.</small>
           <button type="submit" class="button button-primary">Create unique camera link <span>＋</span></button>
           <div id="camera-result" class="result-box hidden" aria-live="polite"></div>
         </form>
@@ -90,10 +92,10 @@
       </article>
     </section>
 
-    <section class="panel section-panel">
+    <section class="panel section-panel dashboard-only">
       <div class="section-title-row">
         <div><p class="eyebrow">CAMERAS</p><h3>Camera links</h3></div>
-        <button class="button button-secondary button-small" id="refresh-btn">Refresh</button>
+        <div class="inline-actions"><a class="button button-secondary button-small" href="/statistics?report=cameras">Camera report</a><button class="button button-secondary button-small" id="refresh-btn">Refresh</button></div>
       </div>
       <div id="camera-list" class="empty-state">Loading camera links…</div>
     </section>
@@ -105,16 +107,7 @@
       <div id="enrollment-result" class="result-box hidden" aria-live="polite"></div>
     </section>
 
-    <section class="panel section-panel">
-      <div class="section-title-row"><div><p class="eyebrow">LIVE SYSTEM</p><h3>Camera tracking & model diagnostics</h3></div><span id="compute-device" class="subtle-tag">Checking local models…</span></div>
-      <div id="model-diagnostics" class="diagnostic-grid"></div>
-      <div id="live-cameras" class="list-table"><div class="empty-state">Waiting for camera status…</div></div>
-      <div class="section-title-row object-title"><div><p class="eyebrow">OBJECT ACTIVITY</p><h3>Recent detected objects</h3></div><span id="object-refresh-status" class="subtle-tag">Auto-refresh · every 5 sec</span></div>
-      <div id="object-events" class="list-table"><div class="empty-state">No object detections recorded yet.</div></div>
-      <p class="helper bottom-note">Camera health updates while a station is sending frames. Object labels are approximate detections, not verified facts. Camera frames are not retained; enrolled profile photos stay in the local database.</p>
-    </section>
-
-    <section class="panel section-panel" id="settings">
+    <section class="panel section-panel settings-only" id="settings">
       <div class="section-title-row">
         <div><p class="eyebrow">SETTINGS · PEOPLE</p><h3>Enrolled participants</h3></div>
         <span class="subtle-tag">Photos stored locally</span>
@@ -122,13 +115,13 @@
       <div id="participant-list" class="empty-state">Loading enrolled participants…</div>
     </section>
 
-    <section class="panel section-panel engine-settings-panel" id="engine-settings">
+    <section class="panel section-panel engine-settings-panel settings-only" id="engine-settings">
       <div class="section-title-row"><div><p class="eyebrow">SETTINGS · CORE ENGINE</p><h3>Detection and processing controls</h3></div><span class="subtle-tag">Saved locally · next frame</span></div>
       <p class="helper">These controls tune the live engine. Turning a detector off stops that analysis path; training samples and existing profiles remain intact.</p>
       <form id="engine-settings-form" class="engine-settings-grid">
-        <label class="engine-toggle-card"><span><strong>Face matching</strong><small>Find faces and compare enrolled profiles</small></span><input id="setting-face" type="checkbox"></label>
-        <label class="engine-toggle-card"><span><strong>Object detection</strong><small>Run the selected YOLO detector</small></span><input id="setting-objects" type="checkbox"></label>
-        <label class="engine-toggle-card"><span><strong>Object tracking</strong><small>Keep temporary IDs between frames</small></span><input id="setting-tracking" type="checkbox"></label>
+        <label class="engine-toggle-card"><span><strong>Face matching</strong><small>Find faces and compare enrolled profiles</small><span id="face-engine-state" class="state-indicator" data-state="starting"><i></i><span>Starting</span></span></span><input id="setting-face" type="checkbox"></label>
+        <label class="engine-toggle-card"><span><strong>Object detection</strong><small>Run the selected YOLO detector</small><span id="object-engine-state" class="state-indicator" data-state="starting"><i></i><span>Starting</span></span></span><input id="setting-objects" type="checkbox"></label>
+        <label class="engine-toggle-card"><span><strong>Object tracking</strong><small>Keep temporary IDs between frames</small><span id="tracking-engine-state" class="state-indicator" data-state="starting"><i></i><span>Starting</span></span></span><input id="setting-tracking" type="checkbox"></label>
         <label class="engine-control"><span>Face match threshold <strong id="setting-threshold-label">0.42</strong></span><small>Higher is stricter · similarity, not probability</small><input id="setting-threshold" type="range" min="0.20" max="0.85" step="0.01"></label>
         <label class="engine-control"><span>Object confidence <strong id="setting-confidence-label">0.25</strong></span><small>Raise to reduce low-confidence boxes</small><input id="setting-confidence" type="range" min="0.05" max="0.95" step="0.05"></label>
         <label class="engine-control"><span>Event cooldown <strong>seconds</strong></span><small>Per person and camera · 15–3,600 sec</small><input id="setting-cooldown" type="number" min="15" max="3600" step="15"></label>
@@ -139,17 +132,83 @@
       </form>
     </section>
 
-    <section class="panel section-panel" id="system-settings">
-      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · SYSTEM</p><h3>Model and services</h3></div></div>
-      <div class="training-controls"><label for="live-model-choice">Live object model</label><select id="live-model-choice"><option value="yolo26m">Base YOLO26m</option><option value="custom">Your custom best.pt</option></select><button class="button button-primary" id="apply-model-choice">Apply model & restart</button><button class="button button-secondary" id="restart-services">Restart services</button></div>
-      <div id="system-action-status" class="result-box" aria-live="polite">Changing the model or restarting VAOS reloads its local services and keeps the current camera tunnel and public URL connected.</div>
-      <p class="helper">Your custom model is available after a training run. Switching models restarts the admin and camera services while leaving cloudflared running, so the current camera URL stays the same.</p>
-      <div class="section-title-row tunnel-control-heading"><div><p class="eyebrow">PUBLIC CAMERA LINK</p><h4>Tunnel controls</h4></div><span id="tunnel-state-badge" class="subtle-tag">Checking…</span></div>
-      <div class="training-controls tunnel-controls"><button type="button" class="button button-secondary" id="tunnel-pause">Pause public access</button><button type="button" class="button button-secondary" id="tunnel-start">Start / resume</button><button type="button" class="button button-danger" id="tunnel-stop">Stop tunnel</button><button type="button" class="button button-secondary" id="tunnel-restart">Restart tunnel</button></div>
-      <p id="tunnel-action-status" class="helper" aria-live="polite">Pause temporarily blocks camera and enrollment pages while keeping the same tunnel URL. Stop disconnects the tunnel. Start resumes or creates it; Restart creates a fresh temporary URL.</p>
+    <section class="panel section-panel settings-only" id="system-settings">
+      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · SYSTEM</p><h3>Model and services</h3></div><div class="inline-actions"><a class="button button-secondary button-small" href="/statistics?report=models">Model activity report</a></div></div>
+      <div id="system-service-lights" class="service-lights" aria-label="Service status"></div>
+      <div class="training-controls"><label for="live-model-choice">Live object model</label><select id="live-model-choice"><option value="yolo26m">Base YOLO26m</option><option value="custom">Your custom best.pt</option></select><button class="button button-primary" id="apply-model-choice">Apply model choice</button><button class="button button-secondary" id="restart-services" {% if production_mode or not local_windows_launcher %}hidden{% endif %}>Restart services</button></div>
+      <div id="system-action-status" class="result-box" aria-live="polite">{% if production_mode %}Model changes are saved and take effect after you restart the production deployment.{% elif local_windows_launcher %}Changing the model or restarting VAOS reloads its local services and keeps the current camera URL connected.{% else %}Model changes are saved. Restart both local VAOS services from their terminals or your process manager to activate them.{% endif %}</div>
+      <p class="helper">Your custom model is available after a training run. {% if production_mode %}Apply a model choice here, then restart VAOS through your production deployment platform.{% elif local_windows_launcher %}Switching models restarts the admin and camera services while leaving the camera URL connected.{% else %}After switching models, restart the admin and camera Uvicorn services using the same environment settings. Temporary tunnel controls are not available in this local setup.{% endif %}</p>
+      <div class="section-title-row tunnel-control-heading"><div><p class="eyebrow">PUBLIC CAMERA LINK</p><h4>{% if production_mode %}Camera site{% elif local_windows_launcher %}Tunnel controls{% else %}Camera access{% endif %}</h4></div><span id="tunnel-state-badge" class="subtle-tag">{% if not production_mode and not local_windows_launcher %}Managed separately{% else %}Checking…{% endif %}</span></div>
+      <div class="training-controls tunnel-controls" {% if production_mode or not local_windows_launcher %}hidden{% endif %}><button type="button" class="button button-secondary" id="tunnel-pause">Pause public access</button><button type="button" class="button button-secondary" id="tunnel-start">Start / resume</button><button type="button" class="button button-danger" id="tunnel-stop">Stop tunnel</button><button type="button" class="button button-secondary" id="tunnel-restart">Restart tunnel</button></div>
+      <p id="tunnel-action-status" class="helper" aria-live="polite">{% if production_mode %}The public camera address is managed by the production HTTPS reverse proxy. Control service availability through your deployment platform.{% elif local_windows_launcher %}Pause temporarily blocks camera and enrollment pages while keeping the same tunnel URL. Stop disconnects the tunnel. Start resumes or creates it; Restart creates a fresh temporary URL.{% else %}For remote camera access on macOS/Linux, configure a trusted HTTPS reverse proxy. VAOS does not run a temporary local tunnel on this platform.{% endif %}</p>
+      <div class="dashboard-tunnel-card" id="dashboard-tunnel-controls" {% if production_mode or not local_windows_launcher %}hidden{% endif %}>
+        <div class="section-title-row tunnel-control-heading"><div><p class="eyebrow">PUBLIC ADMIN LINK</p><h4>Main dashboard tunnel · port 8000</h4></div><span id="admin-tunnel-state-badge" class="subtle-tag">Checking…</span></div>
+        <p class="helper">This link opens the VAOS admin dashboard on a temporary public HTTPS address. Admin sign-in remains required. The camera tunnel on port 8001 is managed separately and is not changed by these controls. The dashboard tunnel stops automatically when the VAOS launcher exits.</p>
+        <div class="admin-tunnel-url-row"><a id="admin-tunnel-url" class="admin-tunnel-url" href="#" target="_blank" rel="noopener noreferrer" aria-label="Public dashboard tunnel URL">Not connected</a><button type="button" class="button button-secondary" id="admin-tunnel-copy" disabled>Copy link</button></div>
+        <div class="training-controls tunnel-controls"><button type="button" class="button button-primary" id="admin-tunnel-start">Start dashboard tunnel</button><button type="button" class="button button-danger" id="admin-tunnel-stop" disabled>Stop dashboard tunnel</button><button type="button" class="button button-secondary" id="admin-tunnel-restart" disabled>Restart dashboard tunnel</button></div>
+        <p id="admin-tunnel-action-status" class="helper" aria-live="polite">Dashboard tunnel is stopped. Your camera tunnel is unchanged.</p>
+      </div>
     </section>
 
-    <section class="panel section-panel">
+    <section class="panel section-panel settings-only" id="api-mcp-settings">
+      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · INTEGRATIONS</p><h3>API and AI agent access</h3></div><div class="inline-actions"><a class="button button-secondary button-small" href="/statistics?report=api-activity">API activity report</a><a class="button button-secondary button-small" href="/statistics?report=mcp-activity">MCP activity report</a><a class="button button-secondary button-small" href="/statistics?report=security-events">Security audit report</a><a class="button button-secondary button-small" href="/api-explorer">Explore APIs</a><a class="button button-secondary button-small" href="/api/docs" target="_blank" rel="noopener noreferrer">Open OpenAPI reference ↗</a></div></div>
+      <p class="helper">Connect scripts and AI agents to VAOS. Access starts disabled. Read-only agent access is the safe default; control access needs a separate control token.</p>
+      <div class="api-integration-grid">
+        <article class="api-integration-card">
+          <h4>REST API</h4>
+          <label class="api-setting-toggle"><input id="api-enabled" type="checkbox"><span><strong>Enable API tokens</strong><small>Basic dashboard sign-in continues to work if this is off.</small></span></label>
+          <label class="api-setting-toggle api-caution-toggle"><input id="api-sensitive-reads" type="checkbox"><span><strong>Allow sensitive data reads</strong><small>Allows separately authorised tokens to read names, profile/sample images, event identities, camera links and tunnel URLs. Keep off unless an integration needs them.</small></span></label>
+          <label class="engine-control"><span>Requests per token / minute</span><select id="api-rate-limit"><option value="30">30 · cautious</option><option value="60">60</option><option value="120">120 · recommended</option><option value="300">300</option><option value="600">600 · high volume</option></select></label>
+          <label class="engine-control"><span>New token lifetime</span><select id="api-token-days"><option value="30">30 days</option><option value="90">90 days · recommended</option><option value="180">180 days</option><option value="365">365 days</option></select></label>
+          <form id="api-token-form" class="api-token-form"><label for="api-token-label">Token name</label><input id="api-token-label" maxlength="80" placeholder="e.g. local analytics agent" required><label for="api-token-scope">Access level</label><select id="api-token-scope"><option value="read">Read only · view and report</option><option value="control">Read and control · change VAOS</option></select><fieldset class="api-capability-groups api-token-groups"><legend>This token can access</legend><label><input type="checkbox" value="diagnostics" class="api-token-group" checked> Diagnostics</label><label><input type="checkbox" value="cameras" class="api-token-group"> Cameras</label><label><input type="checkbox" value="people" class="api-token-group"> People</label><label><input type="checkbox" value="events" class="api-token-group"> Activity</label><label><input type="checkbox" value="review" class="api-token-group"> Review samples</label><label><input type="checkbox" value="training" class="api-token-group"> Training</label><label><input type="checkbox" value="datasets" class="api-token-group"> Datasets</label><label><input type="checkbox" value="models" class="api-token-group"> Models</label><label><input type="checkbox" value="settings" class="api-token-group"> Engine settings</label><label><input type="checkbox" value="tunnels" class="api-token-group"> Tunnel controls</label><label><input type="checkbox" value="video" class="api-token-group"> Video review</label><label><input type="checkbox" value="projects" class="api-token-group"> Project bundles</label></fieldset><label class="api-setting-toggle api-caution-toggle"><input id="api-token-sensitive-reads" type="checkbox"><span><strong>Grant sensitive reads to this token</strong><small>Also requires the Settings-wide sensitive-read switch above. Off by default.</small></span></label><label class="api-setting-toggle api-caution-toggle"><input id="api-token-mcp-agent" type="checkbox"><span><strong>Use this token for an MCP agent</strong><small>Every agent change must be approved in the inbox below. Read-only API tokens do not need this setting.</small></span></label><button class="button button-secondary" type="submit">Create API token</button></form>
+          <div id="api-token-once" class="result-box hidden" aria-live="polite"></div>
+          <div id="api-token-list" class="api-token-list">Loading API tokens…</div>
+        </article>
+        <article class="api-integration-card">
+          <h4>MCP server for AI agents</h4>
+          <p class="helper">The optional local MCP bridge lets compatible agent apps call VAOS tools through the REST API. It runs only when an agent launches it.</p>
+          <label class="api-setting-toggle"><input id="mcp-enabled" type="checkbox"><span><strong>Enable the MCP bridge</strong><small>Requires an API token and the optional MCP package.</small></span></label>
+          <label class="api-setting-toggle"><input id="mcp-read-only" type="checkbox" checked><span><strong>Read-only mode</strong><small>When on, agents cannot change VAOS data or settings.</small></span></label>
+          <fieldset class="api-capability-groups"><legend>Agent capabilities</legend>
+            <label><input type="checkbox" value="diagnostics" class="mcp-group"> Diagnostics</label><label><input type="checkbox" value="cameras" class="mcp-group"> Cameras</label><label><input type="checkbox" value="people" class="mcp-group"> People</label><label><input type="checkbox" value="events" class="mcp-group"> Activity</label><label><input type="checkbox" value="review" class="mcp-group"> Review samples</label><label><input type="checkbox" value="training" class="mcp-group"> Training</label><label><input type="checkbox" value="datasets" class="mcp-group"> Datasets</label><label><input type="checkbox" value="models" class="mcp-group"> Models</label><label><input type="checkbox" value="settings" class="mcp-group"> Engine settings</label><label><input type="checkbox" value="tunnels" class="mcp-group"> Tunnel controls</label><label><input type="checkbox" value="video" class="mcp-group"> Video review</label><label><input type="checkbox" value="projects" class="mcp-group"> Project bundles</label>
+          </fieldset>
+          <p class="helper">New installations enable Diagnostics only. Add other groups only when the agent needs them; the token must also allow the same group. Saved group choices are kept when you update other settings.</p>
+          <label class="api-setting-toggle api-caution-toggle"><input id="mcp-sensitive" type="checkbox"><span><strong>Allow sensitive actions</strong><small>Training, dataset prep, model uploads, camera links, participant enrollment, video, service and tunnel controls.</small></span></label>
+          <label class="api-setting-toggle api-caution-toggle"><input id="mcp-deletes" type="checkbox"><span><strong>Allow deletion actions</strong><small>Revoking links, deleting records, samples, or prepared datasets.</small></span></label>
+          <p class="helper">MCP write requests from MCP-designated tokens always pause for your approval below. Approval applies only to the exact request, expires after 10 minutes, and can be used once.</p>
+          <button class="button button-primary" id="save-api-settings" type="button">Save API and MCP settings</button><span id="api-settings-status" class="helper" aria-live="polite"></span>
+          <label class="api-config-label" for="mcp-config-template">Agent configuration template · replace the token placeholder</label><textarea id="mcp-config-template" rows="8" readonly spellcheck="false"></textarea><button class="button button-secondary button-small" id="copy-mcp-config" type="button">Copy setup configuration</button><small class="helper">If your agent runs on another computer or VAOS runs in Docker, adjust the Python and script paths to files visible to that agent host, and use the VAOS HTTPS address.</small>
+        </article>
+      </div>
+      <article class="api-approval-card">
+        <div class="section-title-row"><div><h4>Agent action approvals</h4><p class="helper">Review what an agent is asking to change before it runs.</p></div><button class="button button-secondary button-small" id="refresh-mcp-approvals" type="button">Refresh</button></div>
+        <div id="mcp-approval-list" class="api-token-list" aria-live="polite">Loading agent approvals…</div>
+        <span id="mcp-approval-status" class="helper" aria-live="polite"></span>
+      </article>
+      <details class="api-access-audit"><summary>Recent API access log</summary><div id="api-access-list" class="api-token-list">Loading API activity…</div></details>
+      <p class="helper">Tokens are shown only once, stored as one-way hashes, rate-limited, and logged without request bodies. Revoke a token immediately if you no longer trust an app. For remote access, use HTTPS only.</p>
+    </section>
+
+    <section class="panel section-panel settings-only" id="model-enrichment">
+      <div class="section-title-row"><div><p class="eyebrow">CUSTOM MODEL WORKFLOW</p><h3>Build or update your best.pt</h3></div><span id="enrichment-state" class="state-indicator" data-state="stopped"><i></i><span>Stopped</span></span></div>
+      <p class="helper">Train a custom detector using a model you choose, public COCO examples, and the live detections you have confirmed.</p>
+      <div class="enrichment-steps" aria-label="Model update steps">
+        <article class="enrichment-step"><span class="step-number">1</span><div><strong>Choose a starting model</strong><p>YOLO26m is the recommended starting point. You can use your current best.pt or add another trusted YOLO model.</p></div></article>
+        <article class="enrichment-step"><span class="step-number">2</span><div><strong>Choose learning material</strong><p>Choose reviewed camera samples alone or add them to a validated public dataset.</p></div></article>
+        <article class="enrichment-step"><span class="step-number">3</span><div><strong>Build and keep the result</strong><p>VAOS trains a new checkpoint, saves a dated copy of the existing best.pt, then installs the successful result as best.pt.</p></div></article>
+      </div>
+      <details class="enrichment-tip"><summary>ⓘ What will this operation transfer?</summary><p>It fine-tunes the selected YOLO checkpoint on reviewed camera samples, optionally combined with a validated COCO dataset. It does not merge hidden knowledge from unrelated models. The existing best.pt is backed up before a successful result replaces it. Imported .pt files should come from a source you trust.</p></details>
+      <div class="training-controls enrichment-controls"><label for="enrichment-source">Starting model</label><select id="enrichment-source"><option value="">Loading saved models…</option></select><label for="enrichment-data-source">Training data</label><select id="enrichment-data-source"><option value="reviewed">Reviewed camera samples only</option><option value="combined">COCO 2017 + reviewed samples</option></select><button id="reload-model-sources" class="button button-secondary" type="button">Reload saved models</button></div>
+      <p class="helper" id="enrichment-datasets-note">Loading local dataset status… Downloaded but unprepared sources will be shown here and kept out of training until their labels and images are validated.</p>
+      <div class="training-controls enrichment-controls huggingface-controls"><label for="huggingface-model-source">Official models on Hugging Face</label><select id="huggingface-model-source"><option value="">Loading Hugging Face models…</option></select><button id="reload-huggingface-models" class="button button-secondary" type="button">Refresh list</button><button id="download-huggingface-model" class="button button-secondary" type="button">Download selected model</button></div>
+      <p class="helper" id="huggingface-model-status" aria-live="polite">Loading official YOLO26 model files…</p>
+      <p class="helper">These official object-detection checkpoints come from <a href="https://huggingface.co/Ultralytics/YOLO26" target="_blank" rel="noopener noreferrer">Ultralytics on Hugging Face</a>. For other repositories, add a compatible .pt file above.</p>
+      <div class="training-controls enrichment-controls"><label class="file-picker" for="model-source-file">Add another YOLO .pt file</label><input id="model-source-file" type="file" accept=".pt,application/octet-stream"><button id="upload-model-source" class="button button-secondary" type="button">Add model</button><button id="enrich-model" class="button button-primary" type="button">Start model update</button></div>
+      <p class="helper resource-note">VAOS uses all CUDA GPUs available to PyTorch and CPU workers to prepare data. System memory is managed instead of fully consumed so Windows can keep running.</p>
+      <div id="enrichment-message" class="result-box" aria-live="polite">Choose reviewed samples alone or combine them with a ready dataset to update best.pt.</div>
+    </section>
+
+    <section class="panel section-panel dashboard-only">
       <div class="section-title-row">
         <div><p class="eyebrow">ACTIVITY</p><h3>Recent sightings</h3></div>
         <span id="sighting-refresh-status" class="subtle-tag">Auto-refresh · every 5 sec</span>
@@ -161,13 +220,15 @@
           <tbody id="event-list"><tr><td colspan="5" class="empty-state">Loading sightings…</td></tr></tbody>
         </table>
       </div>
+      <nav class="activity-table-pagination" aria-label="Recent sightings pages"><span id="sighting-page-label">Page 1 of 1 · 0 records</span><div class="inline-actions"><label for="sighting-page-size" class="helper">Rows</label><select id="sighting-page-size" aria-label="Rows per page"><option value="10">10</option><option value="20">20</option><option value="50">50</option></select><button class="button button-secondary button-small" id="sighting-prev" type="button">Previous</button><button class="button button-secondary button-small" id="sighting-next" type="button">Next</button></div></nav>
       <p class="helper bottom-note">Only matches above the configured threshold are logged. Same-camera records are rate-limited to one event every {{ cooldown }} seconds per enrolled participant.</p>
     </section>
 
-    <footer class="footer-note">Prototype only · Local SQLite database · OpenCV YuNet + SFace · Not suitable for consequential decisions</footer>
+    <footer class="footer-note">VAOS v{{ version }} · Local processing · OpenCV YuNet + SFace · <a href="/about">About VAOS</a> · VAOS was originally created by <a href="{{ project.creator.website }}" target="_blank" rel="noopener noreferrer">{{ project.creator.name }}</a> and is developed with contributions from the open-source community.</footer>
   </main>
 
   <dialog id="qr-modal" class="qr-modal" aria-labelledby="qr-modal-title"><div class="qr-modal-head"><div><p class="eyebrow">CAMERA LINK</p><h3 id="qr-modal-title">Scan to open camera station</h3></div><button type="button" id="close-qr-modal" class="button button-secondary button-small" aria-label="Close QR code">Close</button></div><div class="qr-modal-body"><img id="qr-modal-image" class="camera-qr" alt="QR code for camera station"><p id="qr-modal-url" class="mono-url"></p></div></dialog>
+<script src="/static/theme.js?v=4"></script>
 
 <script>
 const $ = (id) => document.getElementById(id);
@@ -186,6 +247,13 @@ async function api(path, options = {}) {
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.detail || body.message || `Request failed (${response.status})`);
   return body;
+}
+function appendUnavailableDatasets(select, items) {
+  select.querySelector('optgroup[data-local-datasets]')?.remove();
+  if (!items?.length) return;
+  const group = document.createElement('optgroup'); group.label = 'Additional datasets · not yet selectable'; group.dataset.localDatasets = 'true';
+  for (const item of items) { const option = new Option(`${item.name} · ${item.status}`, `unready:${item.id}`); option.disabled = true; option.title = item.message || item.status; group.append(option); }
+  select.append(group);
 }
 function setResult(id, message, good = true) {
   const target = $(id); target.textContent = message; target.classList.remove('hidden', 'error');
@@ -209,6 +277,53 @@ async function refreshTunnelUrl() {
     if (current !== $('base-url').value) await loadCameras();
   } catch { }
 }
+async function refreshAdminTunnel() {
+  try {
+    const data = await api('/api/admin/admin-tunnel');
+    const state = data.status || 'stopped';
+    const badge = $('admin-tunnel-state-badge');
+    badge.textContent = state.charAt(0).toUpperCase() + state.slice(1);
+    badge.className = `subtle-tag ${state === 'running' ? 'badge-green' : state === 'managed' ? 'badge-gray' : ''}`;
+    const link = $('admin-tunnel-url');
+    if (data.url) { link.href = data.url; link.textContent = data.url; link.classList.add('is-ready'); }
+    else { link.removeAttribute('href'); link.textContent = 'Not connected'; link.classList.remove('is-ready'); }
+    $('admin-tunnel-copy').disabled = !data.url;
+    $('admin-tunnel-start').disabled = ['running','starting','restarting'].includes(state);
+    $('admin-tunnel-stop').disabled = ['stopped','stopping','managed'].includes(state);
+    $('admin-tunnel-restart').disabled = ['stopped','starting','stopping','restarting','managed'].includes(state);
+    if (data.message && !['starting','stopping','restarting'].includes(state)) $('admin-tunnel-action-status').textContent = data.message;
+  } catch (error) {
+    $('admin-tunnel-state-badge').textContent = 'Unavailable';
+    $('admin-tunnel-action-status').textContent = error.message;
+  }
+}
+async function controlAdminTunnel(action) {
+  const status = $('admin-tunnel-action-status');
+  for (const id of ['admin-tunnel-start','admin-tunnel-stop','admin-tunnel-restart']) $(id).disabled = true;
+  status.textContent = `Requesting dashboard tunnel ${action}…`; status.classList.remove('error');
+  try {
+    const before = await api('/api/admin/admin-tunnel');
+    const originalUrl = before.url || '';
+    const result = await api(`/api/admin/admin-tunnel/${action}`, {method:'POST'});
+    status.textContent = result.message || `Dashboard tunnel ${action} requested.`;
+    let stoppedChecks = 0;
+    for (let attempt=0; attempt<100; attempt++) {
+      await new Promise(resolve=>setTimeout(resolve,1000));
+      await refreshAdminTunnel();
+      const current = await api('/api/admin/admin-tunnel');
+      if ((action==='start' && current.status==='running' && current.url) || (action==='stop' && current.status==='stopped') || (action==='restart' && current.status==='running' && current.url && current.url!==originalUrl)) break;
+      if (current.status==='stopped' && action!=='stop') {
+        stoppedChecks++;
+        if (stoppedChecks>=5) { status.textContent=current.message || 'The dashboard tunnel could not start.'; break; }
+      } else stoppedChecks=0;
+    }
+  } catch (error) { status.textContent=error.message; status.classList.add('error'); }
+  finally { await refreshAdminTunnel(); }
+}
+$('admin-tunnel-start').addEventListener('click',()=>controlAdminTunnel('start'));
+$('admin-tunnel-stop').addEventListener('click',()=>{if(confirm('Stop the public dashboard link? The camera tunnel and local dashboard will keep running.'))controlAdminTunnel('stop');});
+$('admin-tunnel-restart').addEventListener('click',()=>{if(confirm('Restart the public dashboard tunnel? Its temporary URL will change. The camera tunnel is unchanged.'))controlAdminTunnel('restart');});
+$('admin-tunnel-copy').addEventListener('click',async()=>{const url=$('admin-tunnel-url').href;if(!url||url==='#')return;try{await navigator.clipboard.writeText(url);$('admin-tunnel-action-status').textContent='Dashboard link copied.';}catch{$('admin-tunnel-action-status').textContent='Select and copy the dashboard link.';}});
 let enrollmentStream = null, capturedEnrollmentPhoto = null;
 $('enroll-camera-start').addEventListener('click', async () => {
   try {
@@ -302,17 +417,72 @@ async function loadParticipants() {
     try { await api(`/api/admin/participants/${button.dataset.deletePerson}`, {method:'DELETE'}); await Promise.all([loadParticipants(), loadEvents()]); } catch (err) { alert(err.message); }
   }));
 }
-async function loadEvents() {
-  const events = await api('/api/admin/events');
-  if (!events.length) $('event-list').innerHTML = '<tr><td colspan="5" class="empty-state">No matched sightings yet. Keep the camera page open after enrolling a consenting participant.</td></tr>';
-  else $('event-list').innerHTML = events.map(item => `<tr><td><strong>${escapeHtml(item.person_name)}</strong></td><td>${escapeHtml(item.camera_name)}</td><td><span class="event-tag ${item.kind === 'REPEAT' ? 'event-repeat' : 'event-first'}">${escapeHtml(item.kind)}</span></td><td class="numeric">${Number(item.score).toFixed(3)}</td><td class="date-cell">${escapeHtml(shortDate(item.timestamp))}</td></tr>`).join('');
-  $('sighting-refresh-status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
-}
+const sightingPagination={events:[],page:1,pageSize:10};
+function renderSightings(){const events=sightingPagination.events,pages=Math.max(1,Math.ceil(events.length/sightingPagination.pageSize));sightingPagination.page=Math.max(1,Math.min(sightingPagination.page,pages));const start=(sightingPagination.page-1)*sightingPagination.pageSize,visible=events.slice(start,start+sightingPagination.pageSize);if(!events.length)$('event-list').innerHTML='<tr><td colspan="5" class="empty-state">No matched sightings yet. Keep the camera page open after enrolling a consenting participant.</td></tr>';else $('event-list').innerHTML=visible.map(item=>`<tr><td><strong>${escapeHtml(item.person_name)}</strong></td><td>${escapeHtml(item.camera_name)}</td><td><span class="event-tag ${item.kind === 'REPEAT' ? 'event-repeat' : 'event-first'}">${escapeHtml(item.kind)}</span></td><td class="numeric">${Number(item.score).toFixed(3)}</td><td class="date-cell">${escapeHtml(shortDate(item.timestamp))}</td></tr>`).join('');$('sighting-page-label').textContent=`Page ${sightingPagination.page} of ${pages} · ${events.length} records`;$('sighting-prev').disabled=sightingPagination.page<=1;$('sighting-next').disabled=sightingPagination.page>=pages;}
+async function loadEvents() {sightingPagination.events=await api('/api/admin/events');renderSightings();$('sighting-refresh-status').textContent=`Updated ${new Date().toLocaleTimeString()}`;}
+$('sighting-prev').addEventListener('click',()=>{sightingPagination.page--;renderSightings();});$('sighting-next').addEventListener('click',()=>{sightingPagination.page++;renderSightings();});$('sighting-page-size').addEventListener('change',event=>{sightingPagination.pageSize=Number(event.target.value)||10;sightingPagination.page=1;renderSightings();});
 const dashboardHistory={cameras:[],sightings:[],objects:[],cpu:[],ram:[],gpu:[]};
 function drawMiniChart(id,values,color){const canvas=$(id),ctx=canvas?.getContext('2d');if(!ctx)return;const width=canvas.width,height=canvas.height;ctx.clearRect(0,0,width,height);if(values.length<2)return;const min=Math.min(...values),max=Math.max(...values),range=Math.max(1,max-min);const points=values.map((value,index)=>({x:index*(width/(values.length-1)),y:height-4-((value-min)/range)*(height-11)}));ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);points.slice(1).forEach(point=>ctx.lineTo(point.x,point.y));ctx.lineTo(width,height);ctx.lineTo(0,height);ctx.closePath();const fill=ctx.createLinearGradient(0,0,0,height);fill.addColorStop(0,`${color}33`);fill.addColorStop(1,`${color}00`);ctx.fillStyle=fill;ctx.fill();ctx.beginPath();ctx.moveTo(points[0].x,points[0].y);points.slice(1).forEach(point=>ctx.lineTo(point.x,point.y));ctx.strokeStyle=color;ctx.lineWidth=2;ctx.lineCap='round';ctx.lineJoin='round';ctx.stroke();}
 function addHistory(key,value,id,color){if(!Number.isFinite(Number(value)))return;const list=dashboardHistory[key];list.push(Number(value));if(list.length>18)list.shift();drawMiniChart(id,list,color);}
 function updateDashboardMetrics(data){const cameras=data.cameras||[],online=cameras.filter(item=>item.online).length,objectTypes=new Set(cameras.flatMap(camera=>Object.entries(camera.objects||{}).filter(([,entry])=>Number(entry?.[0]||0)>0).map(([label])=>label)));$('metric-cameras').textContent=`${online} / ${cameras.filter(item=>item.active).length}`;$('metric-cameras-detail').textContent=online?'Live camera stations':'No live camera frames';$('metric-sightings').textContent=Number(data.matches_today||0).toLocaleString();$('metric-objects').textContent=objectTypes.size.toLocaleString();$('metric-objects-detail').textContent=`${Number(data.objects_last_hour||0).toLocaleString()} activity records · last hour`;addHistory('cameras',online,'chart-cameras','#8f8bd8');addHistory('sightings',Number(data.matches_today||0),'chart-sightings','#e8a284');addHistory('objects',Number(data.objects_last_hour||0),'chart-objects','#68ad82');const metrics=data.system_metrics||{};const cpu=metrics.cpu_percent===null||metrics.cpu_percent===undefined?NaN:Number(metrics.cpu_percent),ram=metrics.memory_percent===null||metrics.memory_percent===undefined?NaN:Number(metrics.memory_percent),gpu=metrics.gpu_utilization_percent===null||metrics.gpu_utilization_percent===undefined?NaN:Number(metrics.gpu_utilization_percent);$('metric-cpu').textContent=Number.isFinite(cpu)?`${cpu.toFixed(0)}%`:'N/A';$('cpu-meter').style.width=`${Math.min(100,Math.max(0,cpu||0))}%`;$('cpu-detail').textContent=Number.isFinite(cpu)?`${Math.round(cpu)}% host processor load`:'CPU monitor unavailable';$('metric-ram').textContent=Number.isFinite(ram)?`${ram.toFixed(0)}%`:'N/A';$('ram-meter').style.width=`${Math.min(100,Math.max(0,ram||0))}%`;$('ram-detail').textContent=Number.isFinite(Number(metrics.memory_used_gb))?`${metrics.memory_used_gb} / ${metrics.memory_total_gb} GB in use`:'Memory monitor unavailable';$('metric-gpu').textContent=metrics.gpu_available&&Number.isFinite(gpu)?`${gpu}%`:'N/A';$('gpu-chip').textContent=metrics.gpu_available?(metrics.gpu_name||'GPU 0'):'Not detected';$('gpu-detail').textContent=metrics.gpu_available?`${metrics.gpu_memory_used_mb??'—'} / ${metrics.gpu_memory_total_mb??'—'} MB VRAM${metrics.gpu_temperature_c===null?'':` · ${metrics.gpu_temperature_c}°C`}`:'Install an NVIDIA driver to show GPU telemetry';$('gpu-meter').style.width=`${Math.min(100,Math.max(0,gpu||0))}%`;addHistory('cpu',cpu,'chart-cpu','#8f8bd8');addHistory('ram',ram,'chart-ram','#68ad82');addHistory('gpu',gpu,'chart-gpu','#e8a284');}
 async function loadEngineSettings(){const settings=await api('/api/admin/engine-settings');$('setting-face').checked=settings.face_matching_enabled;$('setting-objects').checked=settings.object_detection_enabled;$('setting-tracking').checked=settings.object_tracking_enabled;$('setting-threshold').value=settings.match_threshold;$('setting-threshold-label').textContent=Number(settings.match_threshold).toFixed(2);$('threshold').textContent=Number(settings.match_threshold).toFixed(2);$('setting-confidence').value=settings.object_confidence;$('setting-confidence-label').textContent=Number(settings.object_confidence).toFixed(2);$('setting-cooldown').value=settings.event_cooldown_seconds;$('setting-image-size').value=settings.object_image_size;$('setting-frame-interval').value=settings.camera_frame_interval_ms;$('setting-frame-size').value=settings.camera_max_dimension;$('engine-settings-status').textContent='Saved controls loaded from this PC.';}
+async function loadApiIntegrations(){
+  const data=await api('/api/admin/integrations'),settings=data.settings||{};
+  $('api-enabled').checked=Boolean(settings.api_enabled);$('api-sensitive-reads').checked=Boolean(settings.api_allow_sensitive_reads);
+  $('mcp-enabled').checked=Boolean(settings.mcp_enabled);$('mcp-read-only').checked=settings.mcp_read_only!==false;
+  $('mcp-sensitive').checked=Boolean(settings.mcp_allow_sensitive);$('mcp-deletes').checked=Boolean(settings.mcp_allow_deletes);
+  $('api-rate-limit').value=String(settings.api_rate_limit||120);$('api-token-days').value=String(settings.api_token_default_days||90);
+  for(const box of document.querySelectorAll('.mcp-group'))box.checked=(settings.mcp_allowed_groups||[]).includes(box.value);
+  $('mcp-config-template').value=JSON.stringify(data.mcp_config_template||{},null,2);
+  $('api-token-list').innerHTML=(data.tokens||[]).length?(data.tokens||[]).map(item=>{
+    const scopes=typeof item.scopes==='object'&&!Array.isArray(item.scopes)?item.scopes:{};
+    const access=scopes.access||'legacy',groups=(scopes.groups||[]).join(', ')||'diagnostics only';
+    const privateData=scopes.sensitive_read?' · sensitive reads granted':' · sensitive reads off',agent=scopes.mcp_agent?' · MCP agent · approvals required':'';
+    return `<div class="api-token-row"><div><strong>${escapeHtml(item.label)}</strong><span class="row-subtext"><code>${escapeHtml(item.prefix)}</code> · ${escapeHtml(access)} · ${escapeHtml(groups)}${escapeHtml(privateData)}${escapeHtml(agent)} · expires ${escapeHtml(shortDate(item.expires_at))}${item.last_used_at?` · last used ${escapeHtml(shortDate(item.last_used_at))}`:''}</span></div><span class="badge ${item.revoked_at?'badge-gray':'badge-green'}">${item.revoked_at?'Revoked':'Active'}</span>${item.revoked_at?'':`<button class="button button-danger button-small" data-revoke-api-token="${escapeHtml(item.prefix)}">Revoke</button>`}</div>`;
+  }).join(''):'<div class="empty-state">No API tokens created yet.</div>';
+  document.querySelectorAll('[data-revoke-api-token]').forEach(button=>button.addEventListener('click',async()=>{
+    if(!confirm(`Revoke API token ${button.dataset.revokeApiToken}? Any connected agent using it will lose access.`))return;
+    try{await api(`/api/admin/api-tokens/${encodeURIComponent(button.dataset.revokeApiToken)}`,{method:'DELETE'});await loadApiIntegrations();}
+    catch(error){$('api-settings-status').textContent=error.message;}
+  }));
+  $('api-access-list').innerHTML=(data.recent_access||[]).length?(data.recent_access||[]).map(item=>`<div class="api-token-row api-access-row"><span>${escapeHtml(item.timestamp)}</span><code>${escapeHtml(item.token_prefix)}</code><strong>${escapeHtml(item.method)}</strong><span>${escapeHtml(item.path)}</span></div>`).join(''):'<div class="empty-state">No token-based API calls recorded.</div>';
+}
+async function loadMcpApprovals(){
+  if(!document.body.classList.contains('settings-page'))return;
+  const list=$('mcp-approval-list');
+  try{
+    const data=await api('/api/admin/mcp-approvals'),approvals=data.approvals||[];
+    list.innerHTML=approvals.length?approvals.map(item=>{
+      const preview=item.preview||{},pending=item.status==='pending',approved=item.status==='approved';
+      const actionButtons=pending?`<div class="api-approval-actions"><button class="button button-primary button-small" data-mcp-approval="approve" data-approval-id="${escapeHtml(item.request_id)}">Approve once</button><button class="button button-danger button-small" data-mcp-approval="deny" data-approval-id="${escapeHtml(item.request_id)}">Deny</button></div>`:approved?`<button class="button button-danger button-small" data-mcp-approval="revoke" data-approval-id="${escapeHtml(item.request_id)}">Revoke approval</button>`:'';
+      return `<div class="api-approval-row"><div><strong>${escapeHtml(preview.method||item.method)} · ${escapeHtml(preview.risk||'agent request')}</strong><span class="row-subtext">${escapeHtml(preview.path||item.request_path)} · ${escapeHtml(item.token_prefix)} · ${Number(preview.request_bytes||0).toLocaleString()} bytes</span><span class="row-subtext">Expires ${escapeHtml(shortDate(item.expires_at))}${item.decision_note?` · ${escapeHtml(item.decision_note)}`:''}</span></div><span class="badge ${pending?'badge-amber':approved?'badge-green':'badge-gray'}">${escapeHtml(item.status)}</span>${actionButtons}</div>`;
+    }).join(''):'<div class="empty-state">No agent actions are waiting for your approval.</div>';
+    list.querySelectorAll('.api-approval-row').forEach((row,index)=>{
+      const preview=approvals[index]?.preview||{},parameters=preview.parameters||[];
+      const summary=parameters.map(item=>`${item.field}${item.value!==undefined?`: ${item.value}`:` (${item.type}${item.items!==undefined?`, ${item.items} items`:item.characters!==undefined?`, ${item.characters} characters`:item.bytes!==undefined?`, ${item.bytes} bytes`:item.size!==undefined?`, ${item.size} bytes`:''})`}`).join(' · ');
+      if(summary){const detail=document.createElement('span');detail.className='row-subtext';detail.textContent=`Request details · ${summary}`;row.querySelector('div')?.append(detail);}
+    });
+    list.querySelectorAll('[data-mcp-approval]').forEach(button=>button.addEventListener('click',async()=>{
+      const approval=approvals.find(item=>item.request_id===button.dataset.approvalId),preview=approval?.preview||{},decision=button.dataset.mcpApproval;
+      if(decision==='approve'&&!confirm(`Approve this one-time agent action?\n\n${preview.method||approval?.method} ${preview.path||approval?.request_path}\nRisk: ${preview.risk||'standard change'}\n\nThe approval expires after 10 minutes and can only be used once.`))return;
+      if(decision==='revoke'&&!confirm('Revoke this approval before the agent uses it?'))return;
+      const status=$('mcp-approval-status');button.disabled=true;
+      try{const result=await api(`/api/admin/mcp-approvals/${encodeURIComponent(button.dataset.approvalId)}/decision`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({decision})});status.textContent=result.message;status.classList.remove('error');await loadMcpApprovals();}
+      catch(error){status.textContent=error.message;status.classList.add('error');await loadMcpApprovals();}
+    }));
+  }catch(error){list.innerHTML=`<div class="empty-state">Could not load agent approvals: ${escapeHtml(error.message)}</div>`;}
+}
+function apiIntegrationPayload(){return{api_enabled:$('api-enabled').checked,api_allow_sensitive_reads:$('api-sensitive-reads').checked,mcp_enabled:$('mcp-enabled').checked,mcp_read_only:$('mcp-read-only').checked,mcp_allow_sensitive:$('mcp-sensitive').checked,mcp_allow_deletes:$('mcp-deletes').checked,api_rate_limit:Number($('api-rate-limit').value),api_token_default_days:Number($('api-token-days').value),mcp_allowed_groups:Array.from(document.querySelectorAll('.mcp-group:checked')).map(input=>input.value)};}
+$('save-api-settings').addEventListener('click',async()=>{const button=$('save-api-settings'),status=$('api-settings-status');button.disabled=true;status.textContent='Saving integration settings…';status.classList.remove('error');try{const result=await api('/api/admin/integrations',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(apiIntegrationPayload())});status.textContent=result.message;await loadApiIntegrations();}catch(error){status.textContent=error.message;status.classList.add('error');}finally{button.disabled=false;}});
+$('api-token-form').addEventListener('submit',async event=>{event.preventDefault();const button=event.currentTarget.querySelector('button[type="submit"]'),target=$('api-token-once');button.disabled=true;try{const result=await api('/api/admin/api-tokens',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({label:$('api-token-label').value,scope:$('api-token-scope').value,expires_days:Number($('api-token-days').value),groups:Array.from(document.querySelectorAll('.api-token-group:checked')).map(input=>input.value),sensitive_read:$('api-token-sensitive-reads').checked,mcp_agent:$('api-token-mcp-agent').checked})});target.innerHTML=`<strong>Copy this token now. It will not be shown again.</strong><code class="api-token-secret">${escapeHtml(result.token)}</code><small>Private data reads: ${result.scopes.sensitive_read?'granted':'off'} · MCP approval gate: ${result.scopes.mcp_agent?'on':'off'}</small><button class="button button-secondary button-small" type="button" id="copy-issued-api-token">Copy token</button>`;target.classList.remove('hidden','error');$('api-token-label').value='';$('api-token-sensitive-reads').checked=false;$('api-token-mcp-agent').checked=false;$('copy-issued-api-token').addEventListener('click',async()=>{await navigator.clipboard.writeText(result.token);$('copy-issued-api-token').textContent='Copied'});await loadApiIntegrations();}catch(error){setResult('api-token-once',error.message,false);}finally{button.disabled=false;}});
+$('refresh-mcp-approvals').addEventListener('click',()=>loadMcpApprovals());
+$('copy-mcp-config').addEventListener('click',async()=>{try{await navigator.clipboard.writeText($('mcp-config-template').value);$('copy-mcp-config').textContent='Copied';setTimeout(()=>$('copy-mcp-config').textContent='Copy setup configuration',1800);}catch{$('api-settings-status').textContent='Clipboard unavailable; select and copy the configuration text.';}});
+function setStateLight(element,state){if(!element)return;const normalized=['running','stopped','starting','stopping','preparing','idle','error','paused','complete','unavailable'].includes(String(state).toLowerCase())?String(state).toLowerCase():'unavailable';element.dataset.state=normalized;const label=normalized==='running'?'Running':['starting','preparing'].includes(normalized)?'Starting':normalized==='stopping'?'Stopping':normalized==='complete'?'Stopped':normalized[0].toUpperCase()+normalized.slice(1);const text=element.querySelector('span');if(text)text.textContent=label;}
+let enrichmentPrerequisitesReady=false,lastObservedTrainingState='idle';
+function modelApiFailure(error){return /not found|404/i.test(String(error?.message||error))?'This VAOS service was started before the model-list feature was added. Restart VAOS after the current training run finishes, then reload the page.':`Model list request failed: ${error.message}. Check the admin service and retry.`;}
+function updateServiceLights(data){const services=data.services||{};for(const [id,key] of [['face-engine-state','face_matching'],['object-engine-state','object_detection'],['tracking-engine-state','object_tracking']])setStateLight($(id),services[key]||'starting');const trainingState=services.training||'idle';setStateLight($('enrichment-state'),trainingState);const active=['preparing','running','stopping'].includes(trainingState);if($('enrich-model'))$('enrich-model').disabled=active||!enrichmentPrerequisitesReady;if(lastObservedTrainingState!==trainingState&&!active)loadModelSources().catch(()=>{});lastObservedTrainingState=trainingState;const items=[['Admin service',services.admin||'running'],['Camera service',services.camera||'stopped'],['YOLO detector',services.object_detection||'starting'],['Live training',trainingState],['Camera tunnel',services.tunnel||'stopped']];$('system-service-lights').innerHTML=items.map(([name,state])=>`<span class="service-light-card"><span class="state-indicator" data-state="${escapeHtml(state)}"><i></i><span>${escapeHtml(name)} · ${escapeHtml(state==='running'?'Running':['starting','preparing'].includes(state)?'Starting':state==='stopping'?'Stopping':state[0].toUpperCase()+state.slice(1))}</span></span></span>`).join('');}
+async function loadModelSources(){const select=$('enrichment-source'),previous=select.value;select.disabled=true;try{const data=await api('/api/admin/ml/model-sources');const datasetSelect=$('enrichment-data-source'),datasetPrevious=datasetSelect.value,catalog=data.dataset_catalog||[];appendUnavailableDatasets(datasetSelect,catalog);$('enrichment-datasets-note').textContent=catalog.length?catalog.map(item=>`${item.name}: ${item.status}. ${item.message}`).join(' '):'No additional downloaded dataset folders were found. Choose reviewed samples alone or combine them with prepared COCO 2017.';select.replaceChildren();for(const source of data.sources||[])select.add(new Option(`${source.name} · ${source.kind}`,source.id));if(!select.options.length)select.add(new Option('No saved models found',''));if(Array.from(select.options).some(option=>option.value===previous))select.value=previous;else if(Array.from(select.options).some(option=>option.value==='best.pt'))select.value='best.pt';if(Array.from(datasetSelect.options).some(option=>option.value===datasetPrevious))datasetSelect.value=datasetPrevious;const datasetChoice=datasetSelect.value,reviewedOnly=datasetChoice==='reviewed',ready=reviewedOnly||Boolean(data.dataset?.coco2017_ready),reviewed=Number(data.dataset?.reviewed_count||0),types=Number(data.dataset?.reviewed_types||0),training=['preparing','running','stopping'].includes(data.training?.status);enrichmentPrerequisitesReady=ready&&reviewed>=20&&types>=2;let message;if(training)message='A model training run is already active. Wait for its safe stop or completion before starting another.';else if(reviewed<20||types<2)message=`Confirm ${Math.max(0,20-reviewed)} more samples across at least ${Math.max(0,2-types)} more object types.`;else if(!ready)message='COCO 2017 is not prepared. Choose reviewed samples only or prepare COCO first.';else message=`Ready · ${reviewedOnly?'reviewed camera samples':'COCO 2017 + reviewed samples'} · ${reviewed.toLocaleString()} reviewed crops across ${types} types.`;$('enrichment-message').textContent=message;$('enrichment-message').classList.remove('error');$('enrich-model').disabled=training||!enrichmentPrerequisitesReady;}catch(error){select.replaceChildren(new Option('Could not load saved models',''));$('enrichment-message').textContent=modelApiFailure(error);$('enrichment-message').classList.add('error');$('enrich-model').disabled=true;}finally{select.disabled=false;}}
+async function loadHuggingFaceModels(){const select=$('huggingface-model-source'),button=$('download-huggingface-model');select.disabled=true;button.disabled=true;select.replaceChildren(new Option('Checking Hugging Face…',''));try{const data=await api('/api/admin/ml/huggingface-models');select.replaceChildren();for(const model of data.models||[])select.add(new Option(model.name,model.filename));if(!select.options.length)select.add(new Option('No compatible YOLO26 files found',''));$('huggingface-model-status').textContent=`Showing compatible detection checkpoints from ${data.repository}.`;$('huggingface-model-status').classList.remove('error');button.disabled=!select.value;}catch(error){select.replaceChildren(new Option('Could not load Hugging Face models',''));$('huggingface-model-status').textContent=modelApiFailure(error);$('huggingface-model-status').classList.add('error');}finally{select.disabled=false;}}
 const defaultEngineSettings={face_matching_enabled:true,object_detection_enabled:true,object_tracking_enabled:true,match_threshold:Number('{{ threshold }}'),event_cooldown_seconds:Number('{{ cooldown }}'),object_confidence:0.25,object_image_size:512,camera_frame_interval_ms:500,camera_max_dimension:640};
 function engineSettingsPayload(){return{face_matching_enabled:$('setting-face').checked,object_detection_enabled:$('setting-objects').checked,object_tracking_enabled:$('setting-tracking').checked,match_threshold:Number($('setting-threshold').value),event_cooldown_seconds:Number($('setting-cooldown').value),object_confidence:Number($('setting-confidence').value),object_image_size:Number($('setting-image-size').value),camera_frame_interval_ms:Number($('setting-frame-interval').value),camera_max_dimension:Number($('setting-frame-size').value)};}
 async function saveEngineSettings(payload=engineSettingsPayload()){const button=document.querySelector('#engine-settings-form button[type="submit"]'),status=$('engine-settings-status');button.disabled=true;status.textContent='Saving core engine settings…';status.classList.remove('error');try{const result=await api('/api/admin/engine-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});await loadEngineSettings();status.textContent=result.message;}catch(error){status.textContent=error.message;status.classList.add('error');}finally{button.disabled=false;}}
@@ -322,13 +492,8 @@ $('engine-settings-form').addEventListener('submit',event=>{event.preventDefault
 $('engine-settings-reset').addEventListener('click',()=>{if(!confirm('Restore VAOS core controls to the current default behavior?'))return;saveEngineSettings(defaultEngineSettings);});
 async function loadDiagnostics() {
   const data = await api('/api/admin/status');
+  updateServiceLights(data);
   updateDashboardMetrics(data);
-  const device = data.device === 'not initialized' ? 'Waiting for camera frames' : data.device;
-  $('compute-device').textContent = `${device} · OpenCV ${data.opencv}`;
-  $('model-diagnostics').innerHTML = data.models.map(m => `<div class="diagnostic-card"><strong>${escapeHtml(m.name.toUpperCase())}</strong><span class="badge ${m.loaded ? 'badge-green' : m.valid ? 'badge-gray' : 'badge-gray'}">${m.loaded ? 'Loaded' : m.valid ? (m.name === 'yolo26m' ? 'Ready on disk · loads on first frame' : 'Ready on disk') : 'Missing'}</span><small title="${escapeHtml(m.path)}">${escapeHtml(m.path.split(/[\\/]/).slice(-1)[0])}</small>${m.error ? `<small class="model-error" title="${escapeHtml(m.error)}">${escapeHtml(m.error)}</small>` : ''}</div>`).join('');
-  $('live-cameras').innerHTML = data.cameras.length ? data.cameras.map(c => `<div class="list-row"><div class="row-main"><strong>${escapeHtml(c.name)}</strong><span class="row-subtext">${c.online ? 'Last frame ' + escapeHtml(shortDate(c.last_frame_at)) : c.active ? 'Waiting for camera frames' : 'Revoked'}${c.error ? ' · ' + escapeHtml(c.error) : ''}</span></div><span class="badge ${c.online ? 'badge-green' : 'badge-gray'}">${c.online ? 'Live' : 'Offline'}</span><span class="subtle-tag">${c.faces_detected || 0} faces · ${c.matched_count || 0} matches · ${Object.values(c.objects || {}).reduce((n,v)=>n+v[0],0)} objects</span></div>`).join('') : '<div class="empty-state">No camera links created yet.</div>';
-  $('object-events').innerHTML = data.objects.length ? data.objects.map(o => `<div class="list-row"><div class="row-main"><strong>${escapeHtml(o.class_name)} × ${o.count}</strong><span class="row-subtext">${escapeHtml(o.camera_name)} · average confidence ${Number(o.confidence).toFixed(2)}</span></div><span class="row-subtext">${escapeHtml(shortDate(o.timestamp))}</span></div>`).join('') : '<div class="empty-state">No object detections recorded yet.</div>';
-  $('object-refresh-status').textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
 $('refresh-btn').addEventListener('click', async () => { try { await refreshAll(); } catch (err) { alert(err.message); } });
 $('clear-events-btn').addEventListener('click', async () => {
@@ -336,22 +501,30 @@ $('clear-events-btn').addEventListener('click', async () => {
   try { await api('/api/admin/events', {method:'DELETE'}); await loadEvents(); } catch (err) { alert(err.message); }
 });
 async function loadModelSelection(){const data=await api('/api/admin/model-selection');const custom=$('live-model-choice').querySelector('option[value="custom"]');custom.disabled=!data.custom_available;$('live-model-choice').value=data.selected;}
-async function restartVaosServices(skipConfirm=false){if(!skipConfirm&&!confirm('Restart the VAOS admin and camera services? The temporary camera tunnel stays connected and the public camera URL remains the same.'))return;const status=$('system-action-status');status.textContent='Restart requested. Keeping the camera tunnel connected while local services reload…';status.classList.remove('error');$('restart-services').disabled=true;$('apply-model-choice').disabled=true;try{await api('/api/admin/services/restart',{method:'POST'});let wentOffline=false;for(let attempt=0;attempt<120;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));try{const response=await fetch('/health',{cache:'no-store'});if(!response.ok)wentOffline=true;else if(wentOffline){location.reload();return;}}catch{wentOffline=true;}}throw new Error('VAOS did not return within two minutes. Check the Windows launcher window and logs.');}catch(error){status.textContent=error.message;status.classList.add('error');$('restart-services').disabled=false;$('apply-model-choice').disabled=false;}}
+async function restartVaosServices(skipConfirm=false){const status=$('system-action-status');if({{ "true" if production_mode else "false" }}){status.textContent='Model choice saved. Restart the VAOS deployment from its production host to activate it.';$('apply-model-choice').disabled=false;return;}if({{ "false" if local_windows_launcher else "true" }}){status.textContent='Model choice saved. Restart both local VAOS services from their terminals or your process manager to activate it.';$('apply-model-choice').disabled=false;return;}if(!skipConfirm&&!confirm('Restart the VAOS admin and camera services? The camera URL stays connected.'))return;status.textContent='Restart requested. Keeping the camera tunnel connected while local services reload…';status.classList.remove('error');$('restart-services').disabled=true;$('apply-model-choice').disabled=true;try{await api('/api/admin/services/restart',{method:'POST'});let wentOffline=false;for(let attempt=0;attempt<120;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));try{const response=await fetch('/health',{cache:'no-store'});if(!response.ok)wentOffline=true;else if(wentOffline){location.reload();return;}}catch{wentOffline=true;}}throw new Error('VAOS did not return within two minutes. Check the launcher window and logs.');}catch(error){status.textContent=error.message;status.classList.add('error');$('restart-services').disabled=false;$('apply-model-choice').disabled=false;}}
 $('restart-services').addEventListener('click',()=>restartVaosServices());
 $('apply-model-choice').addEventListener('click',async()=>{const button=$('apply-model-choice');button.disabled=true;try{await api('/api/admin/model-selection',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model:$('live-model-choice').value})});await restartVaosServices(true);}catch(error){const status=$('system-action-status');status.textContent=error.message;status.classList.add('error');button.disabled=false;}});
+$('reload-model-sources').addEventListener('click',()=>loadModelSources());
+$('reload-huggingface-models').addEventListener('click',()=>loadHuggingFaceModels());
+$('huggingface-model-source').addEventListener('change',event=>{$('download-huggingface-model').disabled=!event.target.value;});
+$('download-huggingface-model').addEventListener('click',async()=>{const filename=$('huggingface-model-source').value;if(!filename)return;const button=$('download-huggingface-model'),status=$('huggingface-model-status');button.disabled=true;status.classList.remove('error');status.textContent=`Downloading ${filename} from Hugging Face…`;try{const result=await api('/api/admin/ml/huggingface-models',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({filename})});await loadModelSources();$('enrichment-source').value=result.id;status.textContent=`${filename} ${result.reused?'was already saved and has been added':'downloaded and added'} to Starting model (${(result.bytes/1024/1024).toFixed(1)} MB).`;}catch(error){status.textContent=error.message;status.classList.add('error');}finally{button.disabled=!$('huggingface-model-source').value;}});
+$('upload-model-source').addEventListener('click',async()=>{const file=$('model-source-file').files[0];if(!file){alert('Choose a trusted YOLO .pt model file first.');return;}const button=$('upload-model-source'),status=$('enrichment-message');button.disabled=true;status.textContent=`Importing ${file.name}…`;try{const form=new FormData();form.append('file',file);await api('/api/admin/ml/model-sources',{method:'POST',body:form});$('model-source-file').value='';status.textContent='Model source imported. Choose it from the list to start an enrichment run.';await loadModelSources();}catch(error){status.textContent=error.message;status.classList.add('error');alert(`Model import failed: ${error.message}`);}finally{button.disabled=false;}});
+$('enrichment-data-source').addEventListener('change',()=>loadModelSources().catch(()=>{}));$('enrich-model').addEventListener('click',async()=>{if(!confirm('Start a long model update from the selected checkpoint using the selected dataset and confirmed live samples? Available GPU(s) and memory-aware CPU workers will be used. The current best.pt is backed up before replacement. Continue?'))return;const button=$('enrich-model'),status=$('enrichment-message');button.disabled=true;status.classList.remove('error');status.textContent='Starting model update…';try{const result=await api('/api/admin/ml/enrichment',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({checkpoint:$('enrichment-source').value,dataset_source:$('enrichment-data-source').value})});status.textContent=result.message||'Model update started. Follow its progress in ML Training.';await loadModelSources();}catch(error){status.textContent=error.message;status.classList.add('error');alert(`Could not start model update: ${error.message}`);await loadModelSources().catch(()=>{});}finally{button.disabled=false;}});
 async function controlTunnel(action){const status=$('tunnel-action-status');for(const id of ['tunnel-pause','tunnel-start','tunnel-stop','tunnel-restart'])$(id).disabled=true;status.textContent=`Requesting tunnel ${action}…`;status.classList.remove('error');try{const result=await api(`/api/admin/tunnel/${action}`,{method:'POST'});status.textContent=result.message||`Tunnel ${action} requested.`;await refreshTunnelUrl();if(['start','stop','restart'].includes(action)){for(let attempt=0;attempt<100;attempt++){await new Promise(resolve=>setTimeout(resolve,1000));await refreshTunnelUrl();const state=(await api('/api/admin/tunnel')).status;if((action==='stop'&&state==='stopped')||(action==='start'&&state==='running')||(action==='restart'&&state==='running'))break;}}}catch(error){status.textContent=error.message;status.classList.add('error');await refreshTunnelUrl();}}
 $('tunnel-pause').addEventListener('click',()=>controlTunnel($('tunnel-state-badge').textContent.toLowerCase()==='paused'?'start':'pause'));
 $('tunnel-start').addEventListener('click',()=>controlTunnel('start'));
 $('tunnel-stop').addEventListener('click',()=>{if(confirm('Stop the camera tunnel? Camera links will stop working and the public URL will be removed. Local VAOS services will keep running.'))controlTunnel('stop');});
 $('tunnel-restart').addEventListener('click',()=>{if(confirm('Restart the camera tunnel? The temporary public URL will change. Local VAOS services will keep running.'))controlTunnel('restart');});
-async function refreshAll() { await Promise.all([loadCameras(), loadParticipants(), loadEvents(), loadDiagnostics(), loadModelSelection(), loadEngineSettings()]); }
-async function bootDashboard(){await refreshTunnelUrl();await refreshAll();}
+async function refreshAll() { await Promise.all([loadCameras(), loadParticipants(), loadEvents(), loadDiagnostics(), loadModelSelection(), loadEngineSettings(), loadModelSources(), loadHuggingFaceModels()]);loadApiIntegrations().catch(error=>{$('api-settings-status').textContent=`API controls are available after the new VAOS build is activated: ${error.message}`;$('api-settings-status').classList.add('error');});loadMcpApprovals(); }
+async function bootDashboard(){await Promise.all([refreshTunnelUrl(),refreshAdminTunnel()]);await refreshAll();}
 bootDashboard().catch(err => { document.querySelectorAll('.empty-state').forEach(e => e.textContent = err.message); });
 async function refreshSightingsLoop() { try { await loadEvents(); } catch { $('sighting-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshSightingsLoop, 5000); } }
 async function refreshObjectsLoop() { try { await loadDiagnostics(); } catch { $('object-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshObjectsLoop, 5000); } }
 setTimeout(refreshSightingsLoop, 5000);
 setTimeout(refreshObjectsLoop, 5000);
 setInterval(refreshTunnelUrl, 3000);
+setInterval(refreshAdminTunnel, 3000);
+setInterval(loadMcpApprovals, 10000);
 </script>
 </body>
 </html>

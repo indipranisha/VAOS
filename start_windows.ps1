@@ -30,18 +30,22 @@ $publicUrl = $null
 $adminHealthy = $false
 $cameraHealthy = $false
 $normalizedRoot = [System.IO.Path]::GetFullPath($PSScriptRoot).TrimEnd('\','/').ToLowerInvariant()
+$mainSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'main.py') -Raw
+$versionMatch = [regex]::Match($mainSource, '(?m)^APP_VERSION\s*=\s*["'']([^"'']+)["'']\s*$')
+if (-not $versionMatch.Success) { throw 'Could not read APP_VERSION from main.py; refusing to reuse a possibly stale VAOS service.' }
+$expectedAppVersion = $versionMatch.Groups[1].Value
 $sha256 = [System.Security.Cryptography.SHA256]::Create()
 $instanceBytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedRoot)
 $instanceId = ([System.BitConverter]::ToString($sha256.ComputeHash($instanceBytes))).Replace('-','').ToLowerInvariant().Substring(0,16)
 $sha256.Dispose()
 $adminStatus = $null
 $cameraStatus = $null
-try { $adminStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2; $adminHealthy = $adminStatus.app -in @('vaos-admin','local-camera-recognition-poc') } catch { }
-try { $cameraStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health' -TimeoutSec 2; $cameraHealthy = $cameraStatus.app -eq 'camera-station' } catch { }
-$adminThisFolder = $adminHealthy -and $adminStatus.instance_id -eq $instanceId
-$cameraThisFolder = $cameraHealthy -and $cameraStatus.instance_id -eq $instanceId
+try { $adminStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2; $adminHealthy = $adminStatus.app -eq 'vaos-admin' } catch { }
+try { $cameraStatus = Invoke-RestMethod -Uri 'http://127.0.0.1:8001/health' -TimeoutSec 2; $cameraHealthy = $cameraStatus.app -eq 'vaos-camera' } catch { }
+$adminThisFolder = $adminHealthy -and $adminStatus.instance_id -eq $instanceId -and $adminStatus.version -eq $expectedAppVersion
+$cameraThisFolder = $cameraHealthy -and $cameraStatus.instance_id -eq $instanceId -and $cameraStatus.version -eq $expectedAppVersion
 if ($adminThisFolder -and $cameraThisFolder) {
-  Write-Host 'This copy of the camera app is already running. Opening its dashboard.' -ForegroundColor Yellow
+  Write-Host 'This VAOS installation is already running. Opening its dashboard.' -ForegroundColor Yellow
   Start-Process 'http://127.0.0.1:8000'
   exit 0
 }
@@ -105,7 +109,7 @@ function Start-AppServices {
   $null = Wait-ForLocalService 'http://127.0.0.1:8000/health' 'vaos-admin' $script:admin 'VAOS admin service'
   $script:camera = Start-Process -FilePath $script:python -ArgumentList @('-m','uvicorn','camera_service:app','--host','127.0.0.1','--port','8001') -WorkingDirectory $PSScriptRoot -WindowStyle Hidden -RedirectStandardOutput $cameraLog -RedirectStandardError $cameraErrorLog -PassThru
   $children.Add($script:camera)
-  $null = Wait-ForLocalService 'http://127.0.0.1:8001/health' 'camera-station' $script:camera 'Public camera service'
+  $null = Wait-ForLocalService 'http://127.0.0.1:8001/health' 'vaos-camera' $script:camera 'Public camera service'
 }
 
 function Stop-Tunnel {
@@ -174,12 +178,19 @@ function Wait-ForLocalService([string]$url, [string]$expectedApp, [System.Diagno
 
 try {
   $startupPhase = 'checking Python setup'
+  $createdVenv = $false
   if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
     if (Get-Command py -ErrorAction SilentlyContinue) { & py -3.12 -m venv .venv }
     else { & python -m venv .venv }
     if ($LASTEXITCODE -ne 0) { throw 'Python 3.12 was not found. Install it from https://www.python.org/downloads/ and enable Add Python to PATH.' }
+    $createdVenv = $true
   }
   $python = Join-Path $PSScriptRoot '.venv\Scripts\python.exe'
+  if ($createdVenv) {
+    Write-Host 'Updating the Python package installer in the new virtual environment...'
+    & $python -m pip install --disable-pip-version-check --timeout 30 --retries 3 --upgrade pip
+    if ($LASTEXITCODE -ne 0) { throw 'The Python package installer could not be updated. Check internet access and try again before installing VAOS packages.' }
+  }
   $startupPhase = 'checking required packages and optional GPU support'
   New-Item -ItemType Directory -Path (Join-Path $PSScriptRoot 'data') -Force | Out-Null
   $nvidiaSmi = Get-Command nvidia-smi.exe -ErrorAction SilentlyContinue
@@ -239,23 +250,42 @@ try {
   $startupPhase = 'preparing the temporary camera tunnel'
   $cloudflared = Get-Command cloudflared.exe -ErrorAction SilentlyContinue
   if (-not $cloudflared) { $cloudflared = Get-Command cloudflared -ErrorAction SilentlyContinue }
-  if ($cloudflared) { $cloudflaredPath = $cloudflared.Source }
-  else {
+  if ($cloudflared) {
+    # A system-installed copy is trusted as an administrator-managed dependency.
+    # The copy downloaded into this installation is pinned and hash-verified below.
+    $cloudflaredPath = $cloudflared.Source
+    & $cloudflaredPath version *> $null
+    if ($LASTEXITCODE -ne 0) { throw 'The cloudflared executable found on PATH could not report its version. Install cloudflared from a trusted package source or remove the invalid PATH entry.' }
+  } else {
     $toolsDir = Join-Path $PSScriptRoot 'tools'
     New-Item -ItemType Directory -Path $toolsDir -Force | Out-Null
     $cloudflaredPath = Join-Path $toolsDir 'cloudflared.exe'
+    $cloudflaredVersion = '2026.11.0'
+    # SHA-256 published on the official cloudflare/cloudflared v2026.11.0 release.
+    $cloudflaredSha256 = 'd5c1d82031da6253dcdcff64c944cd0fe063016edeb2e4fd088075fc9bd52d0a'
     $cloudflaredWorks = $false
     if (Test-Path -LiteralPath $cloudflaredPath) {
-      & $cloudflaredPath version *> $null
-      $cloudflaredWorks = $LASTEXITCODE -eq 0
+      $existingHash = (Get-FileHash -LiteralPath $cloudflaredPath -Algorithm SHA256).Hash.ToLowerInvariant()
+      if ($existingHash -eq $cloudflaredSha256) {
+        $existingVersion = (& $cloudflaredPath version 2>&1 | Out-String)
+        $cloudflaredWorks = $LASTEXITCODE -eq 0 -and $existingVersion.Contains($cloudflaredVersion)
+      }
     }
     if (-not $cloudflaredWorks) {
-      Write-Host 'Downloading cloudflared from the official Cloudflare Windows release...'
+      Write-Host "Downloading cloudflared $cloudflaredVersion from its official pinned Windows release..."
       $cloudflaredTemp = "$cloudflaredPath.download-$PID"
-      Invoke-WebRequest -UseBasicParsing -Uri 'https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe' -OutFile $cloudflaredTemp
-      if ((Get-Item -LiteralPath $cloudflaredTemp).Length -lt 1000000) { Remove-Item -LiteralPath $cloudflaredTemp -Force -ErrorAction SilentlyContinue; throw 'The cloudflared download was incomplete. Check internet access and run this file again.' }
-      & $cloudflaredTemp version *> $null
-      if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $cloudflaredTemp -Force -ErrorAction SilentlyContinue; throw 'The downloaded cloudflared file is not a valid Windows executable.' }
+      try {
+        $releaseUrl = "https://github.com/cloudflare/cloudflared/releases/download/$cloudflaredVersion/cloudflared-windows-amd64.exe"
+        Invoke-WebRequest -UseBasicParsing -Uri $releaseUrl -OutFile $cloudflaredTemp
+        if ((Get-Item -LiteralPath $cloudflaredTemp).Length -lt 1000000) { throw 'The cloudflared download was incomplete.' }
+        $downloadHash = (Get-FileHash -LiteralPath $cloudflaredTemp -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($downloadHash -ne $cloudflaredSha256) { throw 'The cloudflared download did not match the SHA-256 published by its official release.' }
+        $downloadedVersion = (& $cloudflaredTemp version 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or -not $downloadedVersion.Contains($cloudflaredVersion)) { throw 'The downloaded cloudflared file did not report the pinned release version.' }
+      } catch {
+        Remove-Item -LiteralPath $cloudflaredTemp -Force -ErrorAction SilentlyContinue
+        throw "Could not verify the pinned cloudflared release. $($_.Exception.Message)"
+      }
       Move-Item -LiteralPath $cloudflaredTemp -Destination $cloudflaredPath -Force
     }
   }
@@ -295,6 +325,8 @@ try {
             Write-Host 'Restarting VAOS services while keeping the camera tunnel connected...'
             Stop-AppServices
             Start-AppServices
+            $passwordFile = Join-Path $PSScriptRoot 'data\admin_password.txt'
+            if (Test-Path -LiteralPath $passwordFile) { Write-Host "Dashboard sign-in: admin / $((Get-Content -LiteralPath $passwordFile -Raw).Trim())" }
             Write-Host "VAOS services are back. Camera tunnel remains at $publicUrl"
           }
           'tunnel_start' { Start-Tunnel }

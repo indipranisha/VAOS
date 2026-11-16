@@ -1,0 +1,14 @@
+{
+  "name": "VAOS",
+  "description": "Local-first video analytics operating system.",
+  "version": "1.1.0",
+  "license": "Apache-2.0",
+  "repository": "https://github.com/indipranisha/VAOS",
+  "creator": {
+    "name": "Prateek Dubey",
+    "role": "Founder and Original Creator",
+    "website": "https://prateekdubey.in",
+    "linkedin": "https://www.linkedin.com/in/progressiveprateek"
+  },
+  "creator_statement": "VAOS was originally created by Prateek Dubey and is developed with contributions from the open-source community."
+}
