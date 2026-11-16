@@ -4,7 +4,7 @@
 
 **Candidate branch:** [`codex/vaos-v1.1.0-candidate`](https://github.com/indipranisha/VAOS/tree/codex/vaos-v1.1.0-candidate)
 
-**Candidate branch tip validated by CI:** `4c06c0b` (documentation-only follow-up to implementation commit `a42a9af603b1bbfc5082ab23f54df79b3dee1fcd`)
+**Latest candidate branch tip validated by CI:** `8ce5dc315139930edf1b0ed017fa33639af84b94` ([workflow #31](https://github.com/indipranisha/VAOS/actions/runs/43850018586), all eight jobs passed)
 
 **Decision:** **NO-GO for staging deployment.**
 
@@ -18,6 +18,8 @@ The candidate was assembled in an isolated worktree from the existing `staging` 
 
 ## Verification evidence
 
+The following final candidate evidence supersedes earlier checkpoint rows where they report a lower test count or cancelled macOS jobs. Security findings and untested boundaries are documented in [the VAPT and stability assessment](VAPT_STABILITY_1.1.0.md).
+
 | Check | Result | Boundary |
 | --- | --- | --- |
 | Local repository suite | **300 tests: 298 passed, 2 skipped, in 62.728 seconds** on Windows/Python 3.12 | Isolated temporary test data. The skips are the POSIX-only permission check and optional MCP SDK test not installed into the existing environment. |
@@ -29,6 +31,8 @@ The candidate was assembled in an isolated worktree from the existing `staging` 
 | Markdown links | **259 local links checked across 58 Markdown files; 0 broken** | Relative-path verification only; external links and browser journeys are not validated by this check. |
 | Git whitespace check | `git diff --check` passed for the changes reviewed | Line-ending conversion warnings are present in this Windows checkout; no whitespace errors. |
 | GitHub cross-platform, browser, and production-container workflow | Run [`43799338324`](https://github.com/indipranisha/VAOS/actions/runs/43799338324) for branch tip `4c06c0b` completed successfully: all eight jobs passed (Windows/macOS/Ubuntu unit contracts, Windows/macOS/Ubuntu MCP stdio integration, browser UI smoke, and production CPU-container smoke). The implementation commit also passed all eight jobs in run [`43798765041`](https://github.com/indipranisha/VAOS/actions/runs/43798765041). | Automated CPython 3.12 matrix and Chromium smoke only; native camera/GPU/device and named user-host validation remain open. Earlier failures exposed Windows SQLite contention, mobile overflow, container health-check syntax, and a hosted-macOS timing threshold; fixes are documented. |
+| Final candidate CI (16 November 2026) | Run [`43850018586`](https://github.com/indipranisha/VAOS/actions/runs/43850018586) for commit `8ce5dc315139930edf1b0ed017fa33639af84b94`: **all eight jobs passed** — Windows, Ubuntu and macOS 15 Intel contract tests; Windows, Ubuntu and macOS 15 Intel MCP stdio integration; browser UI smoke; production CPU-container smoke. | CPython 3.12 hosted runners, synthetic local service/API fixtures and Chromium smoke. This is not M-series/MPS, CUDA, physical camera, performance-soak, target-host deployment or restore validation. |
+| Final isolated repository suite (Windows, Python 3.12) | **315 passed in 68.596 seconds; 3 platform-specific skips.** | Temporary isolated test data. Platform skips are not counted as platform hardware validation; the cross-OS CI suites passed their contract jobs. |
 | Isolated Playwright UI smoke | The source build served 12 pages; navigation to About, creator attribution metadata, keyboard focus, 390px overflow, and the Settings-to-REST MCP approval/revocation journey passed. Desktop and mobile screenshots are attached to `vaos-ui-smoke-43799338324`. | This is smoke coverage, not the seven required persona journeys or a complete WCAG/accessibility review. External creator destinations were checked against configured URLs but not opened from the browser. |
 | MCP Settings approval lifecycle and bridge error reporting | Local Windows and CI Playwright runs passed against temporary CPU-only services: disabled/read-only defaults, Settings policy save, placeholder-only config, MCP control-token creation, blocked write (428), approval, exact one-time retry and token revocation (401). The SDK subprocess checks capability denial, invalid routes, sensitive-read denials, replay/self-approval restrictions and actionable bounded JSON error details. | This validates Settings and the SDK-to-REST boundary, not a named desktop/editor MCP host or user-host configuration. |
 | Production CPU container build and isolated service smoke | The CI job built the CPU detector images, started isolated admin and camera services, waited for both health checks, imported OpenCV/PyTorch/Ultralytics (`4.14.0`, `2.15.0+cpu`, `8.4.183`), checked both `/health` endpoints and authenticated admin-to-camera internal model-status. | This is an isolated CI environment with no host ports; it does not verify target proxy/TLS, persistent storage, migration, backup/restore, GPU image or staging cutover. Local Docker is unavailable. |
