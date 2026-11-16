@@ -1,6 +1,6 @@
 # VAOS feature catalogue
 
-This catalogue reflects the v1.1.0 candidate source and evidence reviewed through 2026-11-16 (code commit `9127524`, validated in CI run `43766504519`) and is intentionally honest about gaps. “Implemented” means present in code; it does not imply production validation. By product-owner scope decision on 2026-11-12, AI Model Arena and Ready-to-Run Vision Applications are deferred beyond v1.1.0 and are not current-release deliverables. See [project status](PROJECT_STATUS.md) and the [release-readiness report](RELEASE_READINESS_1.1.0.md) for current evidence and the release decision.
+This catalogue reflects the v1.1.0 candidate source and evidence reviewed through 2026-11-16 (candidate commit `e834f09`, validated in CI run `43795703697`) and is intentionally honest about gaps. “Implemented” means present in code; it does not imply production validation. By product-owner scope decision on 2026-11-12, AI Model Arena and Ready-to-Run Vision Applications are deferred beyond v1.1.0 and are not current-release deliverables. See [project status](PROJECT_STATUS.md) and the [release-readiness report](RELEASE_READINESS_1.1.0.md) for current evidence and the release decision.
 
 | Feature | Status | Purpose and location | Inputs / outputs and dependencies | Permissions / API | Validation and limitations |
 | --- | --- | --- | --- | --- | --- |
