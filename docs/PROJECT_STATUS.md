@@ -7,7 +7,7 @@ Active release work is cross-platform operation and MCP host integration/documen
 | Retained work | Status at this checkpoint | Still required |
 | --- | --- | --- |
 | Cross-platform OS operation | Source changes and local Windows suite pass; Windows/macOS/Ubuntu unit jobs and isolated browser/container smoke checks passed in run `43766504519` for candidate `9127524`. | Native startup/camera checks; CUDA/MPS and bounded-resource checks on available devices; deployment target and rollback validation. |
-| MCP bridge and manuals | Optional stdio bridge and repository documentation are present; MCP stdio integration passed on Windows/macOS/Ubuntu in run `43766504519` for candidate `9127524`. | Test a named desktop/editor host and the Settings token/permission/approval/revocation journey. |
+| MCP bridge and manuals | Optional stdio bridge and repository documentation are present; MCP stdio integration passed on Windows/macOS/Ubuntu in run `43766504519` for candidate `9127524`. An isolated Windows browser now covers the Settings token/policy, exact-request approval, one-time retry and revocation flow. | Test a named desktop/editor host and accept its user-host configuration. |
 
 **Candidate:** [`codex/vaos-v1.1.0-candidate`](https://github.com/indipranisha/VAOS/tree/codex/vaos-v1.1.0-candidate), code commit `912752424be1a83eaa60e31945b5873394fdcc93`. This is a separate review branch. The original `staging` checkout remains untouched by candidate edits and is not a clean release source.
 
@@ -40,7 +40,7 @@ The current source and CI matrix are complete for the selected cross-platform/MC
 | Retained item | Current evidence | Remaining acceptance work |
 | --- | --- | --- |
 | Cross-platform OS/hardware operation | Platform helper/source changes are in the review branch; 300 local tests pass with 2 skips; Windows/macOS/Ubuntu CPython 3.12, browser and production CPU container jobs passed on candidate `9127524`. | Native platform startup/camera checks; CUDA/MPS and bounded-resource checks on available devices; deployment target and rollback validation. |
-| MCP bridge and manuals | Optional stdio bridge, permission notes and repository manuals are present; MCP stdio integration passed on Windows/macOS/Ubuntu for candidate `9127524`. | Validate one named desktop/editor host and the user-facing Settings token, permissions, approval and revocation journey. |
+| MCP bridge and manuals | Optional stdio bridge, permission notes and repository manuals are present; MCP stdio integration passed on Windows/macOS/Ubuntu for candidate `9127524`. An isolated browser now covers the Settings policy/token and one-time approval lifecycle. | Validate one named desktop/editor host and accept its user-host configuration. |
 
 **Release posture: NO-GO for staging deployment** until the remaining evidence is recorded. AI Model Arena and Ready-to-Run Vision Applications remain deferred by owner direction.
 
@@ -206,3 +206,9 @@ The focused storage suite passed **48 tests in 15.146 seconds**, the frontend/do
 ### Observability route catalogue follow-up (13 November 2026)
 
 The Feature 8 API/source-function catalogues now map all 28 observability HTTP handlers, including the two intentionally hidden, non-versioned local hooks; the hook documentation records their input/output boundaries, permissions and errors. A new AST-backed documentation contract verifies every observability handler name appears in the source-function catalogue. The focused documentation/frontend suite passed 19 tests in 0.458 seconds and the complete isolated Windows suite passed **256 tests in 60.856 seconds**. This is a documentation-quality improvement only; remaining release gates and the Feature 8 80% / 10–18 focused-hours estimate are unchanged. Staging remains **NO-GO**.
+
+### MCP Settings approval lifecycle browser coverage (16 November 2026)
+
+Extended `tools/ci_ui_smoke.py` to exercise the Settings integration controls against isolated CPU-only VAOS services and temporary storage. The browser confirms API/MCP access starts disabled and MCP starts read-only; saves a narrowly scoped event capability; verifies the setup template contains only a token placeholder; creates a control token marked for MCP; observes a tracking-rule write held with HTTP 428; approves it in the Settings inbox; retries the exact request successfully once; revokes the token; and confirms the bearer token then receives HTTP 401. The one-time secret is not screenshotted or logged, and the synthetic rule and data remain inside the temporary test service.
+
+Local Windows Playwright smoke passed for this lifecycle and the existing 12 routes, creator-link metadata, keyboard focus, and 390px overflow checks. The full isolated Windows/Python 3.14 repository suite passed **300 tests with 1 POSIX-only file-permission test skipped** in 70.774 seconds. The workflow's CPython 3.12 cross-platform CI rerun is pending this update. This adds evidence for the Settings-to-REST approval journey, not acceptance in a named desktop/editor MCP host. Other release gates remain open; **staging is NO-GO**.

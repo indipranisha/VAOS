@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -52,6 +53,109 @@ def wait_for_health(url: str, process: subprocess.Popen[bytes], name: str) -> No
         except Exception:
             time.sleep(0.4)
     raise RuntimeError(f"The isolated {name} service did not become healthy within 90 seconds.")
+
+
+def bearer_request(base_url: str, token: str, path: str, *, method: str = "GET", payload: dict | None = None, approval_id: str | None = None) -> tuple[int, dict]:
+    body = json.dumps(payload, separators=(",", ":")).encode("utf-8") if payload is not None else None
+    headers = {"Authorization": f"Bearer {token}"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    if approval_id:
+        headers["X-VAOS-MCP-Approval-ID"] = approval_id
+    request = urllib.request.Request(f"{base_url}{path}", data=body, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            return response.status, json.loads(response.read())
+    except urllib.error.HTTPError as response:
+        try:
+            return response.code, json.loads(response.read())
+        finally:
+            response.close()
+
+
+def verify_mcp_settings_journey(page, base_url: str) -> None:
+    """Exercise Settings, the MCP approval inbox, and token revocation in isolation."""
+    response = page.goto(f"{base_url}/settings", wait_until="domcontentloaded", timeout=30_000)
+    if response is None or response.status != 200:
+        raise RuntimeError("The MCP Settings page did not load successfully.")
+    page.locator("#api-token-list .empty-state").wait_for()
+    if page.locator("#api-enabled").is_checked() or page.locator("#mcp-enabled").is_checked():
+        raise RuntimeError("Fresh API and MCP access should be disabled by default.")
+    if not page.locator("#mcp-read-only").is_checked():
+        raise RuntimeError("Fresh MCP settings should start in read-only mode.")
+
+    page.locator("#api-enabled").check()
+    page.locator("#mcp-enabled").check()
+    page.locator("#mcp-read-only").uncheck()
+    page.locator("#mcp-sensitive").check()
+    for checkbox in page.locator(".mcp-group").all():
+        checkbox.uncheck()
+    page.locator('.mcp-group[value="events"]').check()
+    page.locator("#save-api-settings").click()
+    page.get_by_text("API and MCP controls saved.", exact=False).wait_for()
+
+    config_text = page.locator("#mcp-config-template").input_value()
+    config = json.loads(config_text)
+    env = config["mcpServers"]["vaos"]["env"]
+    if env.get("VAOS_API_TOKEN") != "PASTE_A_READ_OR_CONTROL_TOKEN_HERE":
+        raise RuntimeError("The MCP setup template must use a placeholder, never an issued token.")
+
+    page.locator("#api-token-label").fill("CI isolated MCP approval journey")
+    page.locator("#api-token-scope").select_option("control")
+    for checkbox in page.locator(".api-token-group").all():
+        checkbox.uncheck()
+    page.locator('.api-token-group[value="events"]').check()
+    page.locator("#api-token-mcp-agent").check()
+    page.locator('#api-token-form button[type="submit"]').click()
+    token_box = page.locator("#api-token-once")
+    token_box.wait_for(state="visible")
+    token = token_box.locator(".api-token-secret").inner_text().strip()
+    if not token.startswith("vaos_") or "MCP approval gate: on" not in token_box.inner_text():
+        raise RuntimeError("Settings did not issue a control token with the MCP approval gate enabled.")
+    prefix = token[:14]
+
+    rule_payload = {
+        "name": "CI MCP approval smoke rule",
+        "enabled": True,
+        "rule_type": "count_in_region",
+        "class_name": "person",
+        "min_confidence": 0.35,
+        "threshold_count": 1,
+        "min_consecutive_frames": 3,
+        "cooldown_seconds": 60,
+        "dwell_seconds": 10,
+        "camera_token": None,
+        "region": {"x": 0, "y": 0, "width": 1, "height": 1},
+    }
+    status, denied = bearer_request(base_url, token, "/api/v1/admin/tracking/rules", method="POST", payload=rule_payload)
+    approval = denied.get("detail", {})
+    if status != 428 or not approval.get("approval_required") or not approval.get("request_id"):
+        raise RuntimeError(f"MCP write was not safely held for approval (HTTP {status}).")
+
+    page.locator("#refresh-mcp-approvals").click()
+    approve_button = page.locator('[data-mcp-approval="approve"]').first
+    approve_button.wait_for(state="visible")
+    page.once("dialog", lambda dialog: dialog.accept())
+    approve_button.click()
+    page.locator("#mcp-approval-status").get_by_text("MCP action approved.", exact=False).wait_for()
+
+    status, created = bearer_request(
+        base_url, token, "/api/v1/admin/tracking/rules", method="POST",
+        payload=rule_payload, approval_id=approval["request_id"],
+    )
+    if status != 200 or created.get("rule", {}).get("name") != rule_payload["name"]:
+        raise RuntimeError(f"The exact approved MCP request could not be retried (HTTP {status}).")
+    page.locator("#refresh-mcp-approvals").click()
+    page.get_by_text("used", exact=True).wait_for()
+
+    revoke_button = page.locator(f'[data-revoke-api-token="{prefix}"]')
+    revoke_button.wait_for(state="visible")
+    page.once("dialog", lambda dialog: dialog.accept())
+    revoke_button.click()
+    page.locator(".api-token-row").filter(has_text="CI isolated MCP approval journey").get_by_text("Revoked", exact=True).wait_for()
+    status, rejected = bearer_request(base_url, token, "/api/v1/admin/tracking/rules")
+    if status != 401 or "revoked" not in str(rejected).casefold():
+        raise RuntimeError(f"A revoked MCP token remained usable (HTTP {status}).")
 
 
 def start_service(module: str, port: int, env: dict[str, str], log_path: Path) -> subprocess.Popen[bytes]:
@@ -165,6 +269,9 @@ def main() -> int:
                     raise RuntimeError("Keyboard focus did not reach a visible page control.")
                 page.screenshot(path=str(screenshot_dir / "about-keyboard-desktop.png"), full_page=True)
 
+                verify_mcp_settings_journey(page, base_url)
+                page.goto(f"{base_url}/", wait_until="domcontentloaded", timeout=30_000)
+
                 page.set_viewport_size({"width": 390, "height": 844})
                 for route in ("/", "/about", "/training"):
                     page.goto(f"{base_url}{route}", wait_until="domcontentloaded", timeout=30_000)
@@ -185,7 +292,7 @@ def main() -> int:
                 browser.close()
             if page_errors:
                 raise RuntimeError("Browser JavaScript errors: " + " | ".join(page_errors[:8]))
-            print(f"Browser smoke passed: {len(ROUTES)} routes, navigation, creator links, keyboard focus, and 390px overflow checks.")
+            print(f"Browser smoke passed: {len(ROUTES)} routes, navigation, creator links, keyboard focus, MCP Settings approval/revocation, and 390px overflow checks.")
             print(f"Screenshots written to {screenshot_dir}")
             return 0
         finally:
