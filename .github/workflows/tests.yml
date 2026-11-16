@@ -12,7 +12,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # macos-latest now maps to arm64; use the supported Intel label for
+        # reliable macOS OS-level contract coverage during arm64 capacity limits.
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
         python-version: ['3.12']
     runs-on: ${{ matrix.os }}
     steps:
@@ -27,7 +29,7 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Compile application modules
-        run: python -m py_compile main.py camera_service.py mcp_server.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py
+        run: python -m py_compile main.py camera_service.py request_limits.py safe_http.py safe_xml.py mcp_server.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py
       - name: Run isolated API/security contract tests
         run: python -m unittest discover -s tests -v
       - name: Install CLI package and verify command entry point
@@ -39,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-15-intel]
         python-version: ['3.12']
     runs-on: ${{ matrix.os }}
     steps:
