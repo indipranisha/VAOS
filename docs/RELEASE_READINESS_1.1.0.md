@@ -6,7 +6,7 @@
 
 **Implementation candidate validated by CI:** `8ce5dc315139930edf1b0ed017fa33639af84b94` ([workflow #31](https://github.com/indipranisha/VAOS/actions/runs/43850018586), all eight jobs passed)
 
-**Latest assessment-document revision validated by CI:** `2260500229c2814e8430bb460b127aaed1c0e3e9` ([workflow #32](https://github.com/indipranisha/VAOS/actions/runs/43851016270), all eight jobs passed)
+**Assessment report update validated by CI:** commit `2260500229c2814e8430bb460b127aaed1c0e3e9` passed [workflow #32](https://github.com/indipranisha/VAOS/actions/runs/43851016270); the subsequent report-link correction at `c43b20b80f2c4287386412ac855460afc4bcb5f1` passed [workflow #33](https://github.com/indipranisha/VAOS/actions/runs/43851740521). Both runs passed all eight jobs.
 
 **Decision:** **NO-GO for staging deployment.**
 
