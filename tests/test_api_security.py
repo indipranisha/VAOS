@@ -663,7 +663,7 @@ class ApiSecurityTests(unittest.TestCase):
                 self.assertEqual(current_days, 90)
 
     def test_retention_cleanup_rolls_back_when_audit_storage_fails(self):
-        with tempfile.TemporaryDirectory(prefix="vaos-retention-cleanup-audit-") as folder:
+        with _pause_app_heartbeat_for_temp_database(), tempfile.TemporaryDirectory(prefix="vaos-retention-cleanup-audit-") as folder:
             database = Path(folder) / "observability.db"
             observability_store.initialize_database(database)
             old_time = (datetime.now(timezone.utc) - timedelta(days=120)).isoformat(timespec="seconds").replace("+00:00", "Z")
