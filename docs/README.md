@@ -7,6 +7,9 @@ See [creator and community credits](CREDITS.md) for the creator's role and profi
 ## Guides
 
 - [Project overview](PROJECT_OVERVIEW.md)
+- [VAOS white paper](VAOS_WHITE_PAPER.md)
+- [LinkedIn collaboration post draft](LINKEDIN_COLLABORATION_POST.md)
+- [Creator and community credits](CREDITS.md)
 - [Installation and upgrade entry point](INSTALLATION.md)
 - [Complete user manual: architecture, operation, data and uninstall](COMPLETE_USER_MANUAL.md)
 - [All environment variables and configuration](CONFIGURATION_REFERENCE.md)

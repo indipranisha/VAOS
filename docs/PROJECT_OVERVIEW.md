@@ -6,6 +6,8 @@ VAOS (Video Analytics Operating System) is a local-first application for camera-
 
 VAOS was originally created by Prateek Dubey and is developed with contributions from the open-source community. See [creator and community credits](CREDITS.md) for the creator's role and profile links, or use the in-app **About VAOS** page.
 
+The creator's public links are [prateekdubey.in](https://prateekdubey.in) and [LinkedIn](https://www.linkedin.com/in/progressiveprateek). For an overview suitable for project collaborators, see the [VAOS white paper](VAOS_WHITE_PAPER.md).
+
 The application is licensed under Apache 2.0. Contributors retain appropriate attribution and third-party models, datasets and dependencies retain their own license terms. See the [contribution guide](../CONTRIBUTING.md) and [license](../LICENSE).
 
 ## Release status

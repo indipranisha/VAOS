@@ -85,7 +85,13 @@ VAOS source code is distributed under the [Apache License 2.0](LICENSE). Review 
 
 VAOS was originally created by Prateek Dubey and is developed with contributions from the open-source community.
 
-The [creator and community credits](docs/CREDITS.md) identify Prateek Dubey as Founder and Original Creator and provide the website and LinkedIn links. Contributors are acknowledged for their code, reviews, testing, documentation and other improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) to take part. Attribution does not replace existing copyright notices or claim ownership of community or third-party work; the Apache 2.0 license and applicable third-party terms remain in force.
+**Founder and Original Creator:** Prateek Dubey · [Website](https://prateekdubey.in) · [LinkedIn](https://www.linkedin.com/in/progressiveprateek)
+
+Contributors are acknowledged for their code, reviews, testing, documentation and other improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) to take part. Attribution does not replace existing copyright notices or claim ownership of community or third-party work; the Apache 2.0 license and applicable third-party terms remain in force. See the [creator and community credits](docs/CREDITS.md) for the full attribution policy.
+
+## VAOS white paper
+
+Read the [VAOS white paper](docs/VAOS_WHITE_PAPER.md) for the project architecture, workflows, security model, platform boundaries, validation status and ways to contribute.
 
 Structured creator and project metadata is recorded in [VAOS_PROJECT_METADATA.json](VAOS_PROJECT_METADATA.json) and [CITATION.cff](CITATION.cff). Product documentation begins at [docs/README.md](docs/README.md).
 

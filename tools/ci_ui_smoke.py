@@ -262,6 +262,12 @@ def main() -> int:
                         raise RuntimeError(f"{name} is missing safe new-tab link attributes.")
                 if not page.get_by_text(metadata["creator_statement"], exact=True).is_visible():
                     raise RuntimeError("The About page does not show the configured creator/community attribution.")
+                profile_address = metadata["creator"]["linkedin"]
+                visible_profile = page.locator(".creator-profile-address a")
+                if not visible_profile.is_visible() or visible_profile.inner_text().strip() != profile_address:
+                    raise RuntimeError("The About page does not visibly display the centrally configured LinkedIn address.")
+                if visible_profile.get_attribute("href") != profile_address:
+                    raise RuntimeError("The visible LinkedIn address does not link to the centrally configured profile.")
 
                 page.keyboard.press("Tab")
                 focused_tag = page.evaluate("document.activeElement && document.activeElement.tagName")
@@ -275,6 +281,8 @@ def main() -> int:
                 page.set_viewport_size({"width": 390, "height": 844})
                 for route in ("/", "/about", "/training"):
                     page.goto(f"{base_url}{route}", wait_until="domcontentloaded", timeout=30_000)
+                    if route == "/about" and not page.locator(".creator-profile-address a").is_visible():
+                        raise RuntimeError("The LinkedIn creator address is not visible at the mobile viewport.")
                     if route in {"/", "/about"}:
                         page.screenshot(path=str(screenshot_dir / f"{route.strip('/') or 'control-room'}-mobile.png"), full_page=True)
                     overflow = page.evaluate("document.documentElement.scrollWidth - window.innerWidth")

@@ -16,6 +16,7 @@
     .about-card h2{margin:0 0 8px;color:var(--ml-text);font-size:17px}.about-card p{color:var(--ml-muted);font-size:11px;line-height:1.7}
     .creator-name{margin:5px 0;color:var(--ml-text);font-size:22px;font-weight:750;letter-spacing:-.02em}
     .creator-role{display:inline-flex;padding:5px 8px;border:1px solid var(--ml-border);border-radius:999px;color:var(--ml-cyan,#60d5cb);font-size:9px;font-weight:700}
+    .creator-profile-address{display:grid;gap:4px;margin:12px 0 0;color:var(--ml-muted);font-size:9px}.creator-profile-address a{color:var(--ml-text);font-size:10px;overflow-wrap:anywhere;line-height:1.45;text-underline-offset:3px}
     .creator-links{display:flex;flex-wrap:wrap;gap:8px;margin-top:15px}.creator-links a{display:inline-flex;align-items:center;gap:7px;min-height:38px;padding:8px 11px;border:1px solid var(--ml-border);border-radius:8px;color:var(--ml-text);background:rgb(255 255 255 / 2%);font-size:10px;font-weight:650;text-decoration:none}.creator-links a:hover{border-color:var(--ml-cyan,#60d5cb);text-decoration:underline;text-underline-offset:3px}.creator-links a:focus-visible{outline:3px solid var(--ml-cyan,#60d5cb);outline-offset:2px}
     .about-attribution{padding:12px 14px;margin:16px 0 0;border-left:3px solid var(--ml-cyan,#60d5cb);border-radius:0 8px 8px 0;color:var(--ml-text);background:rgb(70 180 180 / 7%);font-size:11px;line-height:1.65}
     .about-footer{display:flex;flex-wrap:wrap;justify-content:space-between;gap:10px;margin-top:14px;color:var(--ml-muted);font-size:9px}.about-footer a{color:inherit}
@@ -53,6 +54,7 @@
           <a href="{{ project.creator.website }}" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>Creator website</a>
           <a href="{{ project.creator.linkedin }}" target="_blank" rel="noopener noreferrer"><span aria-hidden="true">↗</span>LinkedIn profile</a>
         </div>
+        <p class="creator-profile-address"><span>LinkedIn profile address</span><a href="{{ project.creator.linkedin }}" target="_blank" rel="noopener noreferrer">{{ project.creator.linkedin }}</a></p>
       </section>
       <section class="about-card" aria-labelledby="community-heading">
         <p class="eyebrow">OPEN SOURCE / COMMUNITY</p>
