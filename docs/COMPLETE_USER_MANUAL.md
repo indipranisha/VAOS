@@ -112,6 +112,8 @@ Box/class/DFL losses are optimization quantities and are typically interpreted a
 
 Training can consume substantial CPU, RAM, GPU memory and disk. More epochs, classes or samples do not automatically improve accuracy. Use a backup of the previous best weights and enough free storage for checkpoints and logs. Do not purge source/prepared data until the exact path and its reusability have been checked.
 
+Uploads are rejected with HTTP `413` if a request exceeds its route ceiling. Current ceilings range from 3 MiB for project bundles to 2 GiB plus multipart overhead for model-source import; smaller per-file validation rules still apply. See [the configuration reference](CONFIGURATION_REFERENCE.md#http-request-size-safeguards) for the full route list and limits.
+
 ### Tracking and event rules
 
 Object tracking joins detections across frames using the installed tracker and current camera conditions. It is approximate: occlusion, camera movement, similar objects and missed detections may split or merge tracks. Define regions and cooldowns carefully. Event rules create metadata events; they do not prove intent or identity. See [Tracking and events](TRACKING_AND_EVENTS.md).

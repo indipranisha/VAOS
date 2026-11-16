@@ -57,6 +57,16 @@ class ContainerSourceManifestTests(unittest.TestCase):
         self.assertIn("opencv-contrib-python-headless", base)
         self.assertIn('--no-deps "ultralytics==8.4.183"', dockerfile)
 
+    def test_dockerfile_upgrades_the_vulnerable_base_setuptools_after_dependencies(self):
+        dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
+        upgrade = 'pip install --no-cache-dir --upgrade "setuptools>=84.2.1,<85"'
+        self.assertIn(upgrade, dockerfile)
+        self.assertGreater(
+            dockerfile.index(upgrade),
+            dockerfile.index('--no-deps "ultralytics==8.4.183"'),
+            "the setuptools security floor must be applied after application/detector packages",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -21,6 +21,7 @@ RUN apt-get update \
          && pip install --no-cache-dir -r requirements-object-detection.txt \
          && pip install --no-cache-dir --no-deps "ultralytics==8.4.183"; \
        fi \
+    && pip install --no-cache-dir --upgrade "setuptools>=84.2.1,<85" \
     && useradd --system --uid 10001 --create-home vaos \
     && mkdir -p /var/lib/vaos/models /var/lib/vaos/ultralytics \
     && chown -R vaos:vaos /var/lib/vaos

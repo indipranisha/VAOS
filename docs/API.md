@@ -50,6 +50,10 @@ Invoke-RestMethod -Headers $headers -Uri 'http://127.0.0.1:8000/api/v1/admin/sta
 
 For remote connections, use HTTPS. VAOS accepts forwarded HTTPS indicators only from the loopback launcher/tunnel or an explicitly trusted proxy peer. If a reverse proxy is not passing the original HTTPS scheme through to the app, set `VAOS_TRUSTED_PROXY_CIDRS` to the narrow proxy address/range; do not trust an entire network without need. Never commit API tokens, admin passwords, private dataset paths, or local configuration files to Git.
 
+### Request body and upload limits
+
+The admin and camera services count incoming request bytes while they stream, before the multipart parser or API handler can spool the full body. This applies when `Content-Length` is absent or incorrect. Oversized requests receive HTTP `413`. The default API-write cap is 16 MiB; camera/video frame and single-photo routes allow up to 7 MiB, public multi-photo enrollment up to 33 MiB, project-bundle import up to 3 MiB, and model-source import up to 2 GiB plus multipart overhead. Existing per-file validation still applies, so a request ceiling does not imply that the entire request can be stored as one file. The caps are source-controlled rather than environment-configurable. See [the configuration reference](CONFIGURATION_REFERENCE.md#http-request-size-safeguards) and [`request_limits.py`](../request_limits.py).
+
 ## Endpoint catalogue
 
 The interactive OpenAPI reference is the source of truth for exact JSON fields and validation constraints. This catalogue groups every current API operation by purpose. All `/admin/...` operations require dashboard Basic authentication or an enabled API token with the appropriate scope, except API-key and integration-setting management, which deliberately requires dashboard Basic authentication only.
