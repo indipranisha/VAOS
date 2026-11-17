@@ -8,7 +8,15 @@
 - A separate camera site for browser-based feeds and optional participant enrollment invitations.
 - Local face detection and matching, object detection and tracking, plus CPU/GPU diagnostics.
 - Human-reviewed object sample collection, dataset preparation, custom detector training and per-epoch history.
+- An administrator-only API Explorer backed by the generated OpenAPI contract, plus a protected REST API and optional local MCP bridge.
+- An administrator-only Observability & Analytics Centre for runtime sessions, measured host/GPU telemetry, training/API events, bounded CSV/PDF reports and opt-in security-event delivery over signed HTTPS, Syslog TLS or OTLP/HTTP. JSON/NDJSON, CEF and ECS-shaped mappings are available; OCSF is deferred until required identity/source fields can be mapped truthfully. This source-tree capability remains subject to the release gates in [project status](docs/PROJECT_STATUS.md).
+- A local Hardware Intelligence page that reports measured device telemetry separately from unverified runtime states and non-applied estimates.
+- Camera-scoped object count and dwell rules with a bounded metadata-only event history, reusing the existing detector and approximate tracker.
 - SQLite persistence and local model/dataset storage.
+
+### v1.1.0 scope decision
+
+**AI Model Arena** and **Ready-to-Run Vision Applications** are not part of VAOS v1.1.0. This release will not include an Arena comparison workflow or a ready-made application/template gallery. Existing model selection, training, inference, and the separate Video Review workflow remain available. See [current project status](docs/PROJECT_STATUS.md) for the release scope and validation state.
 
 Face templates are sensitive biometric data. Use only with informed consent and appropriate authorization. Validate accuracy for the intended setting, restrict administrator access, define retention/deletion practices, and meet applicable privacy and biometric requirements before operational use. This release uses one administrator account and one instance of each service; do not horizontally scale without first moving runtime state and training coordination into shared infrastructure.
 
@@ -21,6 +29,10 @@ Face templates are sensitive biometric data. Use only with informed consent and 
 5. Create a camera link or QR code, enroll consenting participants, and use the **ML training** page for sample review and model training.
 
 The Windows launcher installs local dependencies, optional object-detection support and `cloudflared` when needed. First use may download models. Press Enter in the launcher window to stop the services and tunnel.
+
+## Cross-platform support status
+
+The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. Contract checks are configured for Windows, macOS and Ubuntu; the optional MCP stdio protocol check also runs against the official SDK client on that matrix. These jobs have not yet produced a recorded result for this checkout, and there is no local Mac/Linux device available for native verification. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [tested-versus-planned platform matrix](docs/PLATFORM_SUPPORT.md) for native setup steps and boundaries.
 
 ## Deploy on a production server
 
@@ -61,7 +73,21 @@ Production mode rejects a missing/weak password or a non-HTTPS camera URL. It hi
 
 VAOS provides a versioned REST interface at `/api/v1`, a protected interactive API reference at `/api/docs`, and a generated OpenAPI document at `/api/openapi.json`. API access is off by default and can be configured in **Settings → API and AI agent access**. Create expiring read-only or control tokens there; secrets are displayed once and stored as hashes. See [the REST API guide](docs/API.md) for endpoint groups and [the MCP guide](docs/MCP.md) for the optional local agent bridge.
 
-The MCP bridge is an optional stdio subprocess and does not add a permanent service or port. Install it only when needed with `requirements-mcp.txt`. It starts read-only, checks the VAOS policy for each call, and requires separate opt-ins for sensitive actions and deletions. Keep tokens out of Git and use HTTPS for remote API access.
+The MCP bridge is an optional stdio subprocess and does not add a permanent service or port. Install it only when needed with `requirements-mcp.txt`. It starts read-only, checks the VAOS policy for each call, and requires separate opt-ins for sensitive actions and deletions. MCP-bound control tokens also require a per-request, one-time administrator approval in Settings. Keep tokens out of Git and use HTTPS for remote API access.
+
+The optional `vaos` terminal client uses the same versioned API permissions. See the [CLI guide](docs/observability/cli-reference.md). Observability endpoints and retention/report limits are documented in the [Observability Centre guide](docs/observability/overview.md).
+
+## License
+
+VAOS is distributed under the [GNU Affero General Public License v3.0 only](LICENSE) (`AGPL-3.0-only`). This includes the bundled custom object-detection checkpoint at `data/ml_training/active/best.pt`. Review third-party model, package and dataset terms separately; this license does not change those terms. The bundled checkpoint was trained using Ultralytics YOLO and COCO 2017 plus human-reviewed samples; see [model notices](data/ml_training/active/MODEL_NOTICES.md) and its accompanying [training metadata](data/ml_training/active/metadata.json).
+
+## Creator and community
+
+VAOS was originally created by Prateek Dubey and is developed with contributions from the open-source community.
+
+The [creator and community credits](docs/CREDITS.md) identify Prateek Dubey as Founder and Original Creator and provide the website and LinkedIn links. Contributors are acknowledged for their code, reviews, testing, documentation and other improvements. See [CONTRIBUTING.md](CONTRIBUTING.md) to take part. Attribution does not replace existing copyright notices or claim ownership of community or third-party work; the AGPL-3.0-only license and applicable third-party terms remain in force.
+
+Structured creator and project metadata is recorded in [VAOS_PROJECT_METADATA.json](VAOS_PROJECT_METADATA.json) and [CITATION.cff](CITATION.cff). Product documentation begins at [docs/README.md](docs/README.md).
 
 ## Data and configuration
 
@@ -83,4 +109,4 @@ Windows stores files in the project `data` directory by default. Containers set 
 
 The face pipeline uses OpenCV Zoo YuNet and SFace. Object detection uses the configured Ultralytics YOLO model when optional dependencies are installed. Custom object training uses reviewed samples and datasets that pass VAOS preparation. Labels, class coverage and data quality affect results; more epochs alone do not guarantee better accuracy. Face similarity is not a probability. Do not treat model predictions as validated safety-critical decisions.
 
-YOLO and Ultralytics licensing may impose conditions on redistribution and deployment. Review licenses for all included and downloaded models/packages before commercial use.
+The included custom object-detection checkpoint was trained using Ultralytics YOLO and is distributed with VAOS under AGPL-3.0-only. The official [Ultralytics license guidance](https://www.ultralytics.com/license) describes licensing obligations for applications using its code or trained models. Review third-party dataset terms separately; this repository does not include the training images or annotations.

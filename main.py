@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import contextvars
+import base64
+import binascii
 import csv
 import json
 import logging
+import math
 import os
 import re
 import secrets
@@ -19,31 +23,42 @@ import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.request
 import zipfile
+from collections import deque
 from copy import deepcopy
 from io import BytesIO
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 import cv2
 import numpy as np
 import qrcode
 import qrcode.image.svg
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Request, UploadFile
+from hardware_intelligence import build_hardware_report
+import observability_store
+import observability_reports
+import observability_siem
+from project_bundles import BundleError, build_bundle, inspect_bundle
+from project_metadata import PROJECT_METADATA
+from runtime_compat import available_cpu_threads, default_datasets_dir, mps_is_available, resolve_inference_backend, resolve_training_device, training_resource_profile
+from tracking_rules import evaluate_rules, validate_rule
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.openapi.docs import get_swagger_ui_html
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBasic, HTTPBasicCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
+from pydantic import BaseModel, Field, StrictBool, StrictInt
 
 APP_DIR = Path(__file__).resolve().parent
 INSTANCE_ID = hashlib.sha256(str(APP_DIR).casefold().encode("utf-8")).hexdigest()[:16]
 DATA_DIR = Path(os.getenv("VAOS_DATA_DIR", str(APP_DIR / "data"))).expanduser().resolve()
 MODEL_DIR = DATA_DIR / "models"
 DB_PATH = DATA_DIR / "app.db"
+OBSERVABILITY_REPORT_DIR = DATA_DIR / "observability" / "reports"
 PASSWORD_PATH = DATA_DIR / "admin_password.txt"
 TUNNEL_URL_PATH = DATA_DIR / "public_camera_url.txt"
 TUNNEL_STATE_PATH = DATA_DIR / "tunnel_state.json"
@@ -87,6 +102,7 @@ MODEL_SHA256 = {
 
 APP_VERSION = "1.1.0"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
+LOCAL_WINDOWS_LAUNCHER = os.name == "nt"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
 CAMERA_INTERNAL_URL = os.getenv("VAOS_CAMERA_INTERNAL_URL", "http://127.0.0.1:8001").strip().rstrip("/")
 if PRODUCTION_MODE:
@@ -116,30 +132,139 @@ MAX_ML_SAMPLES = 50_000
 TRAINING_EPOCH_OPTIONS = (10, 15, 20, 25, 30, 35, 40, 45, 50)
 
 app = FastAPI(title="VAOS (Video Analytics - Operating System)", version=APP_VERSION, docs_url=None, redoc_url=None, openapi_url=None)
+
+
+class TrackingInputModel(BaseModel):
+    class Config:
+        extra = "forbid"
+
+
+class TrackingRegionInput(TrackingInputModel):
+    x: float = Field(default=0, ge=0, le=1)
+    y: float = Field(default=0, ge=0, le=1)
+    width: float = Field(default=1, gt=0, le=1)
+    height: float = Field(default=1, gt=0, le=1)
+
+
+class TrackingRuleInput(TrackingInputModel):
+    name: str = Field(min_length=1, max_length=80)
+    enabled: StrictBool = True
+    rule_type: Literal["count_in_region", "dwell_in_region"]
+    class_name: str = Field(min_length=1, max_length=80)
+    min_confidence: float = Field(default=0.35, ge=0.05, le=0.99)
+    threshold_count: StrictInt = Field(default=1, ge=1, le=100)
+    min_consecutive_frames: StrictInt = Field(default=3, ge=1, le=120)
+    cooldown_seconds: StrictInt = Field(default=60, ge=5, le=3600)
+    dwell_seconds: float = Field(default=10, ge=1, le=3600)
+    camera_token: str | None = Field(default=None, max_length=160)
+    region: TrackingRegionInput = Field(default_factory=TrackingRegionInput)
+
+
+class TrackingRulePatch(TrackingInputModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    enabled: StrictBool | None = None
+    rule_type: Literal["count_in_region", "dwell_in_region"] | None = None
+    class_name: str | None = Field(default=None, min_length=1, max_length=80)
+    min_confidence: float | None = Field(default=None, ge=0.05, le=0.99)
+    threshold_count: StrictInt | None = Field(default=None, ge=1, le=100)
+    min_consecutive_frames: StrictInt | None = Field(default=None, ge=1, le=120)
+    cooldown_seconds: StrictInt | None = Field(default=None, ge=5, le=3600)
+    dwell_seconds: float | None = Field(default=None, ge=1, le=3600)
+    camera_token: str | None = Field(default=None, max_length=160)
+    region: TrackingRegionInput | None = None
+
+
+class MCPInvocationInput(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    tool: str = Field(min_length=3, max_length=64)
+    outcome: Literal["success", "error"]
+    duration_ms: float = Field(ge=0, le=300_000)
+    invocation_id: str | None = Field(default=None, min_length=32, max_length=32)
+
+
+class ObservabilityRetentionPolicyInput(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    event_details_days: StrictInt
+    metric_observations_max_days: StrictInt
+    delivery_history_days: StrictInt
+    confirm_shorter: StrictBool = False
+
+
+class ObservabilityRetentionApplyInput(BaseModel):
+    class Config:
+        extra = "forbid"
+
+    confirm_expired_data_redaction: StrictBool
 app.mount("/static", StaticFiles(directory=str(APP_DIR / "static")), name="static")
 templates = Jinja2Templates(directory=str(APP_DIR / "templates"))
 security = HTTPBasic(auto_error=False)
 api_bearer = HTTPBearer(auto_error=False, scheme_name="VAOSBearer", bearerFormat="VAOS API token")
+observability_correlation_context: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "vaos_observability_correlation_id", default=None
+)
+OBSERVABILITY_CORRELATION_HEADER = "X-VAOS-Correlation-ID"
+OBSERVABILITY_CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,119}\Z")
+
+
+@contextmanager
+def observability_request_context(request: Request):
+    """Assign a bounded request correlation ID and propagate it to request events."""
+    supplied = request.headers.get(OBSERVABILITY_CORRELATION_HEADER.lower(), "").strip()
+    correlation_id = supplied if OBSERVABILITY_CORRELATION_ID_PATTERN.fullmatch(supplied) else secrets.token_hex(16)
+    request.state.vaos_correlation_id = correlation_id
+    context_token = observability_correlation_context.set(correlation_id)
+    try:
+        yield correlation_id
+    finally:
+        observability_correlation_context.reset(context_token)
+
+
+def _start_context_preserving_thread(target: Any, *, name: str, args: tuple[Any, ...] = ()) -> threading.Thread:
+    """Run a user-requested worker with a snapshot of its request context."""
+    context = contextvars.copy_context()
+    thread = threading.Thread(target=context.run, args=(target, *args), name=name, daemon=True)
+    thread.start()
+    return thread
 
 
 @app.middleware("http")
 async def versioned_api_alias(request: Request, call_next):
     """Serve the stable /api/v1 URL family through the existing handlers."""
-    path = request.scope.get("path", "")
-    if path == "/api/v1":
-        request.scope["path"] = "/api"
-        request.scope["raw_path"] = b"/api"
-    elif path.startswith("/api/v1/"):
-        suffix = path[len("/api/v1"):]
-        target = "/health" if suffix == "/health" else "/api" + suffix
-        request.scope["path"] = target
-        request.scope["raw_path"] = target.encode("ascii", "ignore")
-    return await call_next(request)
+    with observability_request_context(request) as correlation_id:
+        request_started = time.perf_counter()
+        original_path = request.scope.get("path", "")
+        path = original_path
+        if path == "/api/v1":
+            request.scope["path"] = "/api"
+            request.scope["raw_path"] = b"/api"
+        elif path.startswith("/api/v1/"):
+            suffix = path[len("/api/v1"):]
+            target = "/health" if suffix == "/health" else "/api" + suffix
+            request.scope["path"] = target
+            request.scope["raw_path"] = target.encode("ascii", "ignore")
+        response = await call_next(request)
+        response.headers[OBSERVABILITY_CORRELATION_HEADER] = correlation_id
+        response_elapsed_ms = max(0.0, (time.perf_counter() - request_started) * 1000.0)
+        if response.status_code in {401, 403} and not getattr(request.state, "vaos_auth_audit_handled", False):
+            route = getattr(request.scope.get("route"), "path", None)
+            await run_in_threadpool(_record_authorization_denial, request, response.status_code, route)
+        if original_path.startswith(("/api/", "/api/v1/")):
+            route = getattr(request.scope.get("route"), "path", None)
+            await run_in_threadpool(queue_observability_api_request, route or "unmatched", request.method, response.status_code)
+            record_observability_api_latency(response_elapsed_ms)
+        return response
 
 model_lock = threading.RLock()
 recognition_lock = threading.Lock()
 admin_auth_lock = threading.Lock()
 admin_auth_failures: dict[str, list[float]] = {}
+admin_auth_audit_last: dict[str, float] = {}
+admin_auth_success_audit_last: dict[str, float] = {}
+authorization_denial_audit_last: dict[str, float] = {}
 ADMIN_AUTH_FAILURE_LIMIT = 10
 ADMIN_AUTH_FAILURE_WINDOW = 900.0
 face_detector = None
@@ -152,6 +277,12 @@ model_errors: dict[str, str] = {}
 last_emitted: dict[tuple[str, int], float] = {}
 last_object_emitted: dict[tuple[str, str], float] = {}
 live_tracks: dict[str, list[dict[str, Any]]] = {}
+tracking_rule_state: dict[tuple[Any, ...], dict[str, Any]] = {}
+tracking_rule_state_lock = threading.Lock()
+tracking_rule_cache: dict[str, Any] = {"loaded_at": 0.0, "rows": []}
+tracking_rule_cache_lock = threading.Lock()
+TRACKING_RULE_CACHE_SECONDS = 3.0
+MAX_OBJECT_RULE_EVENTS = 5000
 last_ml_capture: dict[tuple[str, str], float] = {}
 OBJECT_CLASSES = ("person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck", "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench", "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra", "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee", "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove", "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup", "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange", "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch", "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse", "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink", "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier", "toothbrush")
 OBJECT_EVENTS_COOLDOWN = 60
@@ -163,6 +294,8 @@ HF_YOLO_REPO_ID = "Ultralytics/YOLO26"
 HF_YOLO_FILES = {f"yolo26{size}.pt" for size in "nsmlx"}
 ML_DATASETS_DIR = ML_DATA_DIR / "public_datasets"
 ML_DATASETS_DIR.mkdir(parents=True, exist_ok=True)
+PROJECT_BUNDLE_DIR = DATA_DIR / "projects"
+PROJECT_BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
 ML_TRAINING_LOG_PATH = ML_DATA_DIR / "training.log"
 ml_training_state: dict[str, Any] = {"status": "idle", "message": "No training job has been started."}
 ml_dataset_import_state: dict[str, Any] = {"status": "idle", "message": "No public dataset import is running."}
@@ -171,17 +304,328 @@ ml_training_lock = threading.Lock()
 ml_dataset_import_lock = threading.Lock()
 ml_dataset_prepare_lock = threading.Lock()
 ml_training_log_lock = threading.Lock()
+observability_lifecycle_lock = threading.Lock()
+observability_session_id: str | None = None
+observability_installation_id: str | None = None
+observability_heartbeat_stop: threading.Event | None = None
+observability_heartbeat_thread: threading.Thread | None = None
+observability_api_lock = threading.Lock()
+observability_api_latency_lock = threading.Lock()
+OBSERVABILITY_API_LATENCY_SAMPLE_LIMIT = 4096
+observability_api_latency_samples: deque[float] = deque(maxlen=OBSERVABILITY_API_LATENCY_SAMPLE_LIMIT)
+observability_api_latency_dropped = 0
+observability_inference_latency_lock = threading.Lock()
+OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT = 4096
+observability_inference_latency_samples: deque[float] = deque(maxlen=OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT)
+observability_inference_latency_dropped = 0
+observability_video_review_latency_lock = threading.Lock()
+observability_video_review_latency_samples: deque[float] = deque(maxlen=OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT)
+observability_video_review_latency_dropped = 0
+observability_host_sample_lock = threading.Lock()
+observability_host_sample_loss_count = 0
+observability_host_sample_loss_metric_counts: dict[str, int] = {}
+observability_host_sample_loss_event_id: str | None = None
+# The private SQLite sidecar is the durable fallback when the primary counter
+# buffer cannot be written. These bounded maps are the final fallback only when
+# both SQLite stores are unavailable; a hard process exit can lose those counts.
+observability_api_aggregates: dict[tuple[str, str, int], int] = {}
+observability_frame_aggregates: dict[str, int] = {}
+OBSERVABILITY_API_MAX_KEYS = 500
+observability_training_lock = threading.Lock()
+observability_training_queue: deque[dict[str, Any]] = deque()
+observability_training_dropped = 0
+observability_training_recovery_lock = threading.Lock()
+observability_training_recovery_started = False
+OBSERVABILITY_TRAINING_QUEUE_LIMIT = 500
+OBSERVABILITY_TRAINING_LOG_MAX_BYTES = 1_000_000
+OBSERVABILITY_TRAINING_LOG_ROTATIONS = 20
 system_metrics_lock = threading.Lock()
 system_metrics_cache: dict[str, Any] = {"sampled_at": 0.0, "data": {}}
 training_devices_cache: dict[str, Any] = {"sampled_at": 0.0, "data": {}}
 
 
+def _add_observability_api_counter_fallback(
+    route: str,
+    method: str,
+    status: int,
+    count: int = 1,
+    *,
+    target: dict[tuple[str, str, int], int] | None = None,
+    max_keys: int | None = None,
+) -> None:
+    """Aggregate failed durable API counts without exceeding the key bound.
+
+    Overflow uses route=other, method=OTHER, status=0 to mean a mixed bucket
+    whose individual route/method/status could not be retained during storage
+    unavailability. Counts remain exact while detail is intentionally coarsened.
+    ``target`` and ``max_keys`` permit an isolated deterministic unit test.
+    """
+    aggregates = observability_api_aggregates if target is None else target
+    limit = max(1, int(OBSERVABILITY_API_MAX_KEYS if max_keys is None else max_keys))
+    key = (str(route)[:120], str(method).upper()[:12], int(status))
+    overflow_key = ("other", "OTHER", 0)
+    increment = max(0, int(count))
+    if increment == 0:
+        return
+    with observability_api_lock:
+        if key in aggregates:
+            aggregates[key] += increment
+            return
+        if len(aggregates) >= limit:
+            if overflow_key not in aggregates:
+                retained = sum(aggregates.values())
+                aggregates.clear()
+                aggregates[overflow_key] = retained
+            aggregates[overflow_key] += increment
+            return
+        if key != overflow_key and len(aggregates) >= limit - 1:
+            aggregates[overflow_key] = aggregates.get(overflow_key, 0) + increment
+            return
+        aggregates[key] = aggregates.get(key, 0) + increment
+
+
+def _add_observability_frame_counter_fallback(
+    camera_ref: str,
+    count: int = 1,
+    *,
+    target: dict[str, int] | None = None,
+    max_keys: int | None = None,
+) -> None:
+    """Keep frame-counter fallback detail bounded while preserving its total."""
+    aggregates = observability_frame_aggregates if target is None else target
+    limit = max(1, int(OBSERVABILITY_API_MAX_KEYS if max_keys is None else max_keys))
+    key = str(camera_ref)[:120]
+    overflow_key = "other"
+    increment = max(0, int(count))
+    if increment == 0:
+        return
+    with observability_api_lock:
+        if key in aggregates:
+            aggregates[key] += increment
+            return
+        if len(aggregates) >= limit:
+            if overflow_key not in aggregates:
+                retained = sum(aggregates.values())
+                aggregates.clear()
+                aggregates[overflow_key] = retained
+            aggregates[overflow_key] += increment
+            return
+        if key != overflow_key and len(aggregates) >= limit - 1:
+            aggregates[overflow_key] = aggregates.get(overflow_key, 0) + increment
+            return
+        aggregates[key] = aggregates.get(key, 0) + increment
+
+
+def record_observability_api_latency(duration_ms: float) -> None:
+    """Retain a bounded recent sample for low-frequency API latency quantiles."""
+    global observability_api_latency_dropped
+    try:
+        sample = float(duration_ms)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(sample) or sample < 0:
+        return
+    with observability_api_latency_lock:
+        if len(observability_api_latency_samples) >= OBSERVABILITY_API_LATENCY_SAMPLE_LIMIT:
+            observability_api_latency_dropped += 1
+        observability_api_latency_samples.append(sample)
+
+
+def record_observability_inference_latency(duration_ms: float) -> None:
+    """Retain bounded successful camera-frame processing durations."""
+    global observability_inference_latency_dropped
+    try:
+        sample = float(duration_ms)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(sample) or sample < 0:
+        return
+    with observability_inference_latency_lock:
+        if len(observability_inference_latency_samples) >= OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT:
+            observability_inference_latency_dropped += 1
+        observability_inference_latency_samples.append(sample)
+
+
+def record_observability_video_review_latency(duration_ms: float) -> None:
+    """Retain bounded successful local-video frame-processing durations."""
+    global observability_video_review_latency_dropped
+    try:
+        sample = float(duration_ms)
+    except (TypeError, ValueError, OverflowError):
+        return
+    if not math.isfinite(sample) or sample < 0:
+        return
+    with observability_video_review_latency_lock:
+        if len(observability_video_review_latency_samples) >= OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT:
+            observability_video_review_latency_dropped += 1
+        observability_video_review_latency_samples.append(sample)
+
+
+def _queue_observability_counter_fallback(metric_key: str, delta: int, dimensions: dict[str, Any]) -> None:
+    """Try the durable private sidecar before falling back to bounded process memory."""
+    try:
+        observability_store.buffer_counter_fallback(DB_PATH, metric_key=metric_key, delta=delta, dimensions=dimensions)
+        return
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.debug("Could not durably queue a VAOS observability counter; retaining bounded memory fallback", exc_info=True)
+    if metric_key == "api.requests":
+        _add_observability_api_counter_fallback(
+            str(dimensions.get("route", "other")),
+            str(dimensions.get("method", "OTHER")),
+            int(dimensions.get("status", 0)),
+            delta,
+        )
+        return
+    camera_ref = str(dimensions.get("camera_ref", ""))
+    source_type = str(dimensions.get("source_type", "camera"))
+    if source_type != "camera":
+        camera_ref = f"source:{source_type}"
+    _add_observability_frame_counter_fallback(camera_ref or "other", delta)
+
+
+def queue_observability_api_request(route: str, method: str, status: int) -> None:
+    """Durably aggregate REST request counts with a bounded recovery fallback."""
+    route = str(route or "unmatched")[:120]
+    if not route.startswith("/api/"):
+        route = "unmatched"
+    method_value = str(method).upper()[:12]
+    status_value = max(100, min(599, int(status)))
+    dimensions = {"route": route, "method": method_value, "status": status_value}
+    try:
+        observability_store.buffer_counter_delta(DB_PATH, metric_key="api.requests", dimensions=dimensions)
+        return
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        _queue_observability_counter_fallback("api.requests", 1, dimensions)
+
+
+def queue_observability_inference_frame(camera_token: str) -> None:
+    """Durably count a successful frame using a one-way camera reference."""
+    camera_ref = hashlib.sha256(str(camera_token).encode("utf-8", errors="replace")).hexdigest()[:20]
+    dimensions = {"camera_ref": camera_ref, "source_type": "camera"}
+    try:
+        observability_store.buffer_counter_delta(DB_PATH, metric_key="inference.frames_processed", dimensions=dimensions)
+        return
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        _queue_observability_counter_fallback("inference.frames_processed", 1, dimensions)
+
+
+def queue_observability_video_review_frame() -> None:
+    """Durably count local-video analysis without retaining file or session identity."""
+    dimensions = {"source_type": "local_video"}
+    try:
+        observability_store.buffer_counter_delta(DB_PATH, metric_key="inference.frames_processed", dimensions=dimensions)
+        return
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        _queue_observability_counter_fallback("inference.frames_processed", 1, dimensions)
+
+
+def flush_observability_api_requests(max_events: int = 500) -> int:
+    """Retry memory fallbacks, then flush primary and secondary durable queues."""
+    with observability_api_lock:
+        api_batch = list(observability_api_aggregates.items())
+        frame_batch = list(observability_frame_aggregates.items())
+        observability_api_aggregates.clear()
+        observability_frame_aggregates.clear()
+    for (route, method, status), count in api_batch:
+        dimensions = {"route": route, "method": method, "status": status}
+        try:
+            observability_store.buffer_counter_delta(DB_PATH, metric_key="api.requests", delta=count, dimensions=dimensions)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            _queue_observability_counter_fallback("api.requests", count, dimensions)
+    for camera_ref, count in frame_batch:
+        if camera_ref.startswith("source:"):
+            dimensions = {"source_type": camera_ref.partition(":")[2]}
+        elif camera_ref == "other":
+            dimensions = {"camera_ref": "other", "source_type": "mixed"}
+        else:
+            dimensions = {"camera_ref": camera_ref, "source_type": "camera"}
+        try:
+            observability_store.buffer_counter_delta(DB_PATH, metric_key="inference.frames_processed", delta=count, dimensions=dimensions)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            _queue_observability_counter_fallback("inference.frames_processed", count, dimensions)
+    persisted = 0
+    try:
+        persisted += observability_store.flush_counter_buffer(DB_PATH, maximum=max(1, int(max_events)))
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.debug("Could not flush durable VAOS counter buffer", exc_info=True)
+    try:
+        persisted += observability_store.flush_counter_fallback(DB_PATH, maximum=max(1, int(max_events)))
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.debug("Could not replay the durable VAOS observability fallback queue", exc_info=True)
+    return persisted
+
+
+def observability_counter_fallback_pending() -> bool:
+    """Best-effort check for durable secondary rows awaiting replay."""
+    try:
+        return observability_store.counter_fallback_pending(DB_PATH)
+    except (OSError, sqlite3.Error, RuntimeError):
+        return observability_store.counter_fallback_database_path(DB_PATH).exists()
+
+
+def observability_counter_queue_status() -> dict[str, Any]:
+    """Report counter persistence health without exposing paths or dimensions."""
+    primary = {"available": False, "pending_rows": 0, "pending_increments": 0}
+    try:
+        with observability_store._connection(DB_PATH, timeout_seconds=0.25) as db:
+            row = db.execute(
+                "SELECT COUNT(*) AS row_count,COALESCE(SUM(delta),0) AS increments FROM observability_counter_buffer"
+            ).fetchone()
+        primary = {"available": True, "pending_rows": int(row["row_count"]), "pending_increments": int(row["increments"])}
+    except (OSError, sqlite3.Error, RuntimeError):
+        logger.debug("Could not inspect the primary observability counter buffer", exc_info=True)
+    try:
+        fallback = observability_store.counter_fallback_status(DB_PATH)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        logger.debug("Could not inspect the durable observability fallback queue", exc_info=True)
+        fallback = {
+            "available": False,
+            "pending_rows": 0,
+            "pending_increments": 0,
+            "overflow_rows": 0,
+            "overflow_increments": 0,
+            "database_bytes": 0,
+            "database_limit_bytes": observability_store.FALLBACK_COUNTER_MAX_BYTES,
+            "live_row_limit": observability_store.FALLBACK_COUNTER_BUFFER_LIMIT,
+            "batch_row_limit": observability_store.FALLBACK_COUNTER_BATCH_LIMIT,
+        }
+    try:
+        security_fallback = observability_siem.security_event_fallback_status(DB_PATH)
+    except (OSError, sqlite3.Error, RuntimeError, ValueError):
+        logger.debug("Could not inspect the authentication security-event fallback queue", exc_info=True)
+        security_fallback = {
+            "available": False, "pending_rows": 0, "dropped_events": 0, "database_bytes": 0,
+        }
+    with observability_api_lock:
+        memory_keys = len(observability_api_aggregates) + len(observability_frame_aggregates)
+        memory_increments = sum(observability_api_aggregates.values()) + sum(observability_frame_aggregates.values())
+        memory_overflow = observability_api_aggregates.get(("other", "OTHER", 0), 0) + observability_frame_aggregates.get("other", 0)
+    memory = {"pending_keys": memory_keys, "pending_increments": memory_increments, "overflow_increments": memory_overflow}
+    if not primary["available"] or not fallback["available"] or not security_fallback["available"] or memory_keys or security_fallback["dropped_events"]:
+        state = "degraded"
+    elif fallback["pending_rows"] or security_fallback["pending_rows"]:
+        state = "recovery_pending"
+    else:
+        state = "no_backlog_observed"
+    return {
+        "state": state,
+        "scope": "admin_process_snapshot",
+        "writes_verified": False,
+        "primary": primary,
+        "fallback": fallback,
+        "security_event_fallback": security_fallback,
+        "memory": memory,
+        "updated_at": utc_now(),
+    }
+
+
 def training_device_inventory() -> dict[str, Any]:
-    """List usable CPU thread counts and NVIDIA devices without importing torch."""
+    """List process-usable CPU threads and installed NVIDIA/Apple accelerators."""
     if time.monotonic() - float(training_devices_cache["sampled_at"]) < 30:
         return training_devices_cache["data"]
-    cpu_threads = max(1, os.cpu_count() or 1)
+    cpu_threads = available_cpu_threads()
     gpus: list[dict[str, Any]] = []
+    mps_available = False
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=index,name", "--format=csv,noheader"],
@@ -194,7 +638,13 @@ def training_device_inventory() -> dict[str, Any]:
                 gpus.append({"index": int(parts[0]), "name": parts[1]})
     except (OSError, subprocess.SubprocessError):
         pass
-    training_devices_cache.update({"sampled_at": time.monotonic(), "data": {"cpu_threads": cpu_threads, "gpus": gpus}})
+    if sys.platform == "darwin":
+        try:
+            import torch
+            mps_available = mps_is_available(torch)
+        except Exception:
+            logger.debug("Apple MPS is unavailable to this PyTorch runtime", exc_info=True)
+    training_devices_cache.update({"sampled_at": time.monotonic(), "data": {"cpu_threads": cpu_threads, "gpus": gpus, "mps_available": mps_available}})
     return training_devices_cache["data"]
 
 
@@ -202,29 +652,312 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+@contextmanager
+def _training_log_process_lock(path: Path, *, timeout_seconds: float = 15.0):
+    """Serialize training-log reads, appends and rotation across VAOS processes."""
+    lock_path = path.with_name(path.name + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        if os.fstat(lock_file.fileno()).st_size == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                lock_file.seek(0)
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the training-log file lock")
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the training-log file lock")
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def write_training_log(level: str, message: str, **details: Any) -> None:
-    """Append concise, private training events to the durable local log."""
+    """Append concise, private training events to the bounded local log history."""
     record = {"timestamp": utc_now(), "level": level.upper(), "message": message, **details}
+    if "observability_session_id" not in record:
+        record["observability_session_id"] = observability_session_id
+    request_correlation_id = observability_correlation_context.get()
+    if request_correlation_id and "correlation_id" not in record:
+        record["correlation_id"] = request_correlation_id
     try:
         with ml_training_log_lock:
-            if ML_TRAINING_LOG_PATH.exists() and ML_TRAINING_LOG_PATH.stat().st_size > 1_000_000:
-                backup = ML_TRAINING_LOG_PATH.with_suffix(".log.1")
-                backup.unlink(missing_ok=True)
-                ML_TRAINING_LOG_PATH.replace(backup)
-            with ML_TRAINING_LOG_PATH.open("a", encoding="utf-8") as log_file:
-                log_file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
+            with _training_log_process_lock(ML_TRAINING_LOG_PATH):
+                if ML_TRAINING_LOG_PATH.exists() and ML_TRAINING_LOG_PATH.stat().st_size > OBSERVABILITY_TRAINING_LOG_MAX_BYTES:
+                    # Keep a bounded history so startup recovery can restore events
+                    # across multiple rotations without allowing unbounded disk use.
+                    oldest = ML_TRAINING_LOG_PATH.with_suffix(f".log.{OBSERVABILITY_TRAINING_LOG_ROTATIONS}")
+                    oldest.unlink(missing_ok=True)
+                    for index in range(OBSERVABILITY_TRAINING_LOG_ROTATIONS - 1, 0, -1):
+                        source = ML_TRAINING_LOG_PATH.with_suffix(f".log.{index}")
+                        if source.exists():
+                            source.replace(ML_TRAINING_LOG_PATH.with_suffix(f".log.{index + 1}"))
+                    ML_TRAINING_LOG_PATH.replace(ML_TRAINING_LOG_PATH.with_suffix(".log.1"))
+                with ML_TRAINING_LOG_PATH.open("a", encoding="utf-8") as log_file:
+                    log_file.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
     except OSError:
         logger.exception("Could not write a VAOS training event to the local training log")
+        # If the append failed (for example, transient disk pressure), try the
+        # durable store immediately instead of leaving this record only in the
+        # bounded in-memory queue. The event ID is deterministic, so the normal
+        # queue flush or startup log replay remains safe if either path retries.
+        if not _persist_observability_training_event(record):
+            logger.warning("Training event could not be written to the log or observability database")
+    queue_observability_training_event(record)
+
+
+def _persist_observability_training_event(record: dict[str, Any], *, use_current_session: bool = True) -> bool:
+    """Mirror a training record and its epoch metrics in one SQLite transaction."""
+    message = str(record.get("message", ""))
+    normalized = re.sub(r"[^a-z0-9]+", "_", message.casefold()).strip("_") or "event"
+    details = {key: value for key, value in record.items() if key not in {"timestamp", "level", "message"}}
+    run_id = str(details.get("run_id") or ml_training_state.get("run_id") or "")
+    try:
+        details_fingerprint = json.dumps(details, sort_keys=True, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        details_fingerprint = normalized
+    event_id_seed = "|".join((str(record.get("timestamp", "")), run_id, normalized, str(details.get("epoch", "")), str(details.get("batch", "")), details_fingerprint))
+    event_id = hashlib.sha256(event_id_seed.encode("utf-8", errors="replace")).hexdigest()
+    counter_deltas: dict[str, int] = {}
+    if message == "Training run initialized":
+        counter_deltas["training.jobs_started"] = 1
+    elif message == "Training epoch completed":
+        counter_deltas["training.epochs_completed"] = 1
+    elif message == "Training finished":
+        status = str(details.get("status", "")).casefold()
+        if status == "complete":
+            counter_deltas["training.jobs_completed"] = 1
+        elif status == "failed":
+            counter_deltas["training.jobs_failed"] = 1
+    elif message == "Training failed":
+        counter_deltas["training.jobs_failed"] = 1
+    metric_observations: list[dict[str, Any]] = []
+    if message == "Training epoch completed" and isinstance(details.get("stats"), dict):
+        raw_stats = details["stats"]
+        metric_names = {
+            "box_loss": "training.box_loss", "class_loss": "training.class_loss",
+            "dfl_loss": "training.dfl_loss", "precision": "training.precision",
+            "recall": "training.recall", "map50": "training.map50",
+            "map50_95": "training.map50_95", "learning_rate": "training.learning_rate",
+        }
+        dimensions = {
+            key: value for key, value in {
+                "training_job_id": run_id or None,
+                "dataset_id": details.get("source") or ml_training_state.get("source"),
+                "model_id": details.get("initial_model") or ml_training_state.get("initial_model"),
+                "epoch": details.get("epoch"),
+            }.items() if value is not None
+        }
+        for stat_name, metric_key in metric_names.items():
+            value = raw_stats.get(stat_name)
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                metric_observations.append({
+                    "metric_key": metric_key, "value": float(value), "dimensions": dimensions,
+                    "provenance": "VAOS training epoch callback",
+                    "timestamp": str(record.get("timestamp") or utc_now()),
+                })
+    run_metric_values: dict[str, Any] = {}
+    if message == "Training run initialized":
+        run_metric_values["training.dataset_images"] = details.get("images")
+    if message == "Training finished":
+        run_metric_values["training.dataset_annotations"] = details.get("annotations")
+        run_metric_values["training.job_duration_seconds"] = details.get("elapsed_seconds")
+    elif message == "Training failed":
+        run_metric_values["training.job_duration_seconds"] = details.get("elapsed_seconds")
+    if run_metric_values:
+        run_dimensions = {
+            key: value for key, value in {
+                "training_job_id": run_id or None,
+                "dataset_id": details.get("source") or ml_training_state.get("source"),
+                "model_id": details.get("initial_model") or ml_training_state.get("initial_model"),
+            }.items() if value is not None
+        }
+        for metric_key, value in run_metric_values.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)) and float(value) >= 0:
+                metric_observations.append({
+                    "metric_key": metric_key,
+                    "value": float(value),
+                    "dimensions": run_dimensions,
+                    "provenance": "Resolved VAOS training run metadata",
+                    "measurement_scope": "Selected dataset inventory" if metric_key.startswith("training.dataset_") else "Training worker monotonic elapsed time",
+                    "timestamp": str(record.get("timestamp") or utc_now()),
+                })
+    try:
+        observability_store.record_event(
+            DB_PATH,
+            event_type=f"training.{normalized[:75]}",
+            component="training",
+            level=str(record.get("level", "INFO")),
+            message=message,
+            details=details,
+            session_id=record.get("observability_session_id") if "observability_session_id" in record else (observability_session_id if use_current_session else None),
+            correlation_id=details.get("correlation_id") or observability_correlation_context.get(),
+            event_id=event_id,
+            timestamp=str(record.get("timestamp") or utc_now()),
+            counter_deltas=counter_deltas,
+            metric_observations=metric_observations,
+        )
+        return True
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.debug("Could not persist the redacted training event to observability storage", exc_info=True)
+        return False
+
+
+def reconcile_training_log_observability() -> dict[str, int]:
+    """Replay retained training JSONL records after restart, oldest first and idempotently."""
+    with ml_training_log_lock:
+        segments = []
+        with _training_log_process_lock(ML_TRAINING_LOG_PATH):
+            retained_paths = [
+                ML_TRAINING_LOG_PATH.with_suffix(f".log.{index}")
+                for index in range(OBSERVABILITY_TRAINING_LOG_ROTATIONS, 0, -1)
+            ]
+            retained_paths.append(ML_TRAINING_LOG_PATH)
+            for path in retained_paths:
+                try:
+                    if path.is_file():
+                        segments.append(path.read_text(encoding="utf-8", errors="replace"))
+                except OSError:
+                    logger.warning("Could not read a retained training log during observability recovery")
+    parsed = persisted = invalid = failed = 0
+    for segment in segments:
+        for line in segment.splitlines():
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                invalid += 1
+                continue
+            if not isinstance(record, dict) or not record.get("timestamp") or not record.get("message"):
+                invalid += 1
+                continue
+            parsed += 1
+            if _persist_observability_training_event(record, use_current_session=False):
+                persisted += 1
+            else:
+                failed += 1
+    if invalid or failed:
+        logger.warning("Training observability recovery examined %d record(s); %d malformed and %d not persisted", parsed, invalid, failed)
+    elif persisted:
+        logger.info("Training observability recovery reconciled %d retained training record(s) idempotently", persisted)
+    return {"parsed": parsed, "processed": persisted, "invalid": invalid, "failed": failed}
+
+
+def queue_observability_training_event(record: dict[str, Any]) -> None:
+    """Add a bounded, redacted training record to the background telemetry queue."""
+    global observability_training_dropped
+    safe = observability_store.redact_details(record)
+    priority = str(record.get("level", "INFO")).upper() in {"WARNING", "ERROR", "CRITICAL"} or str(record.get("message", "")) in {"Training run initialized", "Training epoch completed", "Training finished", "Training failed"}
+    with observability_training_lock:
+        if len(observability_training_queue) >= OBSERVABILITY_TRAINING_QUEUE_LIMIT:
+            replaceable = next((item for item in observability_training_queue if item.get("message") == "Training progress update"), None)
+            if replaceable is not None:
+                observability_training_queue.remove(replaceable)
+                observability_training_dropped += 1
+            elif priority:
+                observability_training_queue.popleft()
+                observability_training_dropped += 1
+            else:
+                observability_training_dropped += 1
+                return
+        observability_training_queue.append(safe)
+
+
+def _requeue_observability_training_events(records: list[dict[str, Any]]) -> None:
+    """Restore failed batch records in order while keeping the queue bounded."""
+    global observability_training_dropped
+    for item in reversed(records):
+        priority = str(item.get("level", "INFO")).upper() in {"WARNING", "ERROR", "CRITICAL"} or str(item.get("message", "")) in {
+            "Training run initialized", "Training epoch completed", "Training finished", "Training failed"
+        }
+        with observability_training_lock:
+            if len(observability_training_queue) >= OBSERVABILITY_TRAINING_QUEUE_LIMIT:
+                replaceable = next((queued for queued in observability_training_queue if queued.get("message") == "Training progress update"), None)
+                if replaceable is not None:
+                    observability_training_queue.remove(replaceable)
+                    observability_training_dropped += 1
+                elif priority:
+                    observability_training_queue.popleft()
+                    observability_training_dropped += 1
+                else:
+                    observability_training_dropped += 1
+                    continue
+            observability_training_queue.appendleft(item)
+
+
+def flush_observability_training_events(max_events: int = 10) -> int:
+    global observability_training_dropped
+    with observability_training_lock:
+        batch = [observability_training_queue.popleft() for _ in range(min(max(1, int(max_events)), len(observability_training_queue)))]
+        dropped = observability_training_dropped
+        observability_training_dropped = 0
+    persisted = 0
+    if dropped:
+        try:
+            event_id = hashlib.sha256(f"telemetry-drop|{os.getpid()}|{utc_now()}|{dropped}".encode()).hexdigest()
+            observability_store.record_event(DB_PATH, event_id=event_id, event_type="observability.queue_overflow", component="observability", level="WARNING", message="Training telemetry queue overflowed; lower-priority records were omitted.", details={"dropped_records": dropped})
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            with observability_training_lock:
+                observability_training_dropped += dropped
+    for index, item in enumerate(batch):
+        if _persist_observability_training_event(item):
+            persisted += 1
+        else:
+            _requeue_observability_training_events(batch[index:])
+            break
+    return persisted
 
 
 def read_training_log() -> list[dict[str, Any]]:
     try:
         with ml_training_log_lock:
-            if not ML_TRAINING_LOG_PATH.is_file():
-                return []
-            lines = ML_TRAINING_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
-        return [json.loads(line) for line in lines if line.strip()]
-    except (OSError, json.JSONDecodeError):
+            with _training_log_process_lock(ML_TRAINING_LOG_PATH):
+                if not ML_TRAINING_LOG_PATH.is_file():
+                    return []
+                lines = ML_TRAINING_LOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines()[-80:]
+        records = []
+        invalid = 0
+        for line in lines:
+            if not line.strip():
+                continue
+            try:
+                record = json.loads(line)
+            except json.JSONDecodeError:
+                invalid += 1
+                continue
+            if isinstance(record, dict):
+                records.append(record)
+            else:
+                invalid += 1
+        if invalid:
+            logger.warning("Training log view skipped %d malformed or non-object line(s)", invalid)
+        return records
+    except OSError:
         logger.exception("Could not read the VAOS local training log")
         return []
 
@@ -296,7 +1029,7 @@ def model_runtime_status() -> dict[str, Any]:
     object_model_path = Path(object_detector.model_path) if object_detector is not None else selected_object_model_path()
     trained_active = bool(object_detector and object_model_path.resolve() == trained_model_path.resolve())
     model_status.append({"name": "yolo26m", "path": str(object_model_path), "valid": object_model_path.is_file(), "loaded": object_detector is not None, "custom_model_active": trained_active, "classes": list(object_detector.class_names) if object_detector else [], "error": model_errors.get("yolo26m")})
-    return {"opencv": cv2.__version__, "device": compute_device, "cuda_available": bool(object_detector and object_detector.use_cuda), "custom_model_active": trained_active, "object_model_loaded": object_detector is not None, "models": model_status}
+    return {"opencv": cv2.__version__, "device": compute_device, "inference_backend": object_detector.device_kind if object_detector else "unknown", "cuda_available": bool(object_detector and object_detector.use_cuda), "mps_available": bool(object_detector and object_detector.mps_available), "custom_model_active": trained_active, "object_model_loaded": object_detector is not None, "models": model_status}
 
 
 def get_selected_object_model() -> str:
@@ -359,7 +1092,192 @@ def get_or_create_admin_password() -> str:
 ADMIN_PASSWORD = "" if os.getenv("CAMERA_SERVICE_IMPORT") == "1" else get_or_create_admin_password()
 
 
+def _record_observability_security_event(event_type: str, outcome: str, *, component: str, details: dict[str, Any] | None = None, actor_ref: str | None = None, correlation_id: str | None = None) -> bool:
+    try:
+        return bool(observability_siem.record_security_event_resilient(
+            DB_PATH, event_type=event_type, outcome=outcome, component=component,
+            actor_ref=actor_ref or ("local-admin" if outcome not in {"denied", "failed"} else "unauthenticated-client"),
+            details=details,
+            correlation_id=correlation_id if correlation_id is not None else observability_correlation_context.get(),
+        ))
+    except (OSError, sqlite3.Error, ValueError, RuntimeError, TypeError):
+        logger.warning(
+            "VAOS security event persistence was not confirmed; the atomic audit/event/outbox transaction may have rolled back, and the related operation may already have completed",
+            exc_info=True,
+        )
+        return False
+
+
+def _record_observability_security_event_in_transaction(
+    db: sqlite3.Connection,
+    event_type: str,
+    outcome: str,
+    *,
+    component: str,
+    details: dict[str, Any] | None = None,
+    actor_ref: str | None = None,
+    correlation_id: str | None = None,
+) -> bool:
+    """Couple a state change and its audit/outbox event in one DB transaction."""
+    try:
+        return observability_siem.record_security_event_and_enqueue_in_transaction(
+            db, event_type=event_type, outcome=outcome, component=component,
+            actor_ref=actor_ref or ("local-admin" if outcome not in {"denied", "failed"} else "unauthenticated-client"),
+            details=details,
+            correlation_id=correlation_id if correlation_id is not None else observability_correlation_context.get(),
+        )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        # Normalize persistence failures to an OperationalError so API routes
+        # can return their existing sanitized 503 response and roll back the
+        # caller-owned transaction, regardless of the underlying I/O failure.
+        raise sqlite3.OperationalError("VAOS observability audit persistence failed.") from exc
+
+
+def _record_observability_dataset_result(
+    dataset_kind: str,
+    *,
+    succeeded: bool,
+    duration_seconds: float,
+    image_count: int | None = None,
+    train_image_count: int | None = None,
+    validation_image_count: int | None = None,
+    class_count: int | None = None,
+    annotation_count: int | None = None,
+) -> None:
+    """Record privacy-limited dataset preparation facts without paths or image data."""
+    if dataset_kind not in {"managed_local", "uvh26", "kaggle_auto", "coco2017"}:
+        return
+
+    def safe_count(value: int | None) -> int | None:
+        if value is None or isinstance(value, bool):
+            return None
+        try:
+            number = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        return number if 0 <= number <= 2**53 else None
+
+    counts = {
+        "image_count": safe_count(image_count),
+        "train_image_count": safe_count(train_image_count),
+        "validation_image_count": safe_count(validation_image_count),
+        "class_count": safe_count(class_count),
+        "annotation_count": safe_count(annotation_count),
+    }
+    try:
+        elapsed = float(duration_seconds)
+    except (TypeError, ValueError, OverflowError):
+        elapsed = 0.0
+    if not math.isfinite(elapsed) or elapsed < 0:
+        elapsed = 0.0
+
+    metric_dimensions = {"dataset_kind": dataset_kind}
+    counter_deltas = {"datasets.preparations_completed" if succeeded else "datasets.preparations_failed": 1}
+    if succeeded and counts["image_count"]:
+        counter_deltas["datasets.images_prepared"] = counts["image_count"]
+    if succeeded and counts["annotation_count"]:
+        counter_deltas["datasets.annotations_validated"] = counts["annotation_count"]
+    counter_dimensions = {key: metric_dimensions for key in counter_deltas}
+    details: dict[str, Any] = {"dataset_kind": dataset_kind}
+    if succeeded:
+        details.update({
+            key: value for key, value in {
+                "prepared_count": counts["image_count"],
+                "train_count": counts["train_image_count"],
+                "validation_count": counts["validation_image_count"],
+                "class_count": counts["class_count"],
+                "box_count": counts["annotation_count"],
+            }.items() if value is not None
+        })
+    try:
+        observability_store.record_event(
+            DB_PATH,
+            event_type="dataset.validation_succeeded" if succeeded else "dataset.validation_failed",
+            component="datasets",
+            level="INFO" if succeeded else "WARNING",
+            message=f"Dataset preparation {'completed' if succeeded else 'failed'} ({dataset_kind}).",
+            details=details,
+            counter_deltas=counter_deltas,
+            counter_dimensions=counter_dimensions,
+            correlation_id=observability_correlation_context.get(),
+            metric_observations=[{
+                "metric_key": "datasets.preparation_duration_seconds",
+                "value": elapsed,
+                "dimensions": metric_dimensions,
+                "provenance": "monotonic dataset preparation worker timer",
+                "measurement_scope": "dataset validation or import worker",
+                "estimated": False,
+            }],
+        )
+    except Exception as exc:
+        # Dataset preparation remains successful even if optional analytics storage is unavailable.
+        logger.warning("Dataset preparation observability could not be recorded (%s).", type(exc).__name__)
+
+
+def _effective_client_ip(request: Request) -> str:
+    """Trust forwarding headers only when the direct peer is a configured proxy."""
+    peer_text = request.client.host if request.client and request.client.host else "unknown"
+    try:
+        peer_ip = ipaddress.ip_address(peer_text)
+    except ValueError:
+        return peer_text
+    trusted_proxy = False
+    for network_text in os.getenv("VAOS_TRUSTED_PROXY_CIDRS", "").split(","):
+        try:
+            if peer_ip in ipaddress.ip_network(network_text.strip(), strict=False):
+                trusted_proxy = True
+                break
+        except ValueError:
+            continue
+    if trusted_proxy:
+        forwarded = request.headers.get("cf-connecting-ip", "").strip()
+        if not forwarded:
+            forwarded = request.headers.get("x-forwarded-for", "").split(",", 1)[0].strip()
+        try:
+            if forwarded:
+                return str(ipaddress.ip_address(forwarded))
+        except ValueError:
+            pass
+    return str(peer_ip)
+
+
+def _record_authorization_denial(request: Request, status_code: int, route_template: str | None) -> None:
+    """Audit coalesced authentication/authorization denials without persisting client addresses."""
+    client_key = _effective_client_ip(request)
+    route = str(route_template or _redact_api_path(request.url.path))[:240]
+    method = str(request.method or "GET").upper()[:12]
+    now = time.monotonic()
+    key = f"{client_key}|{int(status_code)}|{method}|{route}"
+    should_record = False
+    with admin_auth_lock:
+        previous = authorization_denial_audit_last.get(key)
+        if previous is None or now - previous >= 60:
+            if key not in authorization_denial_audit_last and len(authorization_denial_audit_last) >= 512:
+                oldest_key = min(authorization_denial_audit_last, key=authorization_denial_audit_last.get)
+                authorization_denial_audit_last.pop(oldest_key, None)
+            authorization_denial_audit_last[key] = now
+            should_record = True
+    request.state.vaos_auth_audit_handled = True
+    if not should_record:
+        return
+    token_prefix = getattr(request.state, "vaos_api_token_prefix", None)
+    actor_ref = f"api-token:{token_prefix}" if token_prefix else ("local-admin" if getattr(request.state, "vaos_basic_admin", False) else "unauthenticated-client")
+    persisted = _record_observability_security_event(
+        "authz.request_denied", "denied", component="authorization", actor_ref=actor_ref,
+        correlation_id=getattr(request.state, "vaos_correlation_id", None),
+        details={
+            "http_status": int(status_code), "method": method, "route": route,
+            "reason": "authentication_required_or_invalid" if status_code == 401 else "authorization_denied",
+        },
+    )
+    if not persisted:
+        with admin_auth_lock:
+            if authorization_denial_audit_last.get(key) == now:
+                authorization_denial_audit_last.pop(key, None)
+
+
 def require_basic_admin(request: Request, credentials: HTTPBasicCredentials | None = Depends(security)) -> str:
+    global admin_auth_audit_last
     if credentials is None:
         raise HTTPException(
             status_code=401,
@@ -369,44 +1287,93 @@ def require_basic_admin(request: Request, credentials: HTTPBasicCredentials | No
     username_ok = hmac.compare_digest(credentials.username.encode(), b"admin")
     password_ok = hmac.compare_digest(credentials.password.encode(), ADMIN_PASSWORD.encode())
     if not (username_ok and password_ok):
-        raw_ip = request.headers.get("cf-connecting-ip", "")
-        try:
-            client_key = str(ipaddress.ip_address(raw_ip)) if raw_ip else str(request.client.host if request.client else "unknown")
-        except ValueError:
-            client_key = str(request.client.host if request.client else "unknown")
+        client_key = _effective_client_ip(request)
         now = time.monotonic()
+        audit_failure = False
         with admin_auth_lock:
+            admin_auth_success_audit_last.pop(client_key, None)
             attempts = [attempt for attempt in admin_auth_failures.get(client_key, []) if now - attempt < ADMIN_AUTH_FAILURE_WINDOW]
             if len(attempts) >= ADMIN_AUTH_FAILURE_LIMIT:
                 admin_auth_failures[client_key] = attempts
                 raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.", headers={"Retry-After": "900"})
             attempts.append(now)
             admin_auth_failures[client_key] = attempts
+            if now - admin_auth_audit_last.get(client_key, 0.0) >= 60:
+                admin_auth_audit_last[client_key] = now
+                audit_failure = True
+            if len(admin_auth_audit_last) > 512:
+                admin_auth_audit_last = {key: seen for key, seen in admin_auth_audit_last.items() if now - seen < ADMIN_AUTH_FAILURE_WINDOW}
             if len(admin_auth_failures) > 512:
                 for key, values in list(admin_auth_failures.items()):
                     if not any(now - attempt < ADMIN_AUTH_FAILURE_WINDOW for attempt in values):
                         admin_auth_failures.pop(key, None)
+        if audit_failure:
+            persisted = _record_observability_security_event(
+                "auth.login_failed", "denied", component="auth",
+                details={"reason": "invalid dashboard credentials; repeated attempts coalesced for one minute"},
+                correlation_id=getattr(request.state, "vaos_correlation_id", None),
+            )
+            if not persisted:
+                with admin_auth_lock:
+                    if admin_auth_audit_last.get(client_key) == now:
+                        admin_auth_audit_last.pop(client_key, None)
+        request.state.vaos_auth_audit_handled = True
         raise HTTPException(
             status_code=401,
             detail="Incorrect dashboard credentials",
             headers={"WWW-Authenticate": "Basic realm=\"VAOS Admin\""},
         )
-    raw_ip = request.headers.get("cf-connecting-ip", "")
-    try:
-        client_key = str(ipaddress.ip_address(raw_ip)) if raw_ip else str(request.client.host if request.client else "unknown")
-    except ValueError:
-        client_key = str(request.client.host if request.client else "unknown")
+    client_key = _effective_client_ip(request)
+    audit_success = False
     with admin_auth_lock:
         admin_auth_failures.pop(client_key, None)
+        admin_auth_audit_last.pop(client_key, None)
+        now = time.monotonic()
+        previous_success = admin_auth_success_audit_last.get(client_key)
+        if previous_success is None or now - previous_success >= 60:
+            # HTTP Basic credentials accompany every request. Coalesce repeated
+            # accepted requests so normal page/API use does not flood the audit.
+            if client_key not in admin_auth_success_audit_last and len(admin_auth_success_audit_last) >= 512:
+                oldest_client = min(admin_auth_success_audit_last, key=admin_auth_success_audit_last.get)
+                admin_auth_success_audit_last.pop(oldest_client, None)
+            admin_auth_success_audit_last[client_key] = now
+            audit_success = True
+    if audit_success:
+        persisted = _record_observability_security_event(
+            "auth.login_succeeded", "accepted", component="auth",
+            details={"mechanism": "http_basic", "repeated_successes_coalesced_seconds": 60},
+            correlation_id=getattr(request.state, "vaos_correlation_id", None),
+        )
+        if not persisted:
+            with admin_auth_lock:
+                admin_auth_success_audit_last.pop(client_key, None)
+            request.state.vaos_auth_audit_handled = True
+            raise HTTPException(status_code=503, detail="Sign-in is temporarily unavailable because VAOS could not save its security audit. No dashboard action was run; try again shortly.")
+    request.state.vaos_basic_admin = True
     return credentials.username
 
 
-API_MCP_GROUPS = ("diagnostics", "cameras", "people", "events", "review", "training", "datasets", "models", "settings", "tunnels", "video")
+API_MCP_GROUPS = ("diagnostics", "cameras", "people", "events", "review", "training", "datasets", "models", "settings", "tunnels", "video", "projects")
+MCP_BRIDGE_TOOL_NAMES = frozenset({
+    "vaos_api_request", "vaos_get_statistics", "vaos_query_metric", "vaos_list_runtime_sessions",
+    "vaos_search_logs", "vaos_get_system_health", "vaos_list_report_types", "vaos_generate_report",
+    "vaos_get_report_status", "vaos_check_approval", "vaos_upload_file", "vaos_send_binary",
+    "vaos_openapi_reference", "vaos_agent_policy",
+})
+MCP_INVOCATION_TELEMETRY_PATHS = frozenset({
+    "/api/admin/observability/mcp/invocations",
+    "/api/v1/admin/observability/mcp/invocations",
+})
+API_DEFAULT_TOKEN_GROUPS = ("diagnostics",)
+MCP_APPROVAL_TTL_SECONDS = 600
+MCP_APPROVAL_MAX_PENDING_PER_TOKEN = 10
 API_DEFAULTS: dict[str, Any] = {
     "api_enabled": False,
+    "api_allow_sensitive_reads": False,
     "mcp_enabled": False,
     "mcp_read_only": True,
-    "mcp_allowed_groups": list(API_MCP_GROUPS),
+    # Enabling MCP starts from diagnostics only; administrators opt into more.
+    "mcp_allowed_groups": list(API_DEFAULT_TOKEN_GROUPS),
     "mcp_allow_sensitive": False,
     "mcp_allow_deletes": False,
     "api_rate_limit": 120,
@@ -425,14 +1392,15 @@ def get_api_settings() -> dict[str, Any]:
             rows = db.execute("SELECT key,value FROM app_settings WHERE key LIKE 'integration_%'").fetchall()
         saved = {str(row["key"]): str(row["value"]) for row in rows}
         settings["api_enabled"] = saved.get("integration_api_enabled", "0") == "1"
+        settings["api_allow_sensitive_reads"] = saved.get("integration_api_allow_sensitive_reads", "0") == "1"
         settings["mcp_enabled"] = saved.get("integration_mcp_enabled", "0") == "1"
         settings["mcp_read_only"] = saved.get("integration_mcp_read_only", "1") == "1"
         settings["mcp_allow_sensitive"] = saved.get("integration_mcp_allow_sensitive", "0") == "1"
         settings["mcp_allow_deletes"] = saved.get("integration_mcp_allow_deletes", "0") == "1"
         settings["api_rate_limit"] = min(600, max(30, int(saved.get("integration_api_rate_limit", "120"))))
         settings["api_token_default_days"] = min(365, max(1, int(saved.get("integration_api_token_default_days", "90"))))
-        groups = json.loads(saved.get("integration_mcp_allowed_groups", json.dumps(API_MCP_GROUPS)))
-        settings["mcp_allowed_groups"] = [group for group in groups if group in API_MCP_GROUPS] if isinstance(groups, list) else list(API_MCP_GROUPS)
+        groups = json.loads(saved.get("integration_mcp_allowed_groups", json.dumps(API_DEFAULT_TOKEN_GROUPS)))
+        settings["mcp_allowed_groups"] = [group for group in groups if group in API_MCP_GROUPS] if isinstance(groups, list) else list(API_DEFAULT_TOKEN_GROUPS)
     except (sqlite3.Error, TypeError, ValueError, json.JSONDecodeError):
         logger.exception("Could not read API and MCP settings; using locked-down defaults")
     return settings
@@ -440,13 +1408,19 @@ def get_api_settings() -> dict[str, Any]:
 
 def _api_request_group(path: str) -> str:
     normalized = path.split("?", 1)[0]
-    if normalized.startswith("/api/v1/health") or normalized.endswith("/status") or normalized.endswith("/logs") or normalized.endswith("/history"):
-        return "diagnostics" if normalized.endswith(("/health", "/status")) else "training"
+    if "/mcp-approvals/" in normalized:
+        return "settings"
+    if normalized.startswith(("/api/admin/observability/integrations", "/api/v1/admin/observability/integrations")):
+        return "settings"
+    if "/observability" in normalized or "/statistics" in normalized:
+        return "diagnostics"
+    if normalized.startswith("/api/v1/health") or normalized.endswith("/status") or normalized.endswith("/logs") or normalized.endswith("/history") or normalized.endswith("/hardware"):
+        return "diagnostics" if normalized.endswith(("/health", "/status", "/hardware")) else "training"
     if "/cameras" in normalized or "/camera/" in normalized or "/enrollment-links" in normalized:
         return "cameras"
     if "/participants" in normalized or "/enroll/" in normalized:
         return "people"
-    if "/events" in normalized or "/sightings" in normalized:
+    if "/events" in normalized or "/sightings" in normalized or "/tracking/rules" in normalized:
         return "events"
     if "/samples" in normalized or "/review" in normalized or "/capture" in normalized:
         return "review"
@@ -462,9 +1436,33 @@ def _api_request_group(path: str) -> str:
         return "tunnels"
     if "/video-review" in normalized:
         return "video"
+    if "/projects" in normalized:
+        return "projects"
     if "/services/" in normalized:
         return "settings"
     return "unclassified"
+
+
+def _api_read_is_sensitive(path: str) -> bool:
+    """Identify read endpoints that can reveal biometrics or capability URLs."""
+    normalized = path.split("?", 1)[0]
+    if normalized.startswith("/api/v1/"):
+        normalized = "/api" + normalized[len("/api/v1"):]
+    exact_paths = {
+        "/api/admin/cameras", "/api/admin/tunnel", "/api/admin/admin-tunnel",
+        "/api/admin/participants", "/api/admin/events", "/api/admin/tracking/rules", "/api/admin/tracking/events",
+    }
+    if normalized in exact_paths or normalized.startswith(("/api/admin/participants/", "/api/admin/tracking/rules/", "/api/admin/tracking/events/")):
+        return True
+    if normalized.startswith("/api/admin/cameras/") and normalized.endswith("/qr"):
+        return True
+    if normalized.startswith("/api/admin/enrollment-links/") and normalized.endswith("/qr"):
+        return True
+    if normalized.startswith("/api/admin/ml/samples/") and normalized.endswith("/image"):
+        return True
+    if normalized.startswith(("/api/admin/observability/events", "/api/admin/observability/lifecycle", "/api/admin/observability/security-audit", "/api/admin/observability/reports", "/api/admin/observability/integrations", "/api/admin/observability/counter-queue")):
+        return True
+    return False
 
 
 def _redact_api_path(path: str) -> str:
@@ -480,6 +1478,164 @@ def _redact_api_path(path: str) -> str:
             parts[token_index] = "[redacted]"
             break
     return "/".join(parts)[:240]
+
+
+def _api_mcp_sensitive_action(method: str, path: str) -> bool:
+    """Keep high-impact MCP actions behind the existing explicit Settings switch."""
+    method = method.upper()
+    normalized = path.split("?", 1)[0]
+    if normalized == "/api/admin/observability/retention" and method in {"PUT", "POST"}:
+        return True
+    if normalized.startswith("/api/admin/tracking/rules") and method in {"POST", "PATCH", "DELETE"}:
+        return True
+    if normalized.startswith("/api/admin/observability/integrations/") and method in {"PUT", "PATCH", "DELETE"}:
+        return True
+    if method != "POST":
+        return False
+    if "/projects/import" in normalized or ("/projects/" in normalized and normalized.endswith("/apply")):
+        return True
+    return normalized == "/api/admin/cameras" or any(part in normalized for part in (
+        "/services/restart", "/tunnel/", "/admin-tunnel/", "/train/stop",
+        "/observability/retention",
+        "/observability/reports",
+        "/observability/integrations",
+        "/ml/train", "/ml/enrichment", "/ml/datasets/prepare", "/ml/datasets/import",
+        "/ml/model-sources", "/ml/capture", "/model-selection", "/huggingface-models",
+        "/video-review/sessions", "/participants", "/enrollment-links", "/enroll/", "/camera/",
+    ))
+
+
+async def _mcp_request_fingerprint(request: Request) -> tuple[str, dict[str, Any]]:
+    """Hash the exact effective request without persisting request bodies or private values."""
+    method = request.method.upper()
+    path = request.url.path
+    query = request.url.query
+    raw_content_type = request.headers.get("content-type", "")
+    media_type = raw_content_type.split(";", 1)[0].strip().casefold()
+    behavior_headers = {
+        name: request.headers.get(name, "")
+        for name in ("x-video-time", "x-save-samples")
+        if request.headers.get(name) is not None
+    }
+    body_bytes = 0
+    parameter_summary: list[dict[str, Any]] = []
+    if media_type == "multipart/form-data":
+        # FastAPI may already have parsed this form for UploadFile/Form parameters.
+        # Canonicalize parts so a regenerated MIME boundary does not break approval.
+        form = await request.form()
+        parts: list[dict[str, Any]] = []
+        for key, value in form.multi_items():
+            filename = getattr(value, "filename", None)
+            file_obj = getattr(value, "file", None)
+            if filename is not None and file_obj is not None:
+                digest = hashlib.sha256()
+                size = 0
+                while chunk := await value.read(1024 * 1024):
+                    size += len(chunk)
+                    digest.update(chunk)
+                await value.seek(0)
+                parts.append({
+                    "field": str(key), "kind": "file", "filename": str(filename),
+                    "content_type": str(getattr(value, "content_type", "") or "").casefold(),
+                    "size": size, "sha256": digest.hexdigest(),
+                })
+                parameter_summary.append({"field": str(key)[:64], "type": "file", "size": size, "content_type": str(getattr(value, "content_type", "") or "").casefold()[:80]})
+                body_bytes += size
+            else:
+                text_value = str(value)
+                encoded = text_value.encode("utf-8")
+                parts.append({"field": str(key), "kind": "text", "size": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest()})
+                parameter_summary.append({"field": str(key)[:64], "type": "text", "characters": len(text_value)})
+                body_bytes += len(encoded)
+        body_digest = hashlib.sha256(json.dumps(parts, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+        media_type = "multipart/form-data"
+    else:
+        body = await request.body()
+        body_bytes = len(body)
+        body_digest = hashlib.sha256(body).hexdigest()
+        if media_type == "application/json":
+            try:
+                payload = json.loads(body) if body else None
+                if isinstance(payload, dict):
+                    for key, value in list(payload.items())[:32]:
+                        item: dict[str, Any] = {"field": str(key)[:64]}
+                        if isinstance(value, bool):
+                            item.update({"type": "boolean", "value": value})
+                        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+                            item.update({"type": "number", "value": value})
+                        elif isinstance(value, str):
+                            item.update({"type": "text", "characters": len(value)})
+                        elif isinstance(value, list):
+                            item.update({"type": "list", "items": len(value)})
+                        elif isinstance(value, dict):
+                            item.update({"type": "object", "fields": len(value)})
+                        else:
+                            item["type"] = "null"
+                        parameter_summary.append(item)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                parameter_summary.append({"field": "request body", "type": "unparsed content"})
+        elif body:
+            parameter_summary.append({"field": "request body", "type": "binary", "bytes": body_bytes})
+    record = {
+        "method": method, "path": path, "query": query, "content_type": media_type,
+        "body_sha256": body_digest, "headers": behavior_headers,
+    }
+    fingerprint = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")).hexdigest()
+    preview = {
+        "method": method,
+        "path": _redact_api_path(path),
+        "content_type": media_type or "none",
+        "request_bytes": body_bytes,
+        "parameters": parameter_summary[:32],
+        "risk": "deletion" if method == "DELETE" or path.endswith("/revoke") else ("sensitive action" if _api_mcp_sensitive_action(method, path) else "standard change"),
+    }
+    return fingerprint, preview
+
+
+def _new_mcp_approval(token_hash: str, token_prefix: str, request: Request, fingerprint: str, preview: dict[str, Any]) -> dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    created_at = now.isoformat(timespec="seconds")
+    expires_at = (now + timedelta(seconds=MCP_APPROVAL_TTL_SECONDS)).isoformat(timespec="seconds")
+    request_id = secrets.token_urlsafe(24)
+    with db_connection() as db:
+        db.execute("DELETE FROM mcp_approvals WHERE (status IN ('expired','denied','used') AND created_at < ?) OR (status IN ('pending','approved') AND expires_at <= ?)", ((now - timedelta(days=30)).isoformat(timespec="seconds"), created_at))
+        pending = db.execute("SELECT COUNT(*) FROM mcp_approvals WHERE token_hash=? AND status='pending' AND expires_at>?", (token_hash, created_at)).fetchone()[0]
+        if pending >= MCP_APPROVAL_MAX_PENDING_PER_TOKEN:
+            raise HTTPException(status_code=429, detail="This MCP token already has too many pending approvals. Review or let them expire before requesting another.")
+        db.execute(
+            "INSERT INTO mcp_approvals(request_id,token_hash,token_prefix,method,request_path,request_fingerprint,preview,status,created_at,expires_at) VALUES(?,?,?,?,?,?,?,'pending',?,?)",
+            (request_id, token_hash, token_prefix, request.method.upper(), _redact_api_path(request.url.path), fingerprint, json.dumps(preview, separators=(",", ":")), created_at, expires_at),
+        )
+    return {"approval_required": True, "request_id": request_id, "expires_at": expires_at, "preview": preview, "message": "An administrator must approve this exact request in Settings before the MCP agent can retry it."}
+
+
+def _consume_mcp_approval(request_id: str, token_hash: str, fingerprint: str) -> None:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{24,64}", request_id):
+        raise HTTPException(status_code=400, detail="Approval ID format is not valid.")
+    now = utc_now()
+    expired = False
+    with db_connection() as db:
+        row = db.execute("SELECT request_fingerprint,status,expires_at,preview FROM mcp_approvals WHERE request_id=? AND token_hash=?", (request_id, token_hash)).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Approval request was not found for this token.")
+        if row["expires_at"] <= now and row["status"] in {"pending", "approved"}:
+            db.execute("UPDATE mcp_approvals SET status='expired' WHERE request_id=? AND status IN ('pending','approved')", (request_id,))
+            expired = True
+        elif row["status"] == "pending":
+            raise HTTPException(status_code=428, detail={"approval_required": True, "request_id": request_id, "expires_at": row["expires_at"], "preview": json.loads(row["preview"]), "message": "This action is awaiting administrator approval."})
+        elif row["status"] != "approved":
+            raise HTTPException(status_code=409, detail=f"This approval is {row['status']} and cannot be used.")
+        elif not hmac.compare_digest(str(row["request_fingerprint"]), fingerprint):
+            raise HTTPException(status_code=409, detail="The request differs from the approved action. The approval remains unused.")
+        else:
+            cursor = db.execute(
+                "UPDATE mcp_approvals SET status='used',used_at=? WHERE request_id=? AND token_hash=? AND request_fingerprint=? AND status='approved' AND expires_at>?",
+                (now, request_id, token_hash, fingerprint, now),
+            )
+            if cursor.rowcount != 1:
+                raise HTTPException(status_code=409, detail="This approval was already used, expired, or changed before it could be applied.")
+    if expired:
+        raise HTTPException(status_code=409, detail="This approval has expired. Submit the action again to request a fresh approval.")
 
 
 def _record_api_access(token_hash: str, token_prefix: str, request: Request) -> None:
@@ -514,7 +1670,7 @@ def _record_api_access(token_hash: str, token_prefix: str, request: Request) -> 
         logger.debug("Could not record API access audit entry", exc_info=True)
 
 
-def require_admin(
+async def require_admin(
     request: Request,
     credentials: HTTPBasicCredentials | None = Depends(security),
     bearer: HTTPAuthorizationCredentials | None = Depends(api_bearer),
@@ -539,28 +1695,20 @@ def require_admin(
         stored_access = json.loads(row["scopes"])
         if isinstance(stored_access, dict):
             token_scope = str(stored_access.get("access", "read"))
-            token_groups = [group for group in stored_access.get("groups", API_MCP_GROUPS) if group in API_MCP_GROUPS]
+            token_groups = [group for group in stored_access.get("groups", API_DEFAULT_TOKEN_GROUPS) if group in API_MCP_GROUPS]
+            token_sensitive_read = stored_access.get("sensitive_read") is True
+            token_mcp_agent = stored_access.get("mcp_agent") is True
         else:  # Accept tokens created by the earlier list-only format.
             legacy_scopes = set(stored_access if isinstance(stored_access, list) else [])
             token_scope = "control" if "control" in legacy_scopes else "read"
-            token_groups = [item[6:] for item in legacy_scopes if item.startswith("group:") and item[6:] in API_MCP_GROUPS] or list(API_MCP_GROUPS)
+            token_groups = [item[6:] for item in legacy_scopes if item.startswith("group:") and item[6:] in API_MCP_GROUPS] or list(API_DEFAULT_TOKEN_GROUPS)
+            token_sensitive_read = False
+            token_mcp_agent = False
     except (TypeError, json.JSONDecodeError):
-        token_scope, token_groups = "", []
-    if token_scope != "control" and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
-        raise HTTPException(status_code=403, detail="This API token is read-only. Issue a control token in Settings for write access.")
-    if token_scope not in {"read", "control"}:
-        raise HTTPException(status_code=403, detail="This API token has no valid access scope.")
-    request.state.vaos_api_scope = token_scope
-    request.state.vaos_api_groups = token_groups
-    request_path = request.url.path
-    if request_path not in {"/api/openapi.json", "/api/admin/integrations/mcp-policy"}:
-        required_group = _api_request_group(request_path)
-        if required_group not in token_groups:
-            raise HTTPException(status_code=403, detail=f"This API token is not allowed to access the '{required_group}' capability group.")
-    if not hmac.compare_digest(str(row["token_hash"]), token_hash):
-        raise HTTPException(status_code=401, detail="API token is invalid.")
-    # Do not accept bearer secrets over remote clear-text HTTP or trust forwarded
-    # scheme headers from arbitrary clients. Loopback is the local launcher/tunnel.
+        token_scope, token_groups, token_sensitive_read, token_mcp_agent = "", [], False, False
+    # Refuse remote clear-text bearer requests before any approval row or other
+    # application-side effect can be created. Forwarded HTTPS is trusted only
+    # from an explicitly configured reverse-proxy network.
     peer_ip = None
     try:
         peer_ip = ipaddress.ip_address(request.client.host) if request.client and request.client.host else None
@@ -580,6 +1728,52 @@ def require_admin(
     cloudflare_https = trusted_proxy and '"scheme":"https"' in request.headers.get("cf-visitor", "").replace(" ", "").casefold()
     if request.url.scheme != "https" and not peer_loopback and not forwarded_https and not cloudflare_https:
         raise HTTPException(status_code=400, detail="Bearer API tokens require HTTPS when connecting remotely.")
+    request_path = request.url.path
+    is_mcp_invocation_telemetry = (
+        request.method.upper() == "POST"
+        and request_path in MCP_INVOCATION_TELEMETRY_PATHS
+        and token_mcp_agent
+    )
+    if token_scope != "control" and request.method.upper() not in {"GET", "HEAD", "OPTIONS"} and not is_mcp_invocation_telemetry:
+        raise HTTPException(status_code=403, detail="This API token is read-only. Issue a control token in Settings for write access.")
+    if token_scope not in {"read", "control"}:
+        raise HTTPException(status_code=403, detail="This API token has no valid access scope.")
+    request.state.vaos_api_scope = token_scope
+    request.state.vaos_api_groups = token_groups
+    request.state.vaos_api_sensitive_read = token_sensitive_read
+    request.state.vaos_api_mcp_agent = token_mcp_agent
+    request.state.vaos_api_token_hash = token_hash
+    request.state.vaos_api_token_prefix = str(row["token_prefix"])
+    if request_path not in {"/api/openapi.json", "/api/admin/integrations/mcp-policy"} and not is_mcp_invocation_telemetry:
+        required_group = _api_request_group(request_path)
+        if required_group not in token_groups:
+            raise HTTPException(status_code=403, detail=f"This API token is not allowed to access the '{required_group}' capability group.")
+    if request.method.upper() in {"GET", "HEAD"} and _api_read_is_sensitive(request_path):
+        if not settings["api_allow_sensitive_reads"] or not token_sensitive_read:
+            raise HTTPException(status_code=403, detail="Sensitive profile, camera, event, or sample-image data requires both the Settings opt-in and a token explicitly granted sensitive-read access.")
+    is_write = request.method.upper() not in {"GET", "HEAD", "OPTIONS"}
+    if token_mcp_agent:
+        if not settings["mcp_enabled"]:
+            raise HTTPException(status_code=403, detail="The MCP bridge is disabled in VAOS Settings.")
+        if is_write and not is_mcp_invocation_telemetry:
+            if settings["mcp_read_only"]:
+                raise HTTPException(status_code=403, detail="MCP is in read-only mode. Turn off read-only mode in VAOS Settings before requesting a change.")
+            if request.method.upper() == "DELETE" or request_path.endswith("/revoke"):
+                if not settings["mcp_allow_deletes"]:
+                    raise HTTPException(status_code=403, detail="MCP deletion actions are disabled in VAOS Settings.")
+            elif _api_mcp_sensitive_action(request.method, request_path) and not settings["mcp_allow_sensitive"]:
+                raise HTTPException(status_code=403, detail="This sensitive MCP action is disabled in VAOS Settings.")
+        required_group = _api_request_group(request_path)
+        if request_path not in {"/api/openapi.json", "/api/admin/integrations/mcp-policy"} and not is_mcp_invocation_telemetry and required_group not in settings["mcp_allowed_groups"]:
+            raise HTTPException(status_code=403, detail=f"The '{required_group}' capability is disabled for MCP in VAOS Settings.")
+        if is_write and not is_mcp_invocation_telemetry:
+            fingerprint, preview = await _mcp_request_fingerprint(request)
+            approval_id = request.headers.get("x-vaos-mcp-approval-id", "").strip()
+            if not approval_id:
+                raise HTTPException(status_code=428, detail=_new_mcp_approval(token_hash, str(row["token_prefix"]), request, fingerprint, preview))
+            _consume_mcp_approval(approval_id, token_hash, fingerprint)
+    if not hmac.compare_digest(str(row["token_hash"]), token_hash):
+        raise HTTPException(status_code=401, detail="API token is invalid.")
     _record_api_access(token_hash, str(row["token_prefix"]), request)
     return "api:" + str(row["token_prefix"])
 
@@ -636,27 +1830,77 @@ def get_system_metrics() -> dict[str, Any]:
             "memory_percent": None,
             "memory_used_gb": None,
             "memory_total_gb": None,
+            "disk_used_bytes": None,
+            "disk_free_bytes": None,
+            "disk_total_bytes": None,
+            "disk_used_percent": None,
             "gpu_available": False,
             "gpu_name": "Unavailable",
             "gpu_utilization_percent": None,
             "gpu_memory_used_mb": None,
             "gpu_memory_total_mb": None,
             "gpu_temperature_c": None,
+            "gpu_power_draw_w": None,
+            "gpu_devices": [],
         }
         try:
             import psutil
             memory = psutil.virtual_memory()
-            metrics.update({"cpu_percent": psutil.cpu_percent(interval=None), "memory_percent": memory.percent, "memory_used_gb": round((memory.total - memory.available) / (1024 ** 3), 2), "memory_total_gb": round(memory.total / (1024 ** 3), 2)})
+            metrics.update({"cpu_percent": psutil.cpu_percent(interval=None), "memory_percent": memory.percent, "memory_used_bytes": int(memory.total - memory.available), "memory_total_bytes": int(memory.total), "memory_used_gb": round((memory.total - memory.available) / (1024 ** 3), 2), "memory_total_gb": round(memory.total / (1024 ** 3), 2)})
         except Exception:
             logger.debug("Host CPU/RAM metrics are unavailable", exc_info=True)
+        try:
+            disk = shutil.disk_usage(DATA_DIR)
+            metrics.update({
+                "disk_used_bytes": int(disk.used),
+                "disk_free_bytes": int(disk.free),
+                "disk_total_bytes": int(disk.total),
+                "disk_used_percent": round((disk.used / disk.total) * 100, 2) if disk.total > 0 else None,
+            })
+        except (OSError, RuntimeError, ValueError):
+            logger.debug("VAOS data-volume disk metrics are unavailable", exc_info=True)
         nvidia_smi = shutil.which("nvidia-smi")
         if nvidia_smi:
             try:
-                result = subprocess.run([nvidia_smi, "--query-gpu=name,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"], capture_output=True, text=True, timeout=1.25, check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-                row = next(csv.reader([result.stdout.splitlines()[0]]))
-                if len(row) >= 5:
-                    as_int = lambda value: int(value.strip()) if value.strip().isdigit() else None
-                    metrics.update({"gpu_available": True, "gpu_name": row[0].strip(), "gpu_utilization_percent": as_int(row[1]), "gpu_memory_used_mb": as_int(row[2]), "gpu_memory_total_mb": as_int(row[3]), "gpu_temperature_c": as_int(row[4])})
+                command = [nvidia_smi, "--query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw", "--format=csv,noheader,nounits"]
+                legacy_command = [nvidia_smi, "--query-gpu=index,uuid,name,utilization.gpu,memory.used,memory.total,temperature.gpu", "--format=csv,noheader,nounits"]
+                try:
+                    result = subprocess.run(command, capture_output=True, text=True, timeout=1.25, check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                except subprocess.CalledProcessError:
+                    # Some supported devices/drivers report utilization but do not expose power.draw.
+                    # Preserve the existing utilization telemetry instead of losing all GPU fields.
+                    result = subprocess.run(legacy_command, capture_output=True, text=True, timeout=1.25, check=True, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                as_int = lambda value: int(value.strip()) if value.strip().isdigit() else None
+                def as_float(value: str) -> float | None:
+                    try:
+                        number = float(value.strip())
+                    except (TypeError, ValueError):
+                        return None
+                    return number if math.isfinite(number) and number >= 0 else None
+
+                gpu_rows = []
+                for line in result.stdout.splitlines():
+                    row = next(csv.reader([line]))
+                    if len(row) >= 7:
+                        index = as_int(row[0])
+                        name = row[2].strip()[:120] or "NVIDIA GPU"
+                        raw_uuid = row[1].strip()
+                        stable_device_key = raw_uuid if raw_uuid.startswith("GPU-") and len(raw_uuid) <= 120 else f"index:{index}|name:{name}"
+                        installation_key = observability_installation_id or "local-installation"
+                        device_id = hashlib.sha256(f"vaos-device|{installation_key}|{stable_device_key}".encode("utf-8")).hexdigest()[:32]
+                        gpu_rows.append({
+                            "index": index,
+                            "device_id": device_id,
+                            "name": name,
+                            "utilization_percent": as_int(row[3]),
+                            "memory_used_mb": as_int(row[4]),
+                            "memory_total_mb": as_int(row[5]),
+                            "temperature_c": as_int(row[6]),
+                            "power_draw_w": as_float(row[7]) if len(row) >= 8 else None,
+                        })
+                if gpu_rows:
+                    first = gpu_rows[0]
+                    metrics.update({"gpu_available": True, "gpu_name": first["name"], "gpu_utilization_percent": first["utilization_percent"], "gpu_memory_used_mb": first["memory_used_mb"], "gpu_memory_total_mb": first["memory_total_mb"], "gpu_temperature_c": first["temperature_c"], "gpu_power_draw_w": first["power_draw_w"], "gpu_devices": gpu_rows})
             except (OSError, subprocess.SubprocessError, IndexError, csv.Error):
                 logger.debug("NVIDIA system metrics are unavailable", exc_info=True)
         system_metrics_cache.update({"sampled_at": now, "data": metrics})
@@ -724,6 +1968,39 @@ def init_db() -> None:
                 FOREIGN KEY(camera_token) REFERENCES cameras(token) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_objects_timestamp ON object_sightings(timestamp DESC);
+            CREATE TABLE IF NOT EXISTS object_event_rules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                enabled INTEGER NOT NULL DEFAULT 1,
+                rule_type TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                min_confidence REAL NOT NULL DEFAULT 0.35,
+                threshold_count INTEGER NOT NULL DEFAULT 1,
+                min_consecutive_frames INTEGER NOT NULL DEFAULT 3,
+                cooldown_seconds INTEGER NOT NULL DEFAULT 60,
+                dwell_seconds REAL,
+                camera_token TEXT,
+                region_json TEXT NOT NULL DEFAULT '{"x":0,"y":0,"width":1,"height":1}',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(camera_token) REFERENCES cameras(token) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_object_event_rules_active ON object_event_rules(enabled,camera_token,id);
+            CREATE TABLE IF NOT EXISTS object_rule_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp TEXT NOT NULL,
+                camera_token TEXT NOT NULL,
+                rule_id INTEGER,
+                rule_name TEXT NOT NULL,
+                rule_type TEXT NOT NULL,
+                class_name TEXT NOT NULL,
+                object_count INTEGER NOT NULL,
+                message TEXT NOT NULL,
+                FOREIGN KEY(camera_token) REFERENCES cameras(token) ON DELETE CASCADE,
+                FOREIGN KEY(rule_id) REFERENCES object_event_rules(id) ON DELETE SET NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_object_rule_events_timestamp ON object_rule_events(timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_object_rule_events_camera ON object_rule_events(camera_token,timestamp DESC);
             CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS api_tokens (
                 token_hash TEXT PRIMARY KEY,
@@ -744,6 +2021,24 @@ def init_db() -> None:
                 path TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_api_access_log_timestamp ON api_access_log(timestamp DESC);
+            CREATE TABLE IF NOT EXISTS mcp_approvals (
+                request_id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL,
+                token_prefix TEXT NOT NULL,
+                method TEXT NOT NULL,
+                request_path TEXT NOT NULL,
+                request_fingerprint TEXT NOT NULL,
+                preview TEXT NOT NULL,
+                status TEXT NOT NULL CHECK(status IN ('pending','approved','denied','expired','used')),
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL,
+                decided_at TEXT,
+                decided_by TEXT,
+                decision_note TEXT NOT NULL DEFAULT '',
+                used_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_mcp_approvals_status_expiry ON mcp_approvals(status,expires_at);
+            CREATE INDEX IF NOT EXISTS idx_mcp_approvals_token_created ON mcp_approvals(token_hash,created_at DESC);
             CREATE TABLE IF NOT EXISTS ml_samples (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
                 camera_token TEXT NOT NULL, suggested_label TEXT NOT NULL,
@@ -773,9 +2068,80 @@ def init_db() -> None:
             db.execute("ALTER TABLE ml_samples ADD COLUMN source_time_seconds REAL")
         if "profile_photo" not in participant_columns:
             db.execute("ALTER TABLE participants ADD COLUMN profile_photo BLOB")
+    try:
+        observability_store.initialize_database(DB_PATH)
+    except (OSError, sqlite3.Error, RuntimeError):
+        # Observability is additive. A failed backup or migration must not
+        # prevent the existing dashboard, camera, or training APIs from starting.
+        logger.exception("Observability schema upgrade was skipped; existing VAOS data was left unchanged")
+    try:
+        observability_store.initialize_counter_fallback_store(DB_PATH)
+    except Exception as exc:
+        # The process-local capped maps remain available if the secondary store
+        # cannot be secured or created; this must not block the application.
+        logger.warning("The durable observability fallback could not be initialized (%s); memory fallback remains enabled", type(exc).__name__)
+    try:
+        observability_siem.initialize_security_event_fallback_store(DB_PATH)
+    except Exception as exc:
+        # This sidecar is an optional recovery layer; primary audit writes still run normally.
+        logger.warning("The authentication security-event recovery queue could not be initialized (%s)", type(exc).__name__)
 
 
 init_db()
+
+
+def get_active_tracking_rules() -> list[dict[str, Any]]:
+    """Read active rule definitions through a short process-local cache."""
+    now = time.monotonic()
+    with tracking_rule_cache_lock:
+        if now - float(tracking_rule_cache.get("loaded_at", 0.0)) < TRACKING_RULE_CACHE_SECONDS:
+            return [dict(rule) for rule in tracking_rule_cache.get("rows", [])]
+        with db_connection() as db:
+            rows = db.execute(
+                "SELECT id,name,enabled,rule_type,class_name,min_confidence,threshold_count,"
+                "min_consecutive_frames,cooldown_seconds,dwell_seconds,camera_token,region_json "
+                "FROM object_event_rules WHERE enabled=1 ORDER BY id"
+            ).fetchall()
+        active: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                stored = dict(row)
+                region = json.loads(stored.pop("region_json"))
+                rule = validate_rule({**stored, "region": region})
+                rule.update({"id": int(stored["id"]), "enabled": bool(stored["enabled"])})
+                active.append(rule)
+            except (TypeError, ValueError, KeyError, json.JSONDecodeError):
+                logger.warning("Skipping malformed object tracking rule id=%s", row["id"])
+        tracking_rule_cache.update({"loaded_at": now, "rows": active})
+        return [dict(rule) for rule in active]
+
+
+def invalidate_tracking_rule_cache(rule_id: int | None = None) -> None:
+    with tracking_rule_cache_lock:
+        tracking_rule_cache["loaded_at"] = 0.0
+    with tracking_rule_state_lock:
+        if rule_id is None:
+            tracking_rule_state.clear()
+        else:
+            for key in [key for key in tracking_rule_state if len(key) > 1 and key[1] == rule_id]:
+                tracking_rule_state.pop(key, None)
+
+
+def save_object_rule_events(camera_token: str, events: list[dict[str, Any]]) -> None:
+    if not events:
+        return
+    with db_connection() as db:
+        db.executemany(
+            "INSERT INTO object_rule_events(timestamp,camera_token,rule_id,rule_name,rule_type,class_name,object_count,message) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            [(utc_now(), camera_token, event["rule_id"], event["rule_name"], event["rule_type"],
+              event["class_name"], event["object_count"], event["message"]) for event in events],
+        )
+        db.execute(
+            "DELETE FROM object_rule_events WHERE id NOT IN "
+            "(SELECT id FROM object_rule_events ORDER BY id DESC LIMIT ?)",
+            (MAX_OBJECT_RULE_EVENTS,),
+        )
 
 
 def ensure_model_files() -> None:
@@ -880,14 +2246,28 @@ def get_object_detector():
 
 
 class YOLO26Runtime:
-    """YOLO26m COCO detector on CUDA device 0 when PyTorch supports it."""
+    """YOLO object detector using CUDA, Apple MPS, or CPU with safe fallback."""
     def __init__(self, model_path: str):
         import torch
         from ultralytics import YOLO
 
-        self.use_cuda = os.getenv("OBJECT_DETECTOR_DEVICE", "auto").lower() != "cpu" and torch.cuda.is_available()
-        self.device = 0 if self.use_cuda else "cpu"
-        self.device_label = f"YOLO26m · NVIDIA GPU 0 ({torch.cuda.get_device_name(0)})" if self.use_cuda else "YOLO26m · CPU (CUDA unavailable)"
+        selected = resolve_inference_backend(torch, os.getenv("OBJECT_DETECTOR_DEVICE", "auto"))
+        self.device_kind = str(selected["backend"])
+        self.use_cuda = self.device_kind == "cuda"
+        self.use_mps = self.device_kind == "mps"
+        self.mps_available = bool(selected["mps_available"])
+        self.device = selected["device"]
+        if self.use_cuda:
+            try:
+                self.device_label = f"YOLO26m · NVIDIA GPU 0 ({torch.cuda.get_device_name(0)})"
+            except Exception:
+                self.device_label = "YOLO26m · CUDA GPU 0"
+        elif self.use_mps:
+            self.device_label = "YOLO26m · Apple GPU (MPS)"
+        else:
+            self.device_label = "YOLO26m · CPU"
+        if not selected["requested_backend_available"]:
+            logger.warning("Requested object-inference backend %s is unavailable; using CPU", os.getenv("OBJECT_DETECTOR_DEVICE"))
         self.model = YOLO(model_path)
         self.class_names = [str(name) for _, name in sorted(self.model.names.items())] if isinstance(self.model.names, dict) else [str(name) for name in self.model.names]
         self.model_path = str(Path(self.model.ckpt_path).resolve())
@@ -904,12 +2284,15 @@ class YOLO26Runtime:
                 verbose=False,
             )
         except Exception:
-            if not self.use_cuda:
+            if self.device_kind == "cpu":
                 raise
-            logger.exception("YOLO26m GPU inference failed; switching to CPU")
+            failed_backend = self.device_kind
+            logger.exception("YOLO26m %s inference failed; switching to CPU", failed_backend.upper())
+            self.device_kind = "cpu"
             self.use_cuda = False
+            self.use_mps = False
             self.device = "cpu"
-            self.device_label = "YOLO26m · CPU (GPU inference failed)"
+            self.device_label = f"YOLO26m · CPU ({failed_backend.upper()} inference failed)"
             global compute_device
             compute_device = self.device_label + "; face models on CPU"
             predictions = self.model.predict(source=image, imgsz=image_size, conf=confidence, device="cpu", verbose=False)
@@ -1075,12 +2458,14 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
                 best = max(candidates, key=lambda item: item[0], default=(0, None))
                 if best[0] >= 0.25:
                     track = best[1]
+                    track.setdefault("rule_uid", secrets.token_hex(12))
                     track["box"], track["seen"], track["used"] = obj["box"], now_track, True
                 else:
-                    track = {"id": next_track_id, "label": obj["label"], "box": obj["box"], "seen": now_track, "used": True}
+                    track = {"id": next_track_id, "rule_uid": secrets.token_hex(12), "label": obj["label"], "box": obj["box"], "seen": now_track, "used": True}
                     existing_tracks.append(track)
                     next_track_id += 1
                 obj["track_id"] = track["id"]
+                obj["_tracking_key"] = track["rule_uid"]
             for track in existing_tracks:
                 track.pop("used", None)
             live_tracks[token] = existing_tracks
@@ -1135,6 +2520,27 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
             if now_mono - last_object_emitted.get(key, 0) >= OBJECT_EVENTS_COOLDOWN:
                 db.execute("INSERT INTO object_sightings(timestamp,camera_token,class_name,count,confidence) VALUES(?,?,?,?,?)", (utc_now(), token, label, count, confidence_sum / count))
                 last_object_emitted[key] = now_mono
+    rule_events: list[dict[str, Any]] = []
+    try:
+        active_rules = get_active_tracking_rules()
+        if active_rules:
+            with tracking_rule_state_lock:
+                rule_events = evaluate_rules(
+                    rules=active_rules,
+                    camera_token=token,
+                    objects=objects,
+                    frame_size=(int(image.shape[1]), int(image.shape[0])),
+                    state=tracking_rule_state,
+                    now=time.monotonic(),
+                    tracking_enabled=engine_settings["object_tracking_enabled"],
+                )
+            save_object_rule_events(token, rule_events)
+    except Exception:
+        # Rule storage/evaluation must never take the camera's core detection
+        # path down; the admin activity feed will show the last saved event.
+        logger.exception("Object event rule processing failed; frame detection is preserved")
+    for obj in objects:
+        obj.pop("_tracking_key", None)
     return {
         "faces_detected": len(faces),
         "matched": matched,
@@ -1237,6 +2643,12 @@ def api_documentation(_: str = Depends(require_basic_admin)) -> HTMLResponse:
     return get_swagger_ui_html(openapi_url="/api/openapi.json", title="VAOS API reference")
 
 
+@app.get("/api-explorer", response_class=HTMLResponse, include_in_schema=False)
+def api_explorer(request: Request, _: str = Depends(require_basic_admin)) -> HTMLResponse:
+    """Serve the same-origin, admin-only interactive REST API explorer."""
+    return templates.TemplateResponse(request, "api_explorer.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
+
+
 @app.get("/api/admin/integrations", include_in_schema=False)
 def read_api_integrations(_: str = Depends(require_basic_admin)) -> dict[str, Any]:
     settings = get_api_settings()
@@ -1254,6 +2666,81 @@ def read_api_integrations(_: str = Depends(require_basic_admin)) -> dict[str, An
     }
 
 
+@app.get("/api/admin/mcp-approvals", include_in_schema=False)
+def list_mcp_approvals(_: str = Depends(require_basic_admin)) -> dict[str, Any]:
+    now = utc_now()
+    with db_connection() as db:
+        db.execute("UPDATE mcp_approvals SET status='expired' WHERE status IN ('pending','approved') AND expires_at<=?", (now,))
+        rows = db.execute(
+            "SELECT request_id,token_prefix,method,request_path,preview,status,created_at,expires_at,decided_at,decided_by,decision_note,used_at "
+            "FROM mcp_approvals ORDER BY CASE status WHEN 'pending' THEN 0 ELSE 1 END, created_at DESC LIMIT 100"
+        ).fetchall()
+    return {"approvals": [{**dict(row), "preview": json.loads(row["preview"])} for row in rows]}
+
+
+@app.get("/api/admin/mcp-approvals/{approval_id}")
+def read_mcp_approval_status(approval_id: str, request: Request, _: str = Depends(require_admin)) -> dict[str, Any]:
+    token_hash = getattr(request.state, "vaos_api_token_hash", None)
+    if not token_hash:
+        raise HTTPException(status_code=404, detail="Approval request was not found for this token.")
+    now = utc_now()
+    with db_connection() as db:
+        db.execute("UPDATE mcp_approvals SET status='expired' WHERE request_id=? AND token_hash=? AND status IN ('pending','approved') AND expires_at<=?", (approval_id, token_hash, now))
+        row = db.execute(
+            "SELECT request_id,status,preview,created_at,expires_at,decided_at,decision_note,used_at "
+            "FROM mcp_approvals WHERE request_id=? AND token_hash=?",
+            (approval_id, token_hash),
+        ).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Approval request was not found for this token.")
+    return {**dict(row), "preview": json.loads(row["preview"])}
+
+
+@app.post("/api/admin/mcp-approvals/{approval_id}/decision", include_in_schema=False)
+async def decide_mcp_approval(approval_id: str, request: Request, admin_name: str = Depends(require_basic_admin)) -> dict[str, Any]:
+    try:
+        payload = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Send an approve or deny decision as JSON.") from exc
+    decision = str(payload.get("decision", "")).casefold() if isinstance(payload, dict) else ""
+    note = str(payload.get("note", "")).strip()[:240] if isinstance(payload, dict) else ""
+    if decision not in {"approve", "deny", "revoke"}:
+        raise HTTPException(status_code=400, detail="Decision must be approve, deny, or revoke.")
+    now = utc_now()
+    expired = False
+    target = "approved" if decision == "approve" else "denied"
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            row = db.execute("SELECT status,expires_at FROM mcp_approvals WHERE request_id=?", (approval_id,)).fetchone()
+            if row is None:
+                raise HTTPException(status_code=404, detail="Approval request was not found.")
+            if row["expires_at"] <= now:
+                db.execute("UPDATE mcp_approvals SET status='expired' WHERE request_id=? AND status IN ('pending','approved')", (approval_id,))
+                expired = True
+            elif decision == "revoke" and row["status"] != "approved":
+                raise HTTPException(status_code=409, detail="Only an approved, unused request can be revoked.")
+            elif decision != "revoke" and row["status"] != "pending":
+                raise HTTPException(status_code=409, detail=f"This request is already {row['status']} and cannot be changed.")
+            else:
+                cursor = db.execute(
+                    "UPDATE mcp_approvals SET status=?,decided_at=?,decided_by=?,decision_note=? WHERE request_id=? AND status=? AND expires_at>?",
+                    (target, now, admin_name[:80], note or ("Approval revoked by administrator." if decision == "revoke" else ""), approval_id, "approved" if decision == "revoke" else "pending", now),
+                )
+                if cursor.rowcount != 1:
+                    raise HTTPException(status_code=409, detail="The approval request changed before the decision could be saved.")
+                _record_observability_security_event_in_transaction(
+                    db, "mcp.approval_decided", decision, component="mcp", details={"result": target},
+                )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        logger.exception("Could not atomically save the MCP approval decision and security event")
+        raise HTTPException(status_code=503, detail="The approval decision could not be saved with its security audit; the request remains unchanged. Try again shortly.") from exc
+    if expired:
+        raise HTTPException(status_code=409, detail="This approval request has expired. The agent must submit a new request.")
+    message = "The one-time MCP approval was revoked." if decision == "revoke" else f"MCP action {decision}d. The agent must retry the exact same request if approved."
+    return {"ok": True, "status": target, "message": message}
+
+
 @app.post("/api/admin/integrations", include_in_schema=False)
 async def save_api_integrations(request: Request, _: str = Depends(require_basic_admin)) -> dict[str, Any]:
     try:
@@ -1262,7 +2749,7 @@ async def save_api_integrations(request: Request, _: str = Depends(require_basic
         raise HTTPException(status_code=400, detail="Send integration settings as JSON.") from exc
     if not isinstance(payload, dict):
         raise HTTPException(status_code=400, detail="Integration settings must be a JSON object.")
-    groups = payload.get("mcp_allowed_groups", list(API_MCP_GROUPS))
+    groups = payload.get("mcp_allowed_groups", list(API_DEFAULT_TOKEN_GROUPS))
     if not isinstance(groups, list) or any(group not in API_MCP_GROUPS for group in groups):
         raise HTTPException(status_code=400, detail="Choose valid MCP capability groups.")
     try:
@@ -1272,6 +2759,7 @@ async def save_api_integrations(request: Request, _: str = Depends(require_basic
         raise HTTPException(status_code=400, detail="Rate limit or token lifetime is not valid.") from exc
     updates = {
         "integration_api_enabled": "1" if payload.get("api_enabled") is True else "0",
+        "integration_api_allow_sensitive_reads": "1" if payload.get("api_allow_sensitive_reads") is True else "0",
         "integration_mcp_enabled": "1" if payload.get("mcp_enabled") is True else "0",
         "integration_mcp_read_only": "1" if payload.get("mcp_read_only", True) is True else "0",
         "integration_mcp_allow_sensitive": "1" if payload.get("mcp_allow_sensitive") is True else "0",
@@ -1280,15 +2768,24 @@ async def save_api_integrations(request: Request, _: str = Depends(require_basic
         "integration_api_token_default_days": str(token_days),
         "integration_mcp_allowed_groups": json.dumps(list(dict.fromkeys(groups))),
     }
-    with db_connection() as db:
-        db.executemany("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", list(updates.items()))
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.executemany("INSERT INTO app_settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", list(updates.items()))
+            _record_observability_security_event_in_transaction(
+                db, "config.api_mcp_settings_changed", "updated", component="settings",
+                details={"api_enabled": updates["integration_api_enabled"] == "1", "mcp_enabled": updates["integration_mcp_enabled"] == "1", "mcp_read_only": updates["integration_mcp_read_only"] == "1", "allowed_groups": list(dict.fromkeys(groups))},
+            )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        logger.exception("Could not atomically save API/MCP settings and security event")
+        raise HTTPException(status_code=503, detail="API/MCP settings were not saved because their security audit could not be stored. Try again shortly.") from exc
     return {"settings": get_api_settings(), "message": "API and MCP controls saved. Changes apply to the next request."}
 
 
 @app.get("/api/admin/integrations/mcp-policy", include_in_schema=False)
 def read_mcp_policy(request: Request, _: str = Depends(require_admin)) -> dict[str, Any]:
     settings = get_api_settings()
-    return {"api_enabled": settings["api_enabled"], "mcp_enabled": settings["mcp_enabled"], "read_only": settings["mcp_read_only"], "allowed_groups": settings["mcp_allowed_groups"], "token_groups": getattr(request.state, "vaos_api_groups", list(API_MCP_GROUPS)), "allow_sensitive": settings["mcp_allow_sensitive"], "allow_deletes": settings["mcp_allow_deletes"], "token_scope": getattr(request.state, "vaos_api_scope", "admin")}
+    return {"api_enabled": settings["api_enabled"], "mcp_enabled": settings["mcp_enabled"], "read_only": settings["mcp_read_only"], "allowed_groups": settings["mcp_allowed_groups"], "token_groups": getattr(request.state, "vaos_api_groups", list(API_DEFAULT_TOKEN_GROUPS)), "token_sensitive_read": getattr(request.state, "vaos_api_sensitive_read", False), "token_mcp_agent": getattr(request.state, "vaos_api_mcp_agent", False), "allow_sensitive_reads": settings["api_allow_sensitive_reads"], "allow_sensitive": settings["mcp_allow_sensitive"], "allow_deletes": settings["mcp_allow_deletes"], "token_scope": getattr(request.state, "vaos_api_scope", "admin")}
 
 
 @app.post("/api/admin/api-tokens", include_in_schema=False)
@@ -1298,7 +2795,9 @@ async def create_api_token(request: Request, _: str = Depends(require_basic_admi
         label = str(payload.get("label", "")).strip()
         scope = str(payload.get("scope", "read")).strip().lower()
         lifetime = int(payload.get("expires_days", get_api_settings()["api_token_default_days"]))
-        groups = payload.get("groups", list(API_MCP_GROUPS))
+        groups = payload.get("groups", list(API_DEFAULT_TOKEN_GROUPS))
+        sensitive_read = payload.get("sensitive_read") is True
+        mcp_agent = payload.get("mcp_agent") is True
     except (TypeError, ValueError, AttributeError) as exc:
         raise HTTPException(status_code=400, detail="Provide a label, scope, and valid expiry.") from exc
     if not label or len(label) > 80:
@@ -1307,6 +2806,8 @@ async def create_api_token(request: Request, _: str = Depends(require_basic_admi
         raise HTTPException(status_code=400, detail="Token scope must be read or control.")
     if not isinstance(groups, list) or not groups or any(group not in API_MCP_GROUPS for group in groups):
         raise HTTPException(status_code=400, detail="Choose at least one valid API capability group.")
+    if sensitive_read and not get_api_settings()["api_allow_sensitive_reads"]:
+        raise HTTPException(status_code=400, detail="Enable sensitive reads in Settings before granting this token access to private data.")
     if not 1 <= lifetime <= 365:
         raise HTTPException(status_code=400, detail="Token expiry must be from 1 to 365 days.")
     token = "vaos_" + secrets.token_urlsafe(36)
@@ -1314,17 +2815,41 @@ async def create_api_token(request: Request, _: str = Depends(require_basic_admi
     prefix = token[:14]
     created = datetime.now(timezone.utc)
     expires = (created + timedelta(days=lifetime)).isoformat(timespec="seconds")
-    with db_connection() as db:
-        db.execute("INSERT INTO api_tokens(token_hash,token_prefix,label,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?)", (token_hash, prefix, label, json.dumps({"access": scope, "groups": list(dict.fromkeys(groups))}), created.isoformat(timespec="seconds"), expires))
-    return {"token": token, "prefix": prefix, "label": label, "scopes": {"access": scope, "groups": list(dict.fromkeys(groups))}, "created_at": created.isoformat(timespec="seconds"), "expires_at": expires, "message": "Copy this token now. VAOS stores only its hash and cannot show it again."}
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO api_tokens(token_hash,token_prefix,label,scopes,created_at,expires_at) VALUES(?,?,?,?,?,?)", (token_hash, prefix, label, json.dumps({"access": scope, "groups": list(dict.fromkeys(groups)), "sensitive_read": sensitive_read, "mcp_agent": mcp_agent}), created.isoformat(timespec="seconds"), expires))
+            _record_observability_security_event_in_transaction(
+                db, "auth.api_token_created", "created", component="api",
+                details={"access": scope, "groups": list(dict.fromkeys(groups)), "sensitive_read": sensitive_read, "mcp_agent": mcp_agent, "expires_days": lifetime},
+            )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        logger.exception("Could not atomically create API token and security event")
+        raise HTTPException(status_code=503, detail="The API token was not issued because its security audit could not be stored. Try again shortly.") from exc
+    return {"token": token, "prefix": prefix, "label": label, "scopes": {"access": scope, "groups": list(dict.fromkeys(groups)), "sensitive_read": sensitive_read, "mcp_agent": mcp_agent}, "created_at": created.isoformat(timespec="seconds"), "expires_at": expires, "message": "Copy this token now. VAOS stores only its hash and cannot show it again."}
 
 
 @app.delete("/api/admin/api-tokens/{token_prefix}", include_in_schema=False)
 def revoke_api_token(token_prefix: str, _: str = Depends(require_basic_admin)) -> dict[str, Any]:
-    with db_connection() as db:
-        cursor = db.execute("UPDATE api_tokens SET revoked_at=? WHERE token_prefix=? AND revoked_at IS NULL", (utc_now(), token_prefix))
-    if cursor.rowcount == 0:
-        raise HTTPException(status_code=404, detail="Active API token not found.")
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            revoked_at = utc_now()
+            row = db.execute("SELECT token_hash FROM api_tokens WHERE token_prefix=? AND revoked_at IS NULL", (token_prefix,)).fetchone()
+            cursor = db.execute("UPDATE api_tokens SET revoked_at=? WHERE token_prefix=? AND revoked_at IS NULL", (revoked_at, token_prefix))
+            if cursor.rowcount == 0:
+                raise HTTPException(status_code=404, detail="Active API token not found.")
+            if row is not None:
+                db.execute("UPDATE mcp_approvals SET status='denied',decided_at=?,decided_by='token revoked',decision_note='The associated API token was revoked.' WHERE token_hash=? AND status IN ('pending','approved')", (revoked_at, row["token_hash"]))
+            _record_observability_security_event_in_transaction(
+                db, "auth.api_token_revoked", "revoked", component="api",
+                details={"approval_requests_invalidated": True},
+            )
+    except HTTPException:
+        raise
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        logger.exception("Could not atomically revoke API token and security event")
+        raise HTTPException(status_code=503, detail="The API token was not revoked because its security audit could not be stored. Try again shortly.") from exc
     return {"ok": True, "message": f"API token {token_prefix} was revoked."}
 
 
@@ -1337,32 +2862,86 @@ def dashboard(request: Request, _: str = Depends(require_admin)):
         "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD,
         "version": APP_VERSION,
         "production_mode": PRODUCTION_MODE,
+        "local_windows_launcher": LOCAL_WINDOWS_LAUNCHER,
+        "project": PROJECT_METADATA,
     })
 
 
 @app.get("/settings", response_class=HTMLResponse)
 def settings_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "index.html", {"threshold": get_engine_settings()["match_threshold"], "cooldown": get_engine_settings()["event_cooldown_seconds"], "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "version": APP_VERSION, "production_mode": PRODUCTION_MODE, "settings_only": True})
+    return templates.TemplateResponse(request, "index.html", {"threshold": get_engine_settings()["match_threshold"], "cooldown": get_engine_settings()["event_cooldown_seconds"], "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "version": APP_VERSION, "production_mode": PRODUCTION_MODE, "local_windows_launcher": LOCAL_WINDOWS_LAUNCHER, "settings_only": True, "project": PROJECT_METADATA})
+
+
+@app.get("/hardware", response_class=HTMLResponse)
+def hardware_page(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    return templates.TemplateResponse(request, "hardware.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
+
+
+@app.get("/statistics", response_class=HTMLResponse)
+def observability_page(request: Request, _: str = Depends(require_admin)) -> HTMLResponse:
+    return templates.TemplateResponse(request, "observability.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
+
+
+@app.get("/tracking", response_class=HTMLResponse)
+def tracking_page(request: Request, _: str = Depends(require_basic_admin)) -> HTMLResponse:
+    return templates.TemplateResponse(request, "tracking.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
+
+
+@app.get("/docs/HARDWARE.md", include_in_schema=False)
+def hardware_guide() -> Response:
+    guide_path = APP_DIR / "docs" / "HARDWARE.md"
+    try:
+        return Response(guide_path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="The Hardware Intelligence guide is not installed in this build.") from exc
 
 
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "project": PROJECT_METADATA})
 
 
 @app.get("/training/activity", response_class=HTMLResponse)
 def ml_training_activity_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "training_activity.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "training_activity.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "project": PROJECT_METADATA})
 
 
 @app.get("/datasets", response_class=HTMLResponse)
 def dataset_manager_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "dataset_manager.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "project": PROJECT_METADATA})
 
 
 @app.get("/video-review", response_class=HTMLResponse)
 def video_review_page(request: Request, _: str = Depends(require_admin)):
-    return templates.TemplateResponse(request, "video_review.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD})
+    return templates.TemplateResponse(request, "video_review.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "project": PROJECT_METADATA})
+
+
+@app.get("/projects", response_class=HTMLResponse)
+def project_bundles_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "projects.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
+
+
+@app.get("/about", response_class=HTMLResponse)
+def about_vaos_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "about.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
+
+
+@app.get("/docs/LICENSE", include_in_schema=False)
+def license_document() -> Response:
+    license_path = APP_DIR / "LICENSE"
+    try:
+        return Response(content=license_path.read_text(encoding="utf-8"), media_type="text/plain; charset=utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="The AGPL-3.0-only license text is not installed in this build.") from exc
+
+
+@app.get("/docs/CONTRIBUTING.md", include_in_schema=False)
+def contribution_document() -> Response:
+    contribution_path = APP_DIR / "CONTRIBUTING.md"
+    try:
+        return Response(content=contribution_path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="The contribution guide is not installed in this build.") from exc
 
 
 @app.get("/live-system")
@@ -1382,13 +2961,13 @@ def camera_page(token: str, request: Request):
     if not camera or not camera["active"]:
         raise HTTPException(status_code=404, detail="This camera link is invalid or has been revoked.")
     settings = get_engine_settings()
-    return templates.TemplateResponse(request, "camera.html", {"camera_name": camera["name"], "token": token, "frame_interval_ms": settings["camera_frame_interval_ms"], "max_dimension": settings["camera_max_dimension"]})
+    return templates.TemplateResponse(request, "camera.html", {"camera_name": camera["name"], "token": token, "frame_interval_ms": settings["camera_frame_interval_ms"], "max_dimension": settings["camera_max_dimension"], "project": PROJECT_METADATA})
 
 
 def public_enrollment_page(token: str, request: Request):
     if not is_enrollment_link_valid(token):
         raise HTTPException(status_code=404, detail="This enrollment link is invalid, expired, or already used.")
-    return templates.TemplateResponse(request, "enroll.html", {"token": token})
+    return templates.TemplateResponse(request, "enroll.html", {"token": token, "project": PROJECT_METADATA})
 
 
 @app.post("/api/admin/cameras")
@@ -1496,6 +3075,695 @@ def diagnostics(_: str = Depends(require_admin)):
     return {**runtime, "services": service_status, "cameras": cameras, "objects": [dict(r) for r in object_rows], "matches_today": matches_today, "objects_last_hour": objects_last_hour, "system_metrics": get_system_metrics()}
 
 
+@app.get("/api/admin/hardware")
+def hardware_intelligence(_: str = Depends(require_admin)) -> dict[str, Any]:
+    """Report measured host hardware and conservative, non-applied guidance."""
+    runtime = model_runtime_status()
+    internal_token = os.getenv("VAOS_INTERNAL_STATUS_TOKEN", "")
+    if internal_token:
+        request = urllib.request.Request(
+            f"{CAMERA_INTERNAL_URL}/internal/model-status",
+            headers={"X-VAOS-Internal-Token": internal_token},
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=0.8) as response:
+                worker_status = json.loads(response.read().decode("utf-8"))
+            if isinstance(worker_status, dict) and isinstance(worker_status.get("models"), list):
+                runtime = worker_status
+        except (OSError, urllib.error.URLError, json.JSONDecodeError, TimeoutError):
+            runtime = {}
+    return build_hardware_report(
+        system_metrics=get_system_metrics(),
+        device_inventory=training_device_inventory(),
+        inference_runtime=runtime,
+        training_state=dict(ml_training_state),
+        data_dir=DATA_DIR,
+    )
+
+
+@app.get("/api/admin/observability/overview")
+def observability_overview(period: str = "lifetime", after: str | None = None, before: str | None = None, _: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return observability_store.overview(DB_PATH, period=period, after=after, before=before)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not read observability statistics")
+        raise HTTPException(status_code=503, detail="Observability storage is not ready. Existing VAOS features remain available.") from exc
+
+
+@app.get("/api/admin/observability/counter-queue", include_in_schema=False)
+def observability_counter_queue(request: Request, _: str = Depends(require_admin)) -> dict[str, Any]:
+    """Return a path-free, process-scoped snapshot of the local counter queues."""
+    _require_observability_sensitive_read(request)
+    return observability_counter_queue_status()
+
+
+@app.get("/api/admin/observability/metrics")
+def observability_metrics(metric: str | None = None, limit: int = 100, _: str = Depends(require_admin)) -> dict[str, Any]:
+    if limit < 1 or limit > 500:
+        raise HTTPException(status_code=400, detail="Metric page size must be between 1 and 500.")
+    try:
+        items = observability_store.list_metrics(DB_PATH, key=metric, limit=limit)
+        return {"items": items, "count": len(items), "updated_at": utc_now()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not read observability metric catalogue")
+        raise HTTPException(status_code=503, detail="Observability storage is not ready. Existing VAOS features remain available.") from exc
+
+
+@app.post("/api/admin/observability/mcp/invocations", include_in_schema=False)
+def record_mcp_invocation(request: Request, payload: MCPInvocationInput, _: str = Depends(require_admin)) -> dict[str, Any]:
+    """Receive minimal invocation telemetry from the authenticated local MCP bridge."""
+    if not getattr(request.state, "vaos_api_mcp_agent", False):
+        raise HTTPException(status_code=403, detail="This endpoint is reserved for an MCP-designated API token.")
+    if payload.tool not in MCP_BRIDGE_TOOL_NAMES:
+        raise HTTPException(status_code=400, detail="Unknown MCP bridge tool.")
+    if not math.isfinite(payload.duration_ms):
+        raise HTTPException(status_code=400, detail="Tool duration must be a finite number.")
+    if payload.invocation_id is not None and not re.fullmatch(r"[0-9a-f]{32}", payload.invocation_id):
+        raise HTTPException(status_code=400, detail="Invocation ID must be a 32-character lowercase hexadecimal value.")
+    details = {"tool": payload.tool, "outcome": payload.outcome, "duration_ms": round(payload.duration_ms, 3)}
+    try:
+        inserted = observability_store.record_event(
+            DB_PATH,
+            event_type="mcp.tool_invoked",
+            component="mcp",
+            level="INFO" if payload.outcome == "success" else "WARNING",
+            message="MCP bridge tool completed." if payload.outcome == "success" else "MCP bridge tool returned an error.",
+            details=details,
+            event_id=f"mcp-invocation-{payload.invocation_id}" if payload.invocation_id else None,
+            correlation_id=observability_correlation_context.get(),
+            counter_deltas={"mcp.tool_invocations": 1},
+            counter_dimensions={"mcp.tool_invocations": {"tool": payload.tool, "outcome": payload.outcome}},
+            metric_observations=[{
+                "metric_key": "mcp.tool_duration_ms",
+                "value": payload.duration_ms,
+                "dimensions": {"tool": payload.tool, "outcome": payload.outcome},
+                "provenance": "local MCP bridge monotonic timer",
+                "measurement_scope": "MCP tool execution including VAOS REST round trips",
+                "estimated": False,
+            }],
+        )
+        return {"ok": True, "duplicate": not inserted}
+    except (OSError, sqlite3.Error, ValueError) as exc:
+        logger.warning("Could not record MCP invocation telemetry", exc_info=True)
+        raise HTTPException(status_code=503, detail="MCP invocation telemetry is temporarily unavailable.") from exc
+
+
+@app.get("/api/admin/observability/series")
+def observability_metric_series(
+    metric: str, after: str, before: str, limit: int = 500, dimensions: str = "{}",
+    aggregation: str = "raw", interval: str = "hour", group_by: str = "",
+    _: str = Depends(require_admin),
+) -> dict[str, Any]:
+    if limit < 1 or limit > 1000:
+        raise HTTPException(status_code=400, detail="Series page size must be between 1 and 1,000.")
+    try:
+        dimension_filters = json.loads(dimensions)
+        if not isinstance(dimension_filters, dict):
+            raise ValueError("dimensions must be a JSON object of exact dimension filters.")
+        definition = observability_store.list_metrics(DB_PATH, key=metric, limit=1)
+        if not definition:
+            raise ValueError("Unknown metric key.")
+        if interval not in observability_store.METRIC_SERIES_INTERVALS:
+            raise ValueError("Choose a supported metric time interval.")
+        grouping = group_by or None
+        if grouping and grouping not in definition[0]["dimensions"]:
+            raise ValueError(f"Unsupported grouping dimension for {metric}: {grouping}.")
+        if aggregation == "raw":
+            items = observability_store.query_metric_series(DB_PATH, metric_key=metric, after=after, before=before, limit=limit, dimensions=dimension_filters)
+            total = observability_store.count_metric_series(DB_PATH, metric_key=metric, after=after, before=before, dimensions=dimension_filters)
+            group_count = observability_store.count_metric_series_groups(
+                DB_PATH, metric_key=metric, group_by=grouping, after=after, before=before, dimensions=dimension_filters,
+            ) if grouping else (1 if total else 0)
+            truncated = total > len(items)
+        else:
+            result = observability_store.query_metric_series_aggregated(
+                DB_PATH, metric_key=metric, after=after, before=before, limit=limit,
+                dimensions=dimension_filters, group_by=grouping, aggregation=aggregation, interval=interval,
+            )
+            items, total = result["items"], result["total"]
+            group_count, truncated = result["group_count"], result["truncated"]
+        return {
+            "metric": definition[0], "items": items, "count": len(items), "total": total,
+            "dimensions": dimension_filters, "group_by": grouping, "group_count": group_count,
+            "aggregation": aggregation, "interval": interval,
+            "range": {"after": after, "before_exclusive": before, "timezone": "UTC"},
+            "truncated": truncated, "updated_at": utc_now(),
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not read observability metric history")
+        raise HTTPException(status_code=503, detail="Observability storage is not ready. Existing VAOS features remain available.") from exc
+
+
+@app.get("/api/admin/observability/retention")
+def observability_get_retention_policy(_: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        return observability_store.get_retention_policy(DB_PATH)
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        logger.exception("Could not read observability retention policy")
+        raise HTTPException(status_code=503, detail="Retention settings are not available right now.") from exc
+
+
+@app.put("/api/admin/observability/retention")
+def observability_save_retention_policy(
+    payload: ObservabilityRetentionPolicyInput,
+    actor: str = Depends(require_basic_admin),
+) -> dict[str, Any]:
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            policy = observability_store.set_retention_policy_in_transaction(
+                db,
+                event_details_days=payload.event_details_days,
+                metric_observations_max_days=payload.metric_observations_max_days,
+                delivery_history_days=payload.delivery_history_days,
+                confirm_shorter=payload.confirm_shorter,
+            )
+            _record_observability_security_event_in_transaction(
+                db,
+                "observability.retention_policy_changed", "complete", component="observability",
+                actor_ref=actor,
+                details={"event_details_days": policy["event_details_days"], "metric_observations_max_days": policy["metric_observations_max_days"], "delivery_history_days": policy["delivery_history_days"], "shortened": policy["shortened"]},
+            )
+        policy["message"] = (
+            "Shorter retention was saved. Older operational details may be permanently redacted or removed during the next scheduled cleanup."
+            if policy["shortened"] else "Retention settings saved. Existing expired records are not restored."
+        )
+        return {"ok": True, **policy}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        logger.exception("Could not save observability retention policy")
+        raise HTTPException(status_code=503, detail="Retention settings were not saved because their security audit could not be stored. Try again shortly.") from exc
+
+
+@app.post("/api/admin/observability/retention")
+def observability_apply_retention(
+    payload: ObservabilityRetentionApplyInput,
+    actor: str = Depends(require_basic_admin),
+) -> dict[str, Any]:
+    if not payload.confirm_expired_data_redaction:
+        raise HTTPException(status_code=400, detail="Confirm that applying retention can permanently remove expired operational details.")
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            result = observability_store.apply_retention_in_transaction(db)
+            _record_observability_security_event_in_transaction(
+                db,
+                "observability.retention_applied", "complete", component="observability",
+                actor_ref=actor, details=result,
+            )
+        return {"ok": True, **result, "message": "Metric samples past their configured retention were removed and expired event text was redacted. Lifetime counters and the security audit were preserved. Generated CSV/PDF reports are separate copies and remain available until their own 24-hour expiry."}
+    except (OSError, sqlite3.Error, ValueError, RuntimeError) as exc:
+        logger.exception("Could not apply observability retention")
+        raise HTTPException(status_code=503, detail="Retention was not applied because its security audit could not be stored. Try again shortly.") from exc
+
+
+@app.get("/api/admin/observability/events")
+def observability_events(
+    after: str | None = None,
+    before: str | None = None,
+    level: str | None = None,
+    component: str | None = None,
+    event_type: str | None = None,
+    session_id: str | None = None,
+    correlation_id: str | None = None,
+    training_job_id: str | None = Query(default=None, description="Exact training run ID in safe event details; max 120 characters; only events recording it match."),
+    dataset_id: str | None = Query(default=None, description="Exact dataset ID in safe event details; max 120 characters; only events recording it match."),
+    model_id: str | None = Query(default=None, description="Exact model ID in safe event details; max 120 characters; only events recording it match."),
+    search: str | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+    _: str = Depends(require_admin),
+) -> dict[str, Any]:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="Event page size must be between 1 and 200.")
+    if search and len(search) > 200:
+        raise HTTPException(status_code=400, detail="Search text must be 200 characters or fewer.")
+    if correlation_id and len(correlation_id) > 120:
+        raise HTTPException(status_code=400, detail="Correlation ID must be 120 characters or fewer.")
+    if session_id and len(session_id) > 120:
+        raise HTTPException(status_code=400, detail="Session ID must be 120 characters or fewer.")
+    for label, value in (("Training job ID", training_job_id), ("Dataset ID", dataset_id), ("Model ID", model_id)):
+        if value and len(value) > 120:
+            raise HTTPException(status_code=400, detail=f"{label} must be 120 characters or fewer.")
+    cursor_before = None
+    if cursor:
+        if len(cursor) > 512:
+            raise HTTPException(status_code=400, detail="Event cursor is invalid.")
+        try:
+            decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            value = json.loads(decoded.decode("utf-8"))
+            if not isinstance(value, list) or len(value) != 2 or not all(isinstance(item, str) for item in value):
+                raise ValueError("invalid cursor payload")
+            cursor_before = (value[0], value[1])
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail="Event cursor is invalid.") from exc
+    try:
+        rows = observability_store.query_events(DB_PATH, limit=limit + 1, after=after, before=before, cursor_before=cursor_before, level=level, component=component, event_type=event_type, session_id=session_id, correlation_id=correlation_id, training_job_id=training_job_id, dataset_id=dataset_id, model_id=model_id, search=search)
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps([last["timestamp"], last["event_id"]], separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+        return {"items": items, "next_cursor": next_cursor, "has_more": has_more}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not query the observability event log")
+        raise HTTPException(status_code=503, detail="Observability storage is not ready. Existing VAOS features remain available.") from exc
+
+
+@app.get("/api/admin/observability/events/{event_id}")
+def observability_event(event_id: str, _: str = Depends(require_admin)) -> dict[str, Any]:
+    if not event_id or len(event_id) > 120:
+        raise HTTPException(status_code=400, detail="Event ID must be between 1 and 120 characters.")
+    try:
+        rows = observability_store.query_events(DB_PATH, limit=1, event_id=event_id)
+        if not rows:
+            raise HTTPException(status_code=404, detail="Operational event was not found or has expired.")
+        return rows[0]
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not read the observability event record")
+        raise HTTPException(status_code=503, detail="Observability storage is not ready. Existing VAOS features remain available.") from exc
+
+
+def _saved_log_filter_owner(principal: str) -> str:
+    """Derive an opaque per-admin/token namespace for saved UI filters."""
+    value = str(principal)
+    identity = value if value.startswith("api:") else "basic:" + value
+    return hashlib.sha256(identity.encode("utf-8")).hexdigest()
+
+
+def _validate_saved_log_filter(filters: Any) -> dict[str, Any]:
+    if not isinstance(filters, dict) or set(filters) - {"period", "after", "before", "level", "component", "event_type", "session_id", "correlation_id", "training_job_id", "dataset_id", "model_id", "search"}:
+        raise ValueError("Saved filters contain unsupported fields.")
+    period = str(filters.get("period", "lifetime"))
+    if period not in {"lifetime", "24h", "7d", "30d", "custom"}:
+        raise ValueError("Saved filter period is invalid.")
+    clean: dict[str, Any] = {"period": period}
+    if period == "custom":
+        raw_after, raw_before = filters.get("after"), filters.get("before")
+        if not isinstance(raw_after, str) or not isinstance(raw_before, str) or len(raw_after) > 64 or len(raw_before) > 64:
+            raise ValueError("Custom saved filter times must be valid UTC timestamps of at most 64 characters.")
+        try:
+            after = observability_store._normalize_time(raw_after)
+            before = observability_store._normalize_time(raw_before)
+            start = observability_store._parse_time(after)
+            end = observability_store._parse_time(before)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Custom saved filters need valid UTC start and end times.") from exc
+        if start >= end or end - start > timedelta(days=366):
+            raise ValueError("Custom saved filter range must be ordered and no longer than 366 days.")
+        clean.update({"after": after, "before": before})
+    elif "after" in filters or "before" in filters:
+        raise ValueError("Only a custom saved filter can include start and end times.")
+    if "level" in filters and not isinstance(filters["level"], str):
+        raise ValueError("Saved filter severity must be text.")
+    level = str(filters.get("level", "")).upper().strip()
+    if level:
+        if level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ValueError("Saved filter severity is invalid.")
+        clean["level"] = level
+    for key, maximum in (("component", 80), ("event_type", 96), ("session_id", 120), ("correlation_id", 120), ("training_job_id", 120), ("dataset_id", 120), ("model_id", 120), ("search", 200)):
+        if key in filters and not isinstance(filters[key], str):
+            raise ValueError(f"Saved filter {key.replace('_', ' ')} must be text.")
+        value = str(filters.get(key, "")).strip()
+        if len(value) > maximum:
+            raise ValueError(f"Saved filter {key.replace('_', ' ')} must be {maximum} characters or fewer.")
+        if key == "event_type" and value and not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{0,95}", value):
+            raise ValueError("Saved event type must be a lowercase event key.")
+        if value:
+            clean[key] = value
+    return clean
+
+
+@app.get("/api/admin/observability/log-filters")
+def list_observability_log_filters(principal: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        items = observability_store.list_saved_log_filters(DB_PATH, owner_hash=_saved_log_filter_owner(principal))
+        return {"items": items, "count": len(items), "maximum": 20}
+    except sqlite3.Error as exc:
+        logger.exception("Could not list saved Log Explorer filters")
+        raise HTTPException(status_code=503, detail="Saved filters could not be loaded.") from exc
+
+
+@app.post("/api/admin/observability/log-filters", status_code=201)
+def create_observability_log_filter(payload: dict[str, Any], principal: str = Depends(require_admin)) -> dict[str, Any]:
+    if set(payload) != {"name", "filters"}:
+        raise HTTPException(status_code=400, detail="Provide only a filter name and its settings.")
+    if not isinstance(payload.get("name"), str):
+        raise HTTPException(status_code=400, detail="Saved-filter name must be text.")
+    try:
+        filters = _validate_saved_log_filter(payload.get("filters"))
+        item = observability_store.save_log_filter(DB_PATH, owner_hash=_saved_log_filter_owner(principal), name=payload["name"], filters=filters)
+        return {"item": item, "message": "Saved for this authenticated account."}
+    except ValueError as exc:
+        status = 409 if "already exists" in str(exc) or "up to 20" in str(exc) else 400
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not save a Log Explorer filter")
+        raise HTTPException(status_code=503, detail="This filter could not be saved.") from exc
+
+
+@app.delete("/api/admin/observability/log-filters/{filter_id}")
+def remove_observability_log_filter(filter_id: str, principal: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        removed = observability_store.delete_saved_log_filter(DB_PATH, owner_hash=_saved_log_filter_owner(principal), filter_id=filter_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not remove a saved Log Explorer filter")
+        raise HTTPException(status_code=503, detail="This saved filter could not be removed.") from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Saved filter not found for this authenticated account.")
+    return {"ok": True, "message": "Saved filter removed."}
+
+
+@app.get("/api/admin/observability/lifecycle")
+def observability_lifecycle(limit: int = 50, after: str | None = None, before: str | None = None, cursor: str | None = None, _: str = Depends(require_admin)) -> dict[str, Any]:
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="Lifecycle page size must be between 1 and 200.")
+    try:
+        cursor_before = None
+        if cursor:
+            if len(cursor) > 512:
+                raise HTTPException(status_code=400, detail="Lifecycle cursor is invalid.")
+            try:
+                decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+                value = json.loads(decoded.decode("utf-8"))
+                if not isinstance(value, list) or len(value) != 2 or not all(isinstance(item, str) for item in value):
+                    raise ValueError("invalid cursor payload")
+                cursor_before = (value[0], value[1])
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as exc:
+                raise HTTPException(status_code=400, detail="Lifecycle cursor is invalid.") from exc
+        rows = observability_store.list_sessions(DB_PATH, limit=limit + 1, after=after, before=before, cursor_before=cursor_before)
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps([last["started_at"], last["session_id"]], separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+        return {"items": items, "next_cursor": next_cursor, "has_more": has_more, "updated_at": utc_now()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not read runtime lifecycle sessions")
+        raise HTTPException(status_code=503, detail="Observability storage is not ready. Existing VAOS features remain available.") from exc
+
+
+@app.get("/api/admin/observability/security-audit/integrity")
+def observability_security_integrity(request: Request, _: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        _require_observability_sensitive_read(request)
+        return observability_store.verify_security_chain(DB_PATH)
+    except sqlite3.Error as exc:
+        logger.exception("Could not verify the security audit chain")
+        raise HTTPException(status_code=503, detail="The security audit store is not ready.") from exc
+
+
+@app.get("/api/admin/observability/security-audit/events")
+def observability_security_events(request: Request, after: str | None = None, before: str | None = None, event_type: str | None = None, outcome: str | None = None, component: str | None = None, actor_ref: str | None = None, search: str | None = None, cursor: str | None = None, limit: int = 50, _: str = Depends(require_admin)) -> dict[str, Any]:
+    _require_observability_sensitive_read(request)
+    if limit < 1 or limit > 200:
+        raise HTTPException(status_code=400, detail="Security audit page size must be between 1 and 200.")
+    cursor_before = None
+    if cursor:
+        if len(cursor) > 512:
+            raise HTTPException(status_code=400, detail="Security audit cursor is invalid.")
+        try:
+            decoded = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+            value = json.loads(decoded.decode("utf-8"))
+            if not isinstance(value, list) or len(value) != 2 or not isinstance(value[0], str) or not str(value[1]).isdigit():
+                raise ValueError("invalid cursor payload")
+            cursor_before = (value[0], int(value[1]))
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError, binascii.Error) as exc:
+            raise HTTPException(status_code=400, detail="Security audit cursor is invalid.") from exc
+    try:
+        rows = observability_store.query_security_audit(DB_PATH, limit=limit + 1, after=after, before=before, cursor_before=cursor_before, event_type=event_type, outcome=outcome, component=component, actor_ref=actor_ref, search=search)
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = base64.urlsafe_b64encode(json.dumps([last["timestamp"], last["sequence_id"]], separators=(",", ":")).encode("utf-8")).decode("ascii").rstrip("=")
+        return {"items": items, "next_cursor": next_cursor, "has_more": has_more, "updated_at": utc_now()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not query append-only security audit records")
+        raise HTTPException(status_code=503, detail="The security audit store is not ready.") from exc
+
+
+def _require_observability_sensitive_read(request: Request) -> None:
+    """Keep event exports behind the existing explicit API sensitive-read opt-in."""
+    if not getattr(request.state, "vaos_api_token_hash", None):
+        return
+    if not get_api_settings()["api_allow_sensitive_reads"] or not getattr(request.state, "vaos_api_sensitive_read", False):
+        raise HTTPException(status_code=403, detail="Observability exports include operational or security events. Enable sensitive reads in Settings and use a token explicitly granted sensitive-read access.")
+
+
+def _assert_report_actor(job: dict[str, Any], actor: str) -> None:
+    if actor != "admin" and job.get("requested_by") != actor:
+        raise HTTPException(status_code=404, detail="Report job was not found.")
+
+
+@app.get("/api/admin/observability/reports/types")
+def observability_report_types(_: str = Depends(require_admin)) -> dict[str, Any]:
+    return {"items": observability_reports.report_types(), "formats": ["csv", "pdf"]}
+
+
+@app.get("/api/admin/observability/reports")
+def observability_report_list(request: Request, limit: int = 50, actor: str = Depends(require_admin)) -> dict[str, Any]:
+    _require_observability_sensitive_read(request)
+    try:
+        items = observability_reports.list_report_jobs(DB_PATH, limit=limit, requested_by=None if actor == "admin" else actor)
+        return {"items": items, "count": len(items), "updated_at": utc_now()}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not list observability reports")
+        raise HTTPException(status_code=503, detail="Report storage is not ready.") from exc
+
+
+@app.post("/api/admin/observability/reports/jobs", status_code=202)
+def observability_report_create(payload: dict[str, Any], request: Request, actor: str = Depends(require_admin)) -> dict[str, Any]:
+    _require_observability_sensitive_read(request)
+    allowed = {"report_type", "format", "filters"}
+    if set(payload) - allowed:
+        raise HTTPException(status_code=400, detail="Only report_type, format and filters are accepted.")
+    filters = payload.get("filters", {})
+    if not isinstance(filters, dict):
+        raise HTTPException(status_code=400, detail="filters must be an object.")
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            job = observability_reports.create_report_job_in_transaction(
+                db, report_type=str(payload.get("report_type", "")), output_format=str(payload.get("format", "")),
+                requested_by=actor, parameters=filters,
+            )
+            _record_observability_security_event_in_transaction(
+                db, "observability.report_requested", "queued", component="observability",
+                details={"report_type": job["report_type"], "format": job["format"], "job_id": job["job_id"]},
+            )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (OSError, sqlite3.Error, RuntimeError) as exc:
+        logger.exception("Could not queue an observability report")
+        raise HTTPException(status_code=503, detail="The report could not be queued.") from exc
+    try:
+        observability_reports.submit_report_job(DB_PATH, OBSERVABILITY_REPORT_DIR, job["job_id"])
+    except (OSError, RuntimeError) as exc:
+        logger.exception("Report request was committed, but the local worker queue did not confirm scheduling")
+        raise HTTPException(
+            status_code=503,
+            detail="Your report request was saved, but the worker could not confirm scheduling. Check Reports before retrying.",
+        ) from exc
+    return observability_reports.public_report_job(job)
+
+
+@app.get("/api/admin/observability/reports/jobs/{job_id}")
+def observability_report_status(job_id: str, request: Request, actor: str = Depends(require_admin)) -> dict[str, Any]:
+    _require_observability_sensitive_read(request)
+    job = observability_reports.get_report_job(DB_PATH, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job was not found.")
+    _assert_report_actor(job, actor)
+    return observability_reports.public_report_job(job)
+
+
+@app.post("/api/admin/observability/reports/jobs/{job_id}/cancel")
+def observability_report_cancel(job_id: str, actor: str = Depends(require_admin)) -> dict[str, Any]:
+    job = observability_reports.get_report_job(DB_PATH, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job was not found.")
+    _assert_report_actor(job, actor)
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            cancelled = observability_reports.cancel_report_job_in_transaction(db, job_id, requested_by=job["requested_by"])
+            if not cancelled:
+                raise HTTPException(status_code=409, detail="Only a queued report can be cancelled.")
+            _record_observability_security_event_in_transaction(
+                db, "observability.report_cancelled", "cancelled", component="observability",
+                details={"job_id": job_id},
+            )
+        return {"ok": True, "job_id": job_id, "status": "cancelled"}
+    except sqlite3.Error as exc:
+        logger.exception("Could not cancel an observability report")
+        raise HTTPException(status_code=503, detail="The report could not be cancelled.") from exc
+
+
+@app.get("/api/admin/observability/reports/jobs/{job_id}/download")
+def observability_report_download(job_id: str, request: Request, actor: str = Depends(require_admin)) -> FileResponse:
+    _require_observability_sensitive_read(request)
+    job = observability_reports.get_report_job(DB_PATH, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job was not found.")
+    _assert_report_actor(job, actor)
+    path = observability_reports.report_file_path(OBSERVABILITY_REPORT_DIR, job)
+    if not path:
+        raise HTTPException(status_code=410 if job.get("status") == "expired" else 409, detail="The report file is expired, incomplete, or failed its integrity check.")
+    try:
+        with db_connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not observability_reports.record_download_in_transaction(db, job_id=job_id, requested_by=actor):
+                raise HTTPException(status_code=410, detail="The report has expired.")
+            _record_observability_security_event_in_transaction(
+                db, "observability.report_downloaded", "complete", component="observability",
+                details={"job_id": job_id, "sha256": job.get("output_sha256")},
+            )
+        return FileResponse(path, filename=f"vaos-{job['report_type']}-{job_id}.{job['format']}", media_type="text/csv" if job["format"] == "csv" else "application/pdf")
+    except sqlite3.Error as exc:
+        logger.exception("Could not record observability report download")
+        raise HTTPException(status_code=503, detail="The report download could not be audited.") from exc
+
+
+@app.get("/api/admin/observability/integrations")
+def observability_integrations(request: Request, _: str = Depends(require_admin)) -> dict[str, Any]:
+    _require_observability_sensitive_read(request)
+    try:
+        return observability_siem.list_destinations(DB_PATH)
+    except sqlite3.Error as exc:
+        logger.exception("Could not read SIEM destination status")
+        raise HTTPException(status_code=503, detail="Integration status is unavailable.") from exc
+
+
+@app.post("/api/admin/observability/integrations", status_code=201)
+def observability_integration_create(payload: dict[str, Any], _: str = Depends(require_admin)) -> dict[str, Any]:
+    allowed = {"display_name", "transport", "event_format", "endpoint", "secret_ref", "enabled"}
+    if set(payload) - allowed or not {"display_name", "endpoint"}.issubset(payload):
+        raise HTTPException(status_code=400, detail="Provide display_name and endpoint; transport defaults to signed HTTPS JSON, and secret_ref/enabled are optional where supported.")
+    if "enabled" in payload and not isinstance(payload["enabled"], bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean.")
+    try:
+        with observability_store._connection(DB_PATH) as db:
+            db.execute("BEGIN IMMEDIATE")
+            destination = observability_siem.configure_destination_in_transaction(db, display_name=str(payload["display_name"]), transport=str(payload.get("transport", "https_json")), event_format=str(payload.get("event_format", "json")), endpoint=str(payload["endpoint"]), secret_ref=str(payload.get("secret_ref", "")), enabled=payload.get("enabled", False) is True)
+            _record_observability_security_event_in_transaction(db, "observability.integration_created", "created", component="observability", details={"destination_id": destination["destination_id"], "endpoint_host": destination["endpoint_host"], "transport": destination["transport"], "event_format": destination["event_format"], "enabled": destination["enabled"]})
+        return destination
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not create SIEM destination")
+        raise HTTPException(status_code=503, detail="The destination could not be saved.") from exc
+
+
+@app.put("/api/admin/observability/integrations/{destination_id}")
+def observability_integration_update(destination_id: str, payload: dict[str, Any], _: str = Depends(require_admin)) -> dict[str, Any]:
+    allowed = {"display_name", "transport", "event_format", "endpoint", "secret_ref", "enabled"}
+    if set(payload) - allowed or not {"display_name", "endpoint"}.issubset(payload):
+        raise HTTPException(status_code=400, detail="Provide display_name and endpoint; transport defaults to signed HTTPS JSON, and secret_ref/enabled are optional where supported.")
+    if "enabled" in payload and not isinstance(payload["enabled"], bool):
+        raise HTTPException(status_code=400, detail="enabled must be a boolean.")
+    try:
+        with observability_store._connection(DB_PATH) as db:
+            db.execute("BEGIN IMMEDIATE")
+            destination = observability_siem.configure_destination_in_transaction(db, destination_id=destination_id, display_name=str(payload["display_name"]), transport=str(payload.get("transport", "https_json")), event_format=str(payload.get("event_format", "json")), endpoint=str(payload["endpoint"]), secret_ref=payload.get("secret_ref"), enabled=payload.get("enabled", False) is True)
+            _record_observability_security_event_in_transaction(db, "observability.integration_updated", "updated", component="observability", details={"destination_id": destination_id, "endpoint_host": destination["endpoint_host"], "transport": destination["transport"], "event_format": destination["event_format"], "enabled": destination["enabled"]})
+        return destination
+    except ValueError as exc:
+        raise HTTPException(status_code=404 if "not found" in str(exc) else 400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not update SIEM destination")
+        raise HTTPException(status_code=503, detail="The destination could not be updated.") from exc
+
+
+@app.delete("/api/admin/observability/integrations/{destination_id}")
+def observability_integration_delete(destination_id: str, _: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        with observability_store._connection(DB_PATH) as db:
+            db.execute("BEGIN IMMEDIATE")
+            destination = observability_siem.archive_destination_in_transaction(db, destination_id)
+            if not destination:
+                raise HTTPException(status_code=404, detail="Destination was not found or was already removed.")
+            _record_observability_security_event_in_transaction(db, "observability.integration_removed", "removed", component="observability", details={"destination_id": destination_id, "endpoint_host": destination["endpoint_host"], "transport": destination["transport"]})
+        return {"ok": True, **destination, "message": "Destination removed. Delivery history is retained locally; a send already in progress may still complete."}
+    except sqlite3.Error as exc:
+        logger.exception("Could not remove SIEM destination")
+        raise HTTPException(status_code=503, detail="The destination could not be removed.") from exc
+
+
+@app.post("/api/admin/observability/integrations/{destination_id}/enabled")
+def observability_integration_enable(destination_id: str, payload: dict[str, Any], _: str = Depends(require_admin)) -> dict[str, Any]:
+    enabled = payload.get("enabled")
+    if not isinstance(enabled, bool) or set(payload) != {"enabled"}:
+        raise HTTPException(status_code=400, detail="Provide enabled as a boolean.")
+    try:
+        with observability_store._connection(DB_PATH) as db:
+            db.execute("BEGIN IMMEDIATE")
+            if not observability_siem.set_destination_enabled_in_transaction(db, destination_id, enabled):
+                raise HTTPException(status_code=404, detail="Destination was not found.")
+            _record_observability_security_event_in_transaction(db, "observability.integration_toggled", "enabled" if enabled else "disabled", component="observability", details={"destination_id": destination_id})
+        return {"ok": True, "destination_id": destination_id, "enabled": enabled}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not change SIEM destination state")
+        raise HTTPException(status_code=503, detail="The destination state could not be changed.") from exc
+
+
+@app.post("/api/admin/observability/integrations/{destination_id}/test")
+def observability_integration_test(destination_id: str, _: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        # Persist intent before a network side effect that cannot be rolled back.
+        # The result record below complements this durable request record.
+        with observability_store._connection(DB_PATH) as db:
+            db.execute("BEGIN IMMEDIATE")
+            exists = db.execute(
+                "SELECT 1 FROM observability_siem_destinations WHERE destination_id=? AND archived_at IS NULL",
+                (destination_id,),
+            ).fetchone()
+            if not exists:
+                raise HTTPException(status_code=404, detail="Destination was not found.")
+            _record_observability_security_event_in_transaction(
+                db, "observability.integration_test_requested", "started", component="observability",
+                details={"destination_id": destination_id},
+            )
+        result = observability_siem.send_test_event(DB_PATH, destination_id)
+        with observability_store._connection(DB_PATH) as db:
+            db.execute("BEGIN IMMEDIATE")
+            _record_observability_security_event_in_transaction(
+                db, "observability.integration_tested", "complete" if result.get("ok") else "failed",
+                component="observability",
+                details={"destination_id": destination_id, "http_status": result.get("http_status"), "error_code": result.get("error_code")},
+            )
+        return result
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except sqlite3.Error as exc:
+        logger.exception("Could not test SIEM destination")
+        raise HTTPException(status_code=503, detail="The test could not be fully recorded or completed. It may already have been sent; check the receiver before retrying.") from exc
+
+
 @app.get("/api/admin/engine-settings")
 def engine_settings(_: str = Depends(require_admin)):
     return get_engine_settings()
@@ -1573,6 +3841,8 @@ def request_service_restart(_: str = Depends(require_admin)):
 def request_launcher_command(command: str) -> dict[str, str]:
     if PRODUCTION_MODE:
         raise HTTPException(status_code=409, detail="Service restarts are managed by the production host. Use the deployment platform to restart VAOS.")
+    if not LOCAL_WINDOWS_LAUNCHER:
+        raise HTTPException(status_code=409, detail="The local restart controller is provided by the Windows launcher. On macOS or Linux, stop and restart both VAOS Uvicorn services with their existing environment settings, or use your process manager.")
     try:
         if LAUNCHER_COMMAND_PATH.exists():
             raise HTTPException(status_code=409, detail="Another launcher action is already in progress.")
@@ -2025,9 +4295,148 @@ def clear_events(_: str = Depends(require_admin)):
     with db_connection() as db:
         db.execute("DELETE FROM sightings")
         db.execute("DELETE FROM object_sightings")
+        db.execute("DELETE FROM object_rule_events")
     last_emitted.clear()
     last_object_emitted.clear()
     return {"ok": True}
+
+
+def _tracking_rule_response(row: sqlite3.Row) -> dict[str, Any]:
+    result = dict(row)
+    raw_region = result.pop("region_json", "{}")
+    try:
+        result["region"] = json.loads(raw_region)
+    except (TypeError, ValueError, json.JSONDecodeError):
+        result["region"] = {"x": 0, "y": 0, "width": 1, "height": 1}
+    result["enabled"] = bool(result.get("enabled"))
+    return result
+
+
+def _validate_rule_camera(db: sqlite3.Connection, camera_token: str | None) -> None:
+    if camera_token is None:
+        return
+    camera = db.execute("SELECT active FROM cameras WHERE token=?", (camera_token,)).fetchone()
+    if camera is None:
+        raise HTTPException(status_code=404, detail="Selected camera was not found.")
+    if not camera["active"]:
+        raise HTTPException(status_code=409, detail="Selected camera link is inactive. Reactivate it or use All active cameras.")
+
+
+@app.get("/api/admin/tracking/rules")
+def list_tracking_rules(_: str = Depends(require_admin)) -> dict[str, Any]:
+    with db_connection() as db:
+        rows = db.execute(
+            "SELECT r.*,c.name AS camera_name FROM object_event_rules r "
+            "LEFT JOIN cameras c ON c.token=r.camera_token ORDER BY r.id DESC LIMIT 100"
+        ).fetchall()
+    return {"rules": [_tracking_rule_response(row) for row in rows], "limit": 100,
+            "tracking_note": "Track continuity is approximate, camera-local, and reset when the camera service restarts."}
+
+
+@app.post("/api/admin/tracking/rules")
+def create_tracking_rule(payload: TrackingRuleInput, _: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        normalized = validate_rule(payload.dict())
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    now = utc_now()
+    with db_connection() as db:
+        _validate_rule_camera(db, normalized["camera_token"])
+        count = int(db.execute("SELECT COUNT(*) FROM object_event_rules").fetchone()[0])
+        if count >= 100:
+            raise HTTPException(status_code=409, detail="VAOS supports up to 100 saved tracking rules. Remove an unused rule first.")
+        cursor = db.execute(
+            "INSERT INTO object_event_rules(name,enabled,rule_type,class_name,min_confidence,threshold_count,"
+            "min_consecutive_frames,cooldown_seconds,dwell_seconds,camera_token,region_json,created_at,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (normalized["name"], int(normalized["enabled"]), normalized["rule_type"], normalized["class_name"],
+             normalized["min_confidence"], normalized["threshold_count"], normalized["min_consecutive_frames"],
+             normalized["cooldown_seconds"], normalized["dwell_seconds"], normalized["camera_token"],
+             json.dumps(normalized["region"], separators=(",", ":")), now, now),
+        )
+        row = db.execute(
+            "SELECT r.*,c.name AS camera_name FROM object_event_rules r LEFT JOIN cameras c ON c.token=r.camera_token WHERE r.id=?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    invalidate_tracking_rule_cache()
+    return {"rule": _tracking_rule_response(row), "message": "Tracking rule saved. Events will be evaluated on future camera frames."}
+
+
+@app.patch("/api/admin/tracking/rules/{rule_id}")
+def update_tracking_rule(rule_id: int, payload: TrackingRulePatch, _: str = Depends(require_admin)) -> dict[str, Any]:
+    patch_value = payload.dict(exclude_unset=True)
+    if not patch_value:
+        raise HTTPException(status_code=422, detail="Provide at least one rule field to update.")
+    if any(value is None and key not in {"camera_token", "dwell_seconds", "region"} for key, value in patch_value.items()):
+        raise HTTPException(status_code=422, detail="Required rule fields cannot be cleared; provide a replacement value.")
+    with db_connection() as db:
+        current = db.execute("SELECT * FROM object_event_rules WHERE id=?", (rule_id,)).fetchone()
+        if current is None:
+            raise HTTPException(status_code=404, detail="Tracking rule was not found.")
+        merged = dict(current)
+        try:
+            merged["region"] = json.loads(merged.pop("region_json", "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            merged["region"] = {"x": 0, "y": 0, "width": 1, "height": 1}
+        merged["enabled"] = bool(merged["enabled"])
+        merged.update(patch_value)
+        try:
+            normalized = validate_rule(merged)
+        except (ValueError, json.JSONDecodeError) as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        _validate_rule_camera(db, normalized["camera_token"])
+        db.execute(
+            "UPDATE object_event_rules SET name=?,enabled=?,rule_type=?,class_name=?,min_confidence=?,threshold_count=?,"
+            "min_consecutive_frames=?,cooldown_seconds=?,dwell_seconds=?,camera_token=?,region_json=?,updated_at=? WHERE id=?",
+            (normalized["name"], int(normalized["enabled"]), normalized["rule_type"], normalized["class_name"],
+             normalized["min_confidence"], normalized["threshold_count"], normalized["min_consecutive_frames"],
+             normalized["cooldown_seconds"], normalized["dwell_seconds"], normalized["camera_token"],
+             json.dumps(normalized["region"], separators=(",", ":")), utc_now(), rule_id),
+        )
+        row = db.execute(
+            "SELECT r.*,c.name AS camera_name FROM object_event_rules r LEFT JOIN cameras c ON c.token=r.camera_token WHERE r.id=?",
+            (rule_id,),
+        ).fetchone()
+    invalidate_tracking_rule_cache(rule_id)
+    return {"rule": _tracking_rule_response(row), "message": "Tracking rule updated."}
+
+
+@app.delete("/api/admin/tracking/rules/{rule_id}")
+def delete_tracking_rule(rule_id: int, _: str = Depends(require_admin)) -> dict[str, Any]:
+    with db_connection() as db:
+        cursor = db.execute("DELETE FROM object_event_rules WHERE id=?", (rule_id,))
+        if cursor.rowcount != 1:
+            raise HTTPException(status_code=404, detail="Tracking rule was not found.")
+    invalidate_tracking_rule_cache(rule_id)
+    return {"ok": True, "message": "Rule removed. Previously recorded rule events are retained."}
+
+
+@app.get("/api/admin/tracking/events")
+def list_tracking_events(limit: int = 100, before_id: int | None = None, camera_token: str | None = None,
+                         rule_id: int | None = None, _: str = Depends(require_admin)) -> dict[str, Any]:
+    if not 1 <= limit <= 500:
+        raise HTTPException(status_code=400, detail="Limit must be between 1 and 500.")
+    clauses: list[str] = []
+    values: list[Any] = []
+    if before_id is not None:
+        clauses.append("e.id < ?")
+        values.append(before_id)
+    if camera_token:
+        clauses.append("e.camera_token = ?")
+        values.append(camera_token)
+    if rule_id is not None:
+        clauses.append("e.rule_id = ?")
+        values.append(rule_id)
+    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+    with db_connection() as db:
+        rows = db.execute(
+            "SELECT e.id,e.timestamp,e.rule_id,e.rule_name,e.rule_type,e.class_name,e.object_count,e.message,"
+            "e.camera_token,c.name AS camera_name FROM object_rule_events e "
+            "JOIN cameras c ON c.token=e.camera_token " + where + " ORDER BY e.id DESC LIMIT ?",
+            (*values, limit),
+        ).fetchall()
+    return {"events": [dict(row) for row in rows], "limit": limit,
+            "tracking_note": "Events are based on approximate short-term tracks and are not proof of identity."}
 
 
 def load_public_dataset_imports() -> dict[str, Any]:
@@ -2060,14 +4469,14 @@ def _path_is_within(candidate: Path, parent: Path) -> bool:
 
 def _dataset_allowed_roots() -> list[Path]:
     return [
-        Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")).expanduser().resolve(),
+        default_datasets_dir().resolve(),
         ML_DATASETS_DIR.resolve(),
     ]
 
 
 def _training_dataset_roots() -> list[Path]:
     imports = load_public_dataset_imports()
-    dataset_root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")).expanduser()
+    dataset_root = default_datasets_dir().expanduser()
     active_source = str(ml_training_state.get("source") or "")
     if active_source:
         roots: list[Path] = []
@@ -2274,6 +4683,7 @@ def _dataset_conflicts_with_training(source_root: Path) -> bool:
 
 def _prepare_local_dataset_worker(name: str, source_path: Path, dataset_id: str) -> None:
     global ml_dataset_prepare_state
+    preparation_started = time.perf_counter()
     try:
         ml_dataset_prepare_state.update({"status": "preparing", "progress": 0, "message": "Checking the local YOLO dataset on CPU. No CUDA/GPU calls are made."})
         def progress(current: int, total: int) -> None:
@@ -2293,8 +4703,15 @@ def _prepare_local_dataset_worker(name: str, source_path: Path, dataset_id: str)
         imports = load_public_dataset_imports()
         imports[dataset_id] = record
         write_public_dataset_imports(imports)
+        _record_observability_dataset_result(
+            "managed_local", succeeded=True, duration_seconds=time.perf_counter() - preparation_started,
+            image_count=report["image_count"], train_image_count=report["train_count"],
+            validation_image_count=report["val_count"], class_count=len(report["classes"]),
+            annotation_count=report["annotations"],
+        )
         ml_dataset_prepare_state = {"status": "complete", "progress": 100, "dataset": dataset_id, "message": f"{name} validated and added to the training-data menu · {report['image_count']:,} images · {len(report['classes']):,} classes · {report['annotations']:,} valid boxes. CPU-only; GPU was not used.", "report": record}
     except Exception as exc:
+        _record_observability_dataset_result("managed_local", succeeded=False, duration_seconds=time.perf_counter() - preparation_started)
         ml_dataset_prepare_state = {"status": "error", "progress": 0, "message": str(exc)[:700]}
         logger.warning("Local dataset validation failed: %s", exc, exc_info=True)
     finally:
@@ -2322,7 +4739,7 @@ def prepare_local_dataset(payload: dict[str, Any], _: str = Depends(require_admi
     source_root = source_path.parent.resolve() if source_path.is_file() else source_path.resolve()
     allowed_roots = _dataset_allowed_roots()
     if not any(_path_is_within(source_root, root) for root in allowed_roots):
-        raise HTTPException(status_code=400, detail="For safe registration and purge, place datasets under D:\\VAOS_Datasets or this app's managed training-data folder.")
+        raise HTTPException(status_code=400, detail="For safe registration and purge, place datasets under the configured dataset folder or this app's managed training-data folder.")
     if source_root in allowed_roots:
         raise HTTPException(status_code=400, detail="Select a specific dataset subfolder, not the full datasets root.")
     if any(Path(str(item.get("source_root", ""))).resolve() == source_root for item in load_public_dataset_imports().values() if isinstance(item, dict) and item.get("source_root")):
@@ -2337,7 +4754,7 @@ def prepare_local_dataset(payload: dict[str, Any], _: str = Depends(require_admi
     dataset_id = f"local_{secrets.token_hex(6)}"
     ml_dataset_prepare_state.update({"status": "preparing", "progress": 0, "dataset": dataset_id, "message": "Starting CPU-only validation. CUDA/GPU will not be queried or used."})
     try:
-        threading.Thread(target=_prepare_local_dataset_worker, args=(name, source_path, dataset_id), name="vaos-local-dataset-validation", daemon=True).start()
+        _start_context_preserving_thread(_prepare_local_dataset_worker, args=(name, source_path, dataset_id), name="vaos-local-dataset-validation")
     except Exception as exc:
         ml_dataset_prepare_lock.release()
         ml_dataset_prepare_state.update({"status": "error", "message": f"Could not start CPU validation: {exc}"})
@@ -2397,7 +4814,7 @@ def local_dataset_catalog() -> list[dict[str, Any]]:
     image references have passed conversion/validation. That keeps raw or
     incomplete data from being accidentally used in a model update.
     """
-    root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets"))
+    root = default_datasets_dir()
     idd = root / "idd-lite" / "idd20k_lite"
     india = root / "IndiaScene365-v2" / "IndiaScene365" / "Indiascene365"
     uvh = root / "UVH-26"
@@ -2434,7 +4851,7 @@ def local_dataset_catalog() -> list[dict[str, Any]]:
 
 
 def uvh26_source_root() -> Path:
-    return Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")) / "UVH-26"
+    return default_datasets_dir() / "UVH-26"
 
 
 def prepare_uvh26_dataset() -> None:
@@ -2446,6 +4863,7 @@ def prepare_uvh26_dataset() -> None:
     several gigabytes unexpectedly.
     """
     global ml_dataset_import_state
+    preparation_started = time.perf_counter()
     source_root = uvh26_source_root()
     split_specs = {
         "train": (source_root / "UVH-26-Train" / "UVH-26-MV-Train.json", source_root / "UVH-26-Train"),
@@ -2455,7 +4873,7 @@ def prepare_uvh26_dataset() -> None:
     final_root = source_root / "vaos-uvh26-yolo"
     staging_created = False
     try:
-        ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "phase": "connecting", "progress": 0, "downloaded_bytes": 0, "expected_bytes": 90_000_000_000, "speed_bytes_per_second": 0, "message": "Resuming the official UVH-26 download to D:\\VAOS_Datasets. COCO 2017 + reviewed + Kaggle Auto training can run alongside this download."})
+        ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "phase": "connecting", "progress": 0, "downloaded_bytes": 0, "expected_bytes": 90_000_000_000, "speed_bytes_per_second": 0, "message": "Resuming the official UVH-26 download to the configured dataset folder. COCO 2017 + reviewed + Kaggle Auto training can run alongside this download."})
         if any(not annotation.is_file() for annotation, _ in split_specs.values()):
             import truststore
             truststore.inject_into_ssl()
@@ -2480,7 +4898,7 @@ def prepare_uvh26_dataset() -> None:
                 finally:
                     download_done.set()
 
-            threading.Thread(target=download_uvh, name="vaos-uvh26-download-worker", daemon=True).start()
+            _start_context_preserving_thread(download_uvh, name="vaos-uvh26-download-worker")
             previous_bytes = 0
             previous_at = time.monotonic()
             while not download_done.wait(5):
@@ -2615,7 +5033,7 @@ def prepare_uvh26_dataset() -> None:
                 try:
                     os.link(image["source"], image_target)
                 except OSError as exc:
-                    raise RuntimeError(f"Could not create a space-saving image link for {image['filename']}. Keep the dataset and VAOS derivative on the same NTFS drive. {exc}") from exc
+                    raise RuntimeError(f"Could not create a space-saving image link for {image['filename']}. Keep the dataset and VAOS derivative on the same filesystem or volume, and ensure hardlinks are permitted. {exc}") from exc
                 lines = [f"{class_id} {cx:.8f} {cy:.8f} {width:.8f} {height:.8f}" for class_id, (cx, cy, width, height) in image["labels"]]
                 (label_dir / f"{Path(image['filename']).stem}.txt").write_text("\n".join(lines) + ("\n" if lines else ""), encoding="ascii")
                 if image_index % 1000 == 0:
@@ -2638,10 +5056,19 @@ def prepare_uvh26_dataset() -> None:
         excluded_annotations = sum(manifest["excluded_annotations"] for manifest in manifests.values())
         imported["uvh26"] = {"id": "uvh26", "name": "UVH-26 · Indian road vehicles", "data_yaml": str(yaml_path), "classes": classes, "train_count": train_count, "val_count": val_count, "train_annotations": manifests["train"]["annotations"], "val_annotations": manifests["val"]["annotations"], "excluded_dimension_mismatch_images": excluded_images, "excluded_annotations": excluded_annotations, "license": "CC BY 4.0", "imported_at": utc_now(), "source": "iisc-aim/UVH-26 · majority-vote annotations"}
         write_public_dataset_imports(imported)
+        _record_observability_dataset_result(
+            "uvh26", succeeded=True, duration_seconds=time.perf_counter() - preparation_started,
+            image_count=max(0, train_count + val_count - excluded_images),
+            train_image_count=max(0, train_count - manifests["train"]["excluded_images"]),
+            validation_image_count=max(0, val_count - manifests["val"]["excluded_images"]),
+            class_count=len(classes),
+            annotation_count=sum(manifest["annotations"] for manifest in manifests.values()),
+        )
         exclusion_note = f" · excluded {excluded_images} image(s) and {excluded_annotations:,} box(es) with inconsistent image dimensions" if excluded_images else ""
         ml_dataset_import_state = {"status": "complete", "dataset": "uvh26", "message": f"UVH-26 validated · {train_count:,} train and {val_count:,} validation images · {len(classes)} vehicle classes{exclusion_note} · CC BY 4.0."}
         write_training_log("INFO", "UVH-26 validated and prepared", train_images=train_count, validation_images=val_count, classes=len(classes), train_annotations=manifests["train"]["annotations"], validation_annotations=manifests["val"]["annotations"], excluded_dimension_mismatch_images=excluded_images, excluded_annotations=excluded_annotations)
     except Exception as exc:
+        _record_observability_dataset_result("uvh26", succeeded=False, duration_seconds=time.perf_counter() - preparation_started)
         if staging_created:
             shutil.rmtree(staging, ignore_errors=True)
         ml_dataset_import_state = {"status": "error", "dataset": "uvh26", "message": str(exc)[:500]}
@@ -2655,7 +5082,8 @@ def prepare_uvh26_dataset() -> None:
 def prepare_kaggle_auto_dataset() -> None:
     """Validate the local Kaggle Pascal VOC sample and publish a YOLO derivative."""
     global ml_dataset_import_state
-    source_root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets")) / "kaggle_auto"
+    preparation_started = time.perf_counter()
+    source_root = default_datasets_dir() / "kaggle_auto"
     annotation_root = source_root / "Annotations" / "Annotations"
     source_images = source_root / "auto"
     staging = source_root / ".vaos-yolo-incomplete"
@@ -2747,7 +5175,7 @@ def prepare_kaggle_auto_dataset() -> None:
             try:
                 os.link(image_path, target_image)
             except OSError as exc:
-                raise RuntimeError(f"Could not create a space-saving hardlink for {image_path.name}; keep the dataset derivative on the same NTFS drive. {exc}") from exc
+                raise RuntimeError(f"Could not create a space-saving hardlink for {image_path.name}; keep the dataset and derivative on the same filesystem or volume, and ensure hardlinks are permitted. {exc}") from exc
             target_label = staging / "labels" / split / f"{image_path.stem}.txt"
             target_label.write_text("".join(f"0 {cx:.8f} {cy:.8f} {bw:.8f} {bh:.8f}\n" for cx, cy, bw, bh in boxes), encoding="ascii")
             if index % 10 == 0:
@@ -2761,9 +5189,16 @@ def prepare_kaggle_auto_dataset() -> None:
         imported = load_public_dataset_imports()
         imported["kaggle_auto"] = {"id": "kaggle_auto", "name": "Kaggle Auto · autorickshaws", "data_yaml": str(final_root / "dataset.yaml"), "classes": ["auto rickshaw"], "train_count": len(rows) - len(rows) // 5, "val_count": len(rows) // 5, "annotations": sum(len(row[2]) for row in rows), "imported_at": utc_now(), "source": "Datacluster Labs · local Pascal VOC annotations"}
         write_public_dataset_imports(imported)
+        _record_observability_dataset_result(
+            "kaggle_auto", succeeded=True, duration_seconds=time.perf_counter() - preparation_started,
+            image_count=len(rows), train_image_count=len(rows) - len(rows) // 5,
+            validation_image_count=len(rows) // 5, class_count=1,
+            annotation_count=sum(len(row[2]) for row in rows),
+        )
         ml_dataset_import_state = {"status": "complete", "dataset": "kaggle_auto", "message": f"Kaggle Auto validated · {len(rows):,} images · {sum(len(row[2]) for row in rows):,} autorickshaw boxes · 1 class."}
         write_training_log("INFO", "Kaggle Auto dataset prepared", images=len(rows), annotations=sum(len(row[2]) for row in rows), classes=1)
     except Exception as exc:
+        _record_observability_dataset_result("kaggle_auto", succeeded=False, duration_seconds=time.perf_counter() - preparation_started)
         if staging_created:
             shutil.rmtree(staging, ignore_errors=True)
         ml_dataset_import_state = {"status": "error", "dataset": "kaggle_auto", "message": str(exc)[:500]}
@@ -2831,6 +5266,7 @@ def repair_coco_dataset_layout() -> None:
 
 def import_coco2017_dataset() -> None:
     global ml_dataset_import_state
+    preparation_started = time.perf_counter()
     monitor_stop = threading.Event()
     monitor_thread: threading.Thread | None = None
     try:
@@ -2903,8 +5339,7 @@ def import_coco2017_dataset() -> None:
 
         if not layout_ready:
             ml_dataset_import_state["status"] = "downloading"
-            monitor_thread = threading.Thread(target=monitor_download, name="vaos-coco-progress", daemon=True)
-            monitor_thread.start()
+            monitor_thread = _start_context_preserving_thread(monitor_download, name="vaos-coco-progress")
         from ultralytics.data.utils import check_det_dataset
         check_det_dataset(str(yaml_path))
         repair_coco_dataset_layout()
@@ -2914,8 +5349,13 @@ def import_coco2017_dataset() -> None:
         imports = load_public_dataset_imports()
         imports[dataset_id] = {"id": dataset_id, "name": "COCO 2017", "data_yaml": str(yaml_path), "classes": classes, "train_limit": 118287, "imported_at": utc_now(), "size_note": "about 20.3 GB; 118,287 training and 5,000 validation images"}
         write_public_dataset_imports(imports)
+        _record_observability_dataset_result(
+            "coco2017", succeeded=True, duration_seconds=time.perf_counter() - preparation_started,
+            image_count=123287, train_image_count=118287, validation_image_count=5000, class_count=len(classes),
+        )
         ml_dataset_import_state = {"status": "complete", "dataset": dataset_id, "message": f"{imports[dataset_id]['name']} is ready for training.", "classes": classes}
     except Exception as exc:
+        _record_observability_dataset_result("coco2017", succeeded=False, duration_seconds=time.perf_counter() - preparation_started)
         monitor_stop.set()
         if monitor_thread:
             monitor_thread.join(timeout=2)
@@ -3095,9 +5535,9 @@ def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(requir
             return {"status": "complete", "message": "UVH-26 is already validated and ready."}
         if not ml_dataset_import_lock.acquire(blocking=False):
             raise HTTPException(status_code=409, detail="A dataset preparation job is already running.")
-        ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "message": "Resuming the official UVH-26 files to D:\\VAOS_Datasets. This download can run while a COCO + reviewed + Kaggle Auto training job runs."})
+        ml_dataset_import_state.update({"status": "downloading", "dataset": "uvh26", "message": "Resuming the official UVH-26 files to the configured dataset folder. This download can run while a COCO + reviewed + Kaggle Auto training job runs."})
         try:
-            threading.Thread(target=prepare_uvh26_dataset, name="vaos-uvh26-prepare", daemon=True).start()
+            _start_context_preserving_thread(prepare_uvh26_dataset, name="vaos-uvh26-prepare")
         except Exception as exc:
             ml_dataset_import_lock.release()
             ml_dataset_import_state.update({"status": "error", "dataset": "uvh26", "message": f"Could not start UVH-26 preparation: {exc}"})
@@ -3115,7 +5555,7 @@ def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(requir
             raise HTTPException(status_code=409, detail="A dataset preparation job is already running.")
         ml_dataset_import_state.update({"status": "preparing", "dataset": "kaggle_auto", "phase": "checking", "progress": 1, "message": "Checking local Kaggle Auto images and Pascal VOC annotations."})
         try:
-            threading.Thread(target=prepare_kaggle_auto_dataset, name="vaos-kaggle-auto-prepare", daemon=True).start()
+            _start_context_preserving_thread(prepare_kaggle_auto_dataset, name="vaos-kaggle-auto-prepare")
         except Exception as exc:
             ml_dataset_import_lock.release()
             ml_dataset_import_state.update({"status": "error", "dataset": "kaggle_auto", "message": f"Could not start Kaggle Auto preparation: {exc}"})
@@ -3134,7 +5574,7 @@ def start_public_dataset_import(payload: dict[str, Any], _: str = Depends(requir
         raise HTTPException(status_code=409, detail="A public dataset import is already running")
     ml_dataset_import_state.update({"status": "preparing", "message": "Starting dataset preparation."})
     try:
-        threading.Thread(target=import_coco2017_dataset, name="vaos-coco2017-import", daemon=True).start()
+        _start_context_preserving_thread(import_coco2017_dataset, name="vaos-coco2017-import")
     except Exception as exc:
         ml_dataset_import_lock.release()
         ml_dataset_import_state.update({"status": "error", "message": f"Could not start dataset import: {exc}"})
@@ -3374,7 +5814,7 @@ def build_combined_coco_uvh_kaggle_reviewed_yaml(
             raise RuntimeError(f"The {split} image list in {dataset_yaml} is empty.")
         return images_root, paths
 
-    import_root = Path(os.environ.get("VAOS_DATASETS_DIR", r"D:\VAOS_Datasets"))
+    import_root = default_datasets_dir()
     identity_data = {
         # The COCO YAML is rewritten on every prepare request. Its mtime is
         # therefore not a dataset version and caused a new 120k-image merge
@@ -3422,13 +5862,19 @@ def build_combined_coco_uvh_kaggle_reviewed_yaml(
         if not target_path.is_dir():
             raise RuntimeError(f"A validated dataset image folder is missing: {target_path}")
         link_path.parent.mkdir(parents=True, exist_ok=True)
-        escaped_link = str(link_path).replace("'", "''")
-        escaped_target = str(target_path).replace("'", "''")
-        script = f"New-Item -ItemType Junction -Path '{escaped_link}' -Target '{escaped_target}' -ErrorAction Stop | Out-Null"
-        result = subprocess.run(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=30)
-        if result.returncode or not link_path.is_dir():
-            detail = (result.stderr or result.stdout).strip()
-            raise RuntimeError(f"Could not link the source images into the combined training set without copying them: {detail or link_path}")
+        if os.name == "nt":
+            escaped_link = str(link_path).replace("'", "''")
+            escaped_target = str(target_path).replace("'", "''")
+            script = f"New-Item -ItemType Junction -Path '{escaped_link}' -Target '{escaped_target}' -ErrorAction Stop | Out-Null"
+            result = subprocess.run(["powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True, text=True, timeout=30)
+            if result.returncode or not link_path.is_dir():
+                detail = (result.stderr or result.stdout).strip()
+                raise RuntimeError(f"Could not link the source images into the combined training set without copying them: {detail or link_path}")
+        else:
+            try:
+                link_path.symlink_to(target_path.resolve(), target_is_directory=True)
+            except (OSError, NotImplementedError) as exc:
+                raise RuntimeError("Could not create a directory link for the combined dataset. Check that the destination filesystem permits symbolic links.") from exc
 
     try:
         for source_id, dataset_yaml, source_classes in source_specs:
@@ -3678,7 +6124,9 @@ def batch_review_ml_samples(payload: dict[str, Any], _: str = Depends(require_ad
 def run_ml_training(device_choice: str, dataset_source: str, initial_model: str = "auto", resource_mode: bool = False, requested_epochs: int | None = None) -> None:
     global ml_training_state
     job_started = time.monotonic()
-    write_training_log("INFO", "Training worker started", source=dataset_source, requested_device=device_choice)
+    run_name = f"vaos_objects_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
+    ml_training_state.update({"run_id": run_name})
+    write_training_log("INFO", "Training worker started", run_id=run_name, source=dataset_source, requested_device=device_choice)
     try:
         default_epochs = 20 if dataset_source.startswith("dataset:") or dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
         epochs_total = int(requested_epochs) if requested_epochs is not None else default_epochs
@@ -3808,7 +6256,7 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             import torch
             from ultralytics import YOLO
         except ImportError as exc:
-            raise RuntimeError("Training packages are not installed. Enable optional YOLO/GPU support in the Windows launcher first.") from exc
+            raise RuntimeError("Optional object-detection training packages are missing. Install a PyTorch build for this OS and accelerator, then install requirements-object-detection.txt and the supported Ultralytics version from the platform setup guide.") from exc
         custom_checkpoint = ML_DATA_DIR / "active" / "best.pt"
         base_checkpoint = MODEL_DIR / "yolo26m.pt"
         if initial_model == "yolo26m":
@@ -3825,27 +6273,20 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         else:
             model_path = custom_checkpoint if custom_checkpoint.is_file() else base_checkpoint if base_checkpoint.is_file() else Path("yolo26m.pt")
         model_file = str(model_path)
-        device_kind, _, device_value = device_choice.partition(":")
-        device_index = int(device_value or 0) if device_value.isdigit() else 0
-        if device_kind == "gpu" and device_value == "all":
-            if not torch.cuda.is_available() or torch.cuda.device_count() < 1:
-                raise RuntimeError("CUDA GPUs are not available to the training runtime. Select a CPU option or install CUDA-enabled PyTorch support.")
-            gpu_ids = list(range(torch.cuda.device_count()))
-            train_device = gpu_ids
-            device_label = "All NVIDIA GPUs · " + ", ".join(f"GPU {index} {torch.cuda.get_device_name(index)}" for index in gpu_ids)
-            torch.set_num_threads(max(1, (os.cpu_count() or 1) - 1))
-        elif device_kind == "gpu":
-            if not torch.cuda.is_available():
-                raise RuntimeError("The selected NVIDIA GPU is visible to Windows but CUDA is unavailable in this Python environment. Choose a CPU thread option or install the CUDA-enabled PyTorch support from the launcher.")
-            if device_index >= torch.cuda.device_count():
-                raise RuntimeError(f"GPU {device_index} is not available to the training runtime. Refresh the device list and choose an available device.")
-            train_device = str(device_index)
-            device_label = f"GPU {device_index} · {torch.cuda.get_device_name(device_index)}"
-        else:
-            cpu_threads = max(1, (os.cpu_count() or 1) - 1) if device_value == "all" and resource_mode else max(1, min(device_index, os.cpu_count() or 1))
-            torch.set_num_threads(cpu_threads)
-            train_device = "cpu"
-            device_label = f"CPU · {cpu_threads} thread{'s' if cpu_threads != 1 else ''}"
+        process_threads = available_cpu_threads()
+        training_target = resolve_training_device(torch, device_choice, process_threads, resource_mode=resource_mode)
+        device_kind = device_choice.partition(":")[0]
+        train_device = training_target["device"]
+        device_label = training_target["label"]
+        gpu_device_indices: list[int] = []
+        if device_kind == "gpu":
+            selected_devices = train_device if isinstance(train_device, (list, tuple)) else [train_device]
+            try:
+                gpu_device_indices = [int(index) for index in selected_devices]
+            except (TypeError, ValueError):
+                gpu_device_indices = [0]
+        if training_target["cpu_threads"] is not None:
+            torch.set_num_threads(int(training_target["cpu_threads"]))
         job_kind = "enrichment" if resource_mode else "training"
         ml_training_state = {"status": "running", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "data_yaml": str(yaml_path), "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
         write_training_log("INFO", "Training dataset resolved", source=dataset_source, dataset_name=dataset_name, images=sample_count, classes=len(labels), epochs=epochs_total, device=device_label)
@@ -3890,9 +6331,10 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
                 parsed = scalar(max(learning_rates.values()))
                 if parsed is not None:
                     stats["learning_rate"] = parsed
-            if device_kind == "gpu":
+            if gpu_device_indices:
                 try:
-                    stats["gpu_memory_gb"] = round(torch.cuda.memory_reserved(device_index) / (1024 ** 3), 2)
+                    reserved_bytes = sum(torch.cuda.memory_reserved(index) for index in gpu_device_indices)
+                    stats["gpu_memory_gb"] = round(reserved_bytes / (1024 ** 3), 2)
                 except (RuntimeError, AttributeError):
                     pass
             try:
@@ -3965,26 +6407,40 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         model.add_callback("on_train_batch_end", update_batch)
         model.add_callback("on_train_epoch_end", update_epoch)
         write_training_log("INFO", "Model fit started", model=Path(model_file).name, device=ml_training_state["device"], images=sample_count, epochs=epochs_total)
-        run_name = f"vaos_objects_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         run_dir = ML_DATA_DIR / "runs" / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
         run_metadata = {"run_id": run_name, "dataset_source": dataset_source, "dataset_name": dataset_name, "epochs_requested": epochs_total, "initial_model": Path(model_file).name, "device": device_label, "samples": sample_count, "started_at": utc_now()}
         (run_dir / "vaos_run.json").write_text(json.dumps(run_metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         ml_training_state.update({"run_id": run_name, "initial_model": Path(model_file).name})
-        write_training_log("INFO", "Training run initialized", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, initial_model=Path(model_file).name)
-        cpu_worker_budget = max(0, (os.cpu_count() or 1) - 2)
+        write_training_log("INFO", "Training run initialized", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, initial_model=Path(model_file).name, images=sample_count, classes=len(labels))
+        available_ram_gb = None
         try:
             import psutil
-            memory_worker_budget = max(1, int(max(0.0, psutil.virtual_memory().available / (1024 ** 3) - 8) / 1.5))
+            available_ram_gb = psutil.virtual_memory().available / (1024 ** 3)
         except Exception:
-            memory_worker_budget = 4
-        training_workers = min(8, cpu_worker_budget, memory_worker_budget) if resource_mode else min(4, cpu_worker_budget)
-        if resource_mode and device_kind == "gpu" and torch.cuda.is_available():
-            training_batch = -1 if torch.cuda.device_count() == 1 else max(8, 8 * len(train_device))
-        else:
-            training_batch = 16 if resource_mode and device_kind == "cpu" else 4
-        write_training_log("INFO", "Training resources configured", device=device_label, gpu_count=torch.cuda.device_count() if torch.cuda.is_available() else 0, batch="auto" if training_batch == -1 else training_batch, workers=training_workers, cpu_threads=os.cpu_count(), memory_available_gb=round((__import__("psutil").virtual_memory().available / (1024 ** 3)), 2) if resource_mode else None)
-        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=640, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False, plots=False)
+            logger.debug("Available RAM could not be measured; using the conservative training profile", exc_info=True)
+        cuda_device_count = torch.cuda.device_count() if torch.cuda.is_available() else 0
+        profile = training_resource_profile(
+            cpu_threads=process_threads,
+            available_ram_gb=available_ram_gb,
+            accelerator={"gpu": "cuda", "mps": "mps"}.get(device_kind, "cpu"),
+            gpu_count=cuda_device_count if device_kind == "gpu" else 0,
+            resource_mode=resource_mode,
+        )
+        training_workers = int(profile["workers"])
+        training_batch = int(profile["batch"])
+        if device_kind == "gpu" and resource_mode and cuda_device_count > 1:
+            training_batch = max(cuda_device_count, training_batch * cuda_device_count)
+        training_image_size = int(profile["image_size"])
+        write_training_log(
+            "INFO", "Training resources configured", device=device_label,
+            accelerator=device_kind, gpu_count=cuda_device_count,
+            batch="auto" if training_batch == -1 else training_batch,
+            workers=training_workers, cpu_threads=process_threads,
+            memory_available_gb=round(available_ram_gb, 2) if available_ram_gb is not None else None,
+            image_size=training_image_size, profile=profile["profile"],
+        )
+        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=training_image_size, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False, plots=False)
         best = Path(result.save_dir) / "weights" / "best.pt"
         stopped_early = bool(ml_training_state.get("stop_requested"))
         if stopped_early and not best.is_file():
@@ -4017,11 +6473,13 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         metadata_tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         metadata_tmp.replace(active / "metadata.json")
         ml_training_state = {"status": "stopped" if stopped_early else "complete", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "run_id": run_name, "initial_model": Path(model_file).name, "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
-        write_training_log("INFO", "Training finished", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=int(time.monotonic() - job_started))
+        elapsed_seconds = int(time.monotonic() - job_started)
+        annotation_count = sum(class_counts.values()) if invalid_class_ids == 0 else None
+        write_training_log("INFO", "Training finished", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=elapsed_seconds, annotations=annotation_count)
     except Exception as exc:
         logger.exception("VAOS object model training failed")
         error_message = str(exc)[:400] or exc.__class__.__name__
-        write_training_log("ERROR", "Training failed", error=error_message, elapsed_seconds=int(time.monotonic() - job_started))
+        write_training_log("ERROR", "Training failed", run_id=run_name, source=dataset_source, dataset_name=ml_training_state.get("dataset_name", ""), initial_model=ml_training_state.get("initial_model", initial_model), error=error_message, error_type=exc.__class__.__name__, elapsed_seconds=int(time.monotonic() - job_started))
         ml_training_state = {"status": "error", "job_kind": "enrichment" if resource_mode else "training", "source": dataset_source, "dataset_name": ml_training_state.get("dataset_name", ""), "dataset_id": ml_training_state.get("dataset_id", ""), "run_id": ml_training_state.get("run_id", ""), "epochs": ml_training_state.get("epochs", requested_epochs or 0), "message": error_message, "progress": int(ml_training_state.get("progress", 0)), "epoch": ml_training_state.get("epoch", 0), "stats": ml_training_state.get("stats", {}), "device": ml_training_state.get("device", device_choice.upper())}
     finally:
         ml_training_lock.release()
@@ -4037,9 +6495,11 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Choose an epoch count from 10 to 50 in steps of five.")
     if requested_epochs not in TRAINING_EPOCH_OPTIONS:
         raise HTTPException(status_code=400, detail="Choose an epoch count from 10, 15, 20, 25, 30, 35, 40, 45, or 50.")
-    if not (device_choice.startswith("cpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and not (device_choice.startswith("gpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))):
-        raise HTTPException(status_code=400, detail="Choose an available CPU thread count or GPU from the device list")
+    if not (device_choice.startswith("cpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and not (device_choice.startswith("gpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and device_choice != "mps":
+        raise HTTPException(status_code=400, detail="Choose an available CPU thread count, CUDA GPU, or Apple MPS device from the device list")
     inventory = training_device_inventory()
+    if device_choice == "mps" and not inventory.get("mps_available"):
+        raise HTTPException(status_code=400, detail="Apple MPS is not available in this installation. Choose CPU or install PyTorch with MPS support on Apple Silicon.")
     if device_choice.startswith("cpu:") and device_choice.split(":", 1)[1].isdigit() and int(device_choice.split(":", 1)[1]) > inventory["cpu_threads"]:
         raise HTTPException(status_code=400, detail=f"This PC has {inventory['cpu_threads']} logical CPU threads available")
     if device_choice == "gpu:all" and not inventory["gpus"]:
@@ -4085,7 +6545,7 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     ml_training_state.update({"status": "preparing", "source": dataset_source, "dataset_id": dataset_source.split(":", 1)[1] if is_registered_dataset else "", "dataset_name": dataset_name, "epochs": requested_epochs, "data_yaml": str(active_record.get("data_yaml", "")), "message": f"Training request accepted · {dataset_name} · {requested_epochs} epochs. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
     write_training_log("INFO", "Training requested", source=dataset_source, dataset_name=dataset_name, epochs=requested_epochs, device=device_choice, checkpoint=initial_model, resource_mode=resource_mode)
     try:
-        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode, requested_epochs), name="vaos-ml-training", daemon=True).start()
+        _start_context_preserving_thread(run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode, requested_epochs), name="vaos-ml-training")
     except Exception as exc:
         ml_training_lock.release()
         ml_training_state.update({"status": "error", "message": f"Could not launch the training worker: {exc}"})
@@ -4093,6 +6553,160 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
         write_training_log("ERROR", "Training worker could not be launched", error=str(exc)[:400])
         raise HTTPException(status_code=503, detail="VAOS could not start its background training worker. See the Training activity log and admin service error log.") from exc
     return {"status": "preparing", "message": f"Training setup started · {dataset_name} · {requested_epochs} epochs.", "dataset_name": dataset_name, "epochs": requested_epochs}
+
+
+def _bundle_project_summary(project: dict[str, Any]) -> dict[str, Any]:
+    datasets = {str(item.get("id")) for item in load_public_dataset_imports().values() if isinstance(item, dict)}
+    models_response = list_ml_model_sources("admin")
+    models = {str(item.get("id")) for item in models_response.get("sources", []) if isinstance(item, dict)}
+    return {
+        "name": project["name"],
+        "description": project["description"],
+        "engine_settings": project["engine_settings"],
+        "dataset_references": project["dataset_refs"],
+        "model_references": project["model_refs"],
+        "available_dataset_ids": sorted(datasets),
+        "missing_dataset_ids": sorted({item["id"] for item in project["dataset_refs"]} - datasets),
+        "available_model_ids": sorted(models),
+        "missing_model_ids": sorted({item["id"] for item in project["model_refs"]} - models),
+        "apply_note": "Applying a bundle changes only the listed engine settings. Dataset and model references are informational; VAOS does not download, select, train, or replace models when a bundle is applied.",
+    }
+
+
+@app.get("/api/admin/projects")
+def list_project_bundles(_: str = Depends(require_admin)) -> dict[str, Any]:
+    bundles = []
+    PROJECT_BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
+    for path in sorted(PROJECT_BUNDLE_DIR.glob("*.vaosproject"), key=lambda entry: entry.stat().st_mtime, reverse=True)[:200]:
+        try:
+            if path.is_symlink() or not _path_is_within(path, PROJECT_BUNDLE_DIR) or path.stat().st_size > 2 * 1024 * 1024:
+                continue
+            inspected = inspect_bundle(path.read_bytes())
+            bundles.append({"id": inspected["archive_sha256"], "name": inspected["project"]["name"], "description": inspected["project"]["description"], "created_at": inspected["manifest"]["created_at"], "producer_version": inspected["manifest"]["producer_version"], "bytes": path.stat().st_size})
+        except (OSError, BundleError):
+            logger.warning("Skipping invalid saved VAOS project bundle %s", path.name)
+    return {"bundles": bundles, "count": len(bundles), "storage_note": "Bundles store settings and local resource names only; private records, images, credentials, model weights, and executable files are excluded."}
+
+
+@app.get("/api/admin/projects/export")
+def export_project_bundle(name: str = "VAOS project", _: str = Depends(require_admin)) -> Response:
+    imports = load_public_dataset_imports()
+    dataset_refs = []
+    for dataset_id, item in imports.items():
+        if not isinstance(item, dict):
+            continue
+        dataset_refs.append({
+            "id": str(item.get("id", dataset_id)), "name": str(item.get("name", dataset_id)),
+            "format": str(item.get("format", "YOLO detection")),
+            "train_count": max(0, int(item.get("train_count", 0) or 0)),
+            "val_count": max(0, int(item.get("val_count", 0) or 0)),
+            "class_count": len(item.get("classes", [])) if isinstance(item.get("classes"), list) else 0,
+        })
+    model_refs = [{"id": str(item["id"]), "name": str(item["name"]), "kind": str(item["kind"])} for item in list_ml_model_sources("admin").get("sources", [])]
+    try:
+        content, manifest = build_bundle({"name": name.strip() or "VAOS project", "description": "VAOS engine configuration and local dataset/model references.", "engine_settings": get_engine_settings(), "dataset_refs": dataset_refs[:100], "model_refs": model_refs[:100]}, app_version=APP_VERSION, created_at=utc_now())
+    except (BundleError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    safe_name = "".join(char for char in name.casefold() if char.isalnum() or char in "-_ ").strip().replace(" ", "-")[:48] or "vaos-project"
+    return Response(content=content, media_type="application/vnd.vaos.project+zip", headers={"Content-Disposition": f'attachment; filename="{safe_name}.vaosproject"', "X-VAOS-Project-SHA256": manifest["project_sha256"]})
+
+
+@app.get("/api/admin/projects/{bundle_id}")
+def get_project_bundle(bundle_id: str, _: str = Depends(require_admin)) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-f0-9]{64}", bundle_id):
+        raise HTTPException(status_code=400, detail="The project bundle ID is invalid.")
+    path = PROJECT_BUNDLE_DIR / f"{bundle_id}.vaosproject"
+    try:
+        if path.is_symlink() or not _path_is_within(path, PROJECT_BUNDLE_DIR) or path.stat().st_size > 2 * 1024 * 1024:
+            raise HTTPException(status_code=404, detail="Saved project bundle was not found.")
+        inspected = inspect_bundle(path.read_bytes())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Saved project bundle was not found.") from exc
+    except BundleError as exc:
+        raise HTTPException(status_code=400, detail=f"Saved bundle failed validation: {exc}") from exc
+    if inspected["archive_sha256"] != bundle_id:
+        raise HTTPException(status_code=409, detail="The saved bundle changed after it was listed. Import it again to review the current file.")
+    return {"bundle_id": bundle_id, "manifest": inspected["manifest"], "preview": _bundle_project_summary(inspected["project"])}
+
+
+@app.post("/api/admin/projects/import")
+async def import_project_bundle(file: UploadFile = File(...), dry_run: bool = True, _: str = Depends(require_admin)) -> dict[str, Any]:
+    try:
+        content = await file.read(2 * 1024 * 1024 + 1)
+        if len(content) > 2 * 1024 * 1024:
+            raise BundleError("Choose a VAOS project bundle no larger than 2 MB.")
+        inspected = inspect_bundle(content)
+    except BundleError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail="VAOS could not read this project bundle.") from exc
+    finally:
+        await file.close()
+    bundle_id = inspected["archive_sha256"]
+    saved_path = PROJECT_BUNDLE_DIR / f"{bundle_id}.vaosproject"
+    saved = False
+    reused = False
+    if not dry_run:
+        PROJECT_BUNDLE_DIR.mkdir(parents=True, exist_ok=True)
+        if saved_path.exists():
+            if saved_path.is_symlink() or not _path_is_within(saved_path, PROJECT_BUNDLE_DIR):
+                raise HTTPException(status_code=409, detail="The saved bundle path is unsafe; contact the administrator.")
+            saved = True
+            reused = True
+        else:
+            temporary = PROJECT_BUNDLE_DIR / f".{bundle_id}.uploading"
+            try:
+                with temporary.open("xb") as target:
+                    target.write(content)
+                    target.flush()
+                    os.fsync(target.fileno())
+                temporary.replace(saved_path)
+                saved = True
+            except FileExistsError:
+                saved = saved_path.is_file()
+            except OSError as exc:
+                temporary.unlink(missing_ok=True)
+                logger.exception("Could not save an imported VAOS project bundle")
+                raise HTTPException(status_code=503, detail="VAOS could not save the project bundle. Check local disk space and permissions.") from exc
+    summary = _bundle_project_summary(inspected["project"])
+    return {"dry_run": dry_run, "saved": saved, "reused": reused, "bundle_id": bundle_id, "manifest": inspected["manifest"], "preview": summary, "message": "Preview only; no files or settings changed." if dry_run else "Project bundle saved locally. Settings remain unchanged until you choose Apply settings."}
+
+
+@app.post("/api/admin/projects/{bundle_id}/apply")
+def apply_project_bundle(bundle_id: str, payload: dict[str, Any], _: str = Depends(require_admin)) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-f0-9]{64}", bundle_id) or payload != {"confirm": True}:
+        raise HTTPException(status_code=400, detail="Confirm the reviewed project settings before applying this bundle.")
+    path = PROJECT_BUNDLE_DIR / f"{bundle_id}.vaosproject"
+    try:
+        if path.is_symlink() or not _path_is_within(path, PROJECT_BUNDLE_DIR):
+            raise HTTPException(status_code=404, detail="Saved project bundle was not found.")
+        inspected = inspect_bundle(path.read_bytes())
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Saved project bundle was not found.") from exc
+    except BundleError as exc:
+        raise HTTPException(status_code=400, detail=f"Saved bundle failed validation: {exc}") from exc
+    if inspected["archive_sha256"] != bundle_id:
+        raise HTTPException(status_code=409, detail="The saved bundle changed after it was listed. Import it again to review the current file.")
+    project = inspected["project"]
+    update = update_engine_settings(project["engine_settings"], "admin")
+    summary = _bundle_project_summary(project)
+    return {"ok": True, "settings": update["settings"], "available_dataset_ids": summary["available_dataset_ids"], "missing_dataset_ids": summary["missing_dataset_ids"], "available_model_ids": summary["available_model_ids"], "missing_model_ids": summary["missing_model_ids"], "message": "Engine settings applied. Dataset and model references were not imported, selected, downloaded, or trained.", "restart_required": False}
+
+
+@app.delete("/api/admin/projects/{bundle_id}")
+def delete_project_bundle(bundle_id: str, _: str = Depends(require_admin)) -> dict[str, Any]:
+    if not re.fullmatch(r"[a-f0-9]{64}", bundle_id):
+        raise HTTPException(status_code=400, detail="The project bundle ID is invalid.")
+    path = PROJECT_BUNDLE_DIR / f"{bundle_id}.vaosproject"
+    if path.is_symlink() or not _path_is_within(path, PROJECT_BUNDLE_DIR):
+        raise HTTPException(status_code=404, detail="Saved project bundle was not found.")
+    try:
+        path.unlink()
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Saved project bundle was not found.") from exc
+    except OSError as exc:
+        raise HTTPException(status_code=503, detail="VAOS could not remove the saved bundle file.") from exc
+    return {"ok": True, "message": "The saved configuration bundle was removed. Referenced datasets and models were not deleted."}
 
 
 @app.get("/api/admin/ml/model-sources")
@@ -4246,7 +6860,7 @@ def start_ml_enrichment(payload: dict[str, Any], _: str = Depends(require_admin)
         dataset_name = "Human-reviewed camera samples" if dataset_source == "reviewed" else "COCO 2017 + human-reviewed camera samples"
         ml_training_state.update({"status": "preparing", "message": f"Model update queued · {dataset_name} · {device_summary}.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_summary, "elapsed_seconds": 0, "eta_seconds": None, "job_kind": "enrichment"})
         write_training_log("INFO", "Model enrichment requested", checkpoint=checkpoint, dataset=dataset_name, resources="all CUDA GPUs, bounded CPU data workers, managed system memory")
-        threading.Thread(target=run_ml_training, args=(device_choice, dataset_source, checkpoint, True), name="vaos-ml-enrichment", daemon=True).start()
+        _start_context_preserving_thread(run_ml_training, args=(device_choice, dataset_source, checkpoint, True), name="vaos-ml-enrichment")
         lock_acquired = False  # The worker releases the lock in its finally block.
     except HTTPException:
         if lock_acquired:
@@ -4308,6 +6922,7 @@ async def analyze_video_review_frame(session_id: str, request: Request, _: str =
     if not 0 <= source_time <= 86_400:
         raise HTTPException(status_code=400, detail="The video timestamp is outside the supported range.")
     content = await request.body()
+    frame_processing_started = time.perf_counter()
     try:
         save_samples = request.headers.get("x-save-samples", "1") == "1"
         result = await run_in_threadpool(process_video_review_frame, session_id, content, source_time, save_samples)
@@ -4318,6 +6933,8 @@ async def analyze_video_review_frame(session_id: str, request: Request, _: str =
     except cv2.error as exc:
         logger.exception("Video frame analysis failed for session %s", session_id[:6])
         raise HTTPException(status_code=422, detail="VAOS could not decode this video frame. Confirm the selected local file plays in the browser.") from exc
+    record_observability_video_review_latency((time.perf_counter() - frame_processing_started) * 1000.0)
+    queue_observability_video_review_frame()
     return result
 
 
@@ -4342,6 +6959,7 @@ async def receive_frame(token: str, request: Request):
     if "image/" not in content_type:
         raise HTTPException(status_code=415, detail="Send a JPEG image frame")
     content = await request.body()
+    frame_processing_started = time.perf_counter()
     try:
         result = await run_in_threadpool(process_frame, token, content)
     except (ValueError, RuntimeError, cv2.error) as exc:
@@ -4350,11 +6968,452 @@ async def receive_frame(token: str, request: Request):
             db.execute("INSERT INTO camera_status(camera_token,last_frame_at,error) VALUES(?,?,?) ON CONFLICT(camera_token) DO UPDATE SET last_frame_at=excluded.last_frame_at,error=excluded.error", (token, utc_now(), str(exc)[:400]))
         status = 400 if isinstance(exc, ValueError) else 503
         raise HTTPException(status_code=status, detail=(str(exc) if status == 400 else "Local models could not process this frame. Check Model status and diagnostics in the private dashboard.")) from exc
+    record_observability_inference_latency((time.perf_counter() - frame_processing_started) * 1000.0)
+    await run_in_threadpool(queue_observability_inference_frame, token)
     return JSONResponse(result)
+
+
+def _record_observability_host_sample(session_id: str) -> None:
+    """Persist a low-frequency sample from VAOS's existing cached telemetry collector."""
+    # Keep one host sample cycle at a time so a failed-sample summary can be
+    # retried with a stable event ID and cleared without racing a later cycle.
+    with observability_host_sample_lock:
+        _record_observability_host_sample_locked(session_id)
+
+
+def _record_observability_host_sample_locked(session_id: str) -> None:
+    global observability_host_sample_loss_count, observability_host_sample_loss_event_id
+    sample_time = utc_now()
+    metrics = get_system_metrics()
+    host_id = observability_installation_id or "local-installation"
+    host_values = (
+        ("hardware.cpu_utilization_percent", metrics.get("cpu_percent"), {"host_id": host_id}),
+        ("hardware.ram_used_bytes", metrics.get("memory_used_bytes"), {"host_id": host_id}),
+        ("hardware.disk_used_bytes", metrics.get("disk_used_bytes"), {"host_id": host_id, "volume_id": "vaos-data"}),
+        ("hardware.disk_used_percent", metrics.get("disk_used_percent"), {"host_id": host_id, "volume_id": "vaos-data"}),
+    )
+    samples: list[tuple[str, float, dict[str, Any], str]] = []
+    for metric_key, value, dimensions in host_values:
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value)):
+            samples.append((metric_key, float(value), dimensions, metric_key))
+    gpu_power_samples: list[dict[str, Any]] = []
+    for device in metrics.get("gpu_devices", []):
+        value = device.get("utilization_percent")
+        index = device.get("index")
+        if isinstance(value, (int, float)) and not isinstance(value, bool) and isinstance(index, int):
+            dimensions = {"device_id": str(device.get("device_id") or index), "model_id": str(device.get("name", "NVIDIA GPU"))[:120]}
+            samples.append(("hardware.gpu_utilization_percent", float(value), dimensions, f"gpu:{index}"))
+        power = device.get("power_draw_w")
+        device_id = str(device.get("device_id", ""))
+        if isinstance(power, (int, float)) and not isinstance(power, bool) and math.isfinite(float(power)) and 0 <= float(power) <= 10_000 and re.fullmatch(r"[a-fA-F0-9]{24,64}", device_id):
+            gpu_power_samples.append({"device_id": device_id.lower(), "model_id": str(device.get("name", "NVIDIA GPU"))[:120], "power_draw_w": float(power)})
+    failed_metric_keys: list[str] = []
+    for metric_key, value, dimensions, source in samples:
+        event_id = hashlib.sha256(f"{session_id}|{sample_time}|{metric_key}|{source}".encode()).hexdigest()
+        try:
+            observability_store.record_event(
+                DB_PATH, event_id=event_id, timestamp=sample_time, event_type="hardware.metric_sample",
+                component="hardware", message="A host or GPU metric sample was recorded.", session_id=session_id,
+                details={"metric_key": metric_key, "source": "existing VAOS telemetry collector"},
+                metric_observations=[{
+                    "metric_key": metric_key,
+                    "value": value,
+                    "dimensions": dimensions,
+                    "provenance": "Existing VAOS system telemetry collector",
+                    "measurement_scope": "Cached host or device sample from the existing VAOS telemetry collector",
+                    "estimated": False,
+                    "timestamp": sample_time,
+                }],
+            )
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            failed_metric_keys.append(metric_key)
+    if gpu_power_samples:
+        try:
+            observability_store.record_gpu_power_samples(
+                DB_PATH,
+                samples=gpu_power_samples,
+                timestamp=sample_time,
+                session_id=session_id,
+            )
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            failed_metric_keys.append("hardware.gpu_power_draw_w")
+    if failed_metric_keys:
+        logger.warning(
+            "VAOS host telemetry could not persist %s metric sample(s); other samples were attempted; failed metric keys: %s",
+            len(failed_metric_keys), ", ".join(failed_metric_keys),
+        )
+        if observability_host_sample_loss_event_id is None:
+            observability_host_sample_loss_event_id = f"host-sample-gap-{secrets.token_hex(16)}"
+        observability_host_sample_loss_count += len(failed_metric_keys)
+        for metric_key in failed_metric_keys:
+            observability_host_sample_loss_metric_counts[metric_key] = (
+                observability_host_sample_loss_metric_counts.get(metric_key, 0) + 1
+            )
+
+    if observability_host_sample_loss_count and observability_host_sample_loss_event_id:
+        try:
+            observability_store.record_event(
+                DB_PATH,
+                event_id=observability_host_sample_loss_event_id,
+                timestamp=sample_time,
+                event_type="hardware.metric_sample_gap",
+                component="hardware",
+                level="WARNING",
+                message="One or more host or GPU metric samples could not be persisted.",
+                session_id=session_id,
+                details={
+                    "dropped_sample_count": observability_host_sample_loss_count,
+                    "failed_metric_counts": dict(sorted(observability_host_sample_loss_metric_counts.items())),
+                    "retry_note": "The summary is retained in memory and retried on a later telemetry cycle if this write fails.",
+                },
+            )
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("Could not persist the pending VAOS host telemetry loss summary", exc_info=True)
+        else:
+            observability_host_sample_loss_count = 0
+            observability_host_sample_loss_metric_counts.clear()
+            observability_host_sample_loss_event_id = None
+
+
+def _record_observability_api_latency_sample(session_id: str) -> None:
+    """Persist p50/p95 for the bounded recent API sample every telemetry cycle."""
+    global observability_api_latency_dropped
+    with observability_api_latency_lock:
+        samples = list(observability_api_latency_samples)
+        dropped = observability_api_latency_dropped
+        observability_api_latency_samples.clear()
+        observability_api_latency_dropped = 0
+    if not samples:
+        return
+    ordered = sorted(samples)
+
+    def quantile(fraction: float) -> float:
+        position = (len(ordered) - 1) * fraction
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        if lower == upper:
+            return float(ordered[lower])
+        weight = position - lower
+        return float(ordered[lower] + (ordered[upper] - ordered[lower]) * weight)
+
+    sample_time = utc_now()
+    event_id = f"api-latency-{secrets.token_hex(16)}"
+    observations = [
+        {
+            "metric_key": metric_key,
+            "value": quantile(fraction),
+            "dimensions": {},
+            "provenance": "Monotonic middleware timing; bounded recent-request sample",
+            "measurement_scope": f"{len(samples)} instrumented REST responses; {dropped} older samples dropped before this window was recorded",
+            "estimated": False,
+            "timestamp": sample_time,
+        }
+        for metric_key, fraction in (("api.request_latency_p50_ms", 0.50), ("api.request_latency_p95_ms", 0.95))
+    ]
+    try:
+        observability_store.record_event(
+            DB_PATH,
+            event_id=event_id,
+            timestamp=sample_time,
+            event_type="api.latency_sample",
+            component="api",
+            message="A bounded API response-latency sample was recorded.",
+            details={"sample_count": len(samples), "dropped_sample_count": dropped},
+            session_id=session_id,
+            metric_observations=observations,
+        )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        with observability_api_latency_lock:
+            combined = samples + list(observability_api_latency_samples)
+            overflow = max(0, len(combined) - OBSERVABILITY_API_LATENCY_SAMPLE_LIMIT)
+            observability_api_latency_samples.clear()
+            observability_api_latency_samples.extend(combined[overflow:])
+            observability_api_latency_dropped += dropped + overflow
+        logger.debug("Could not persist the sampled VAOS API latency quantiles; retained samples for retry", exc_info=True)
+
+
+def _record_observability_inference_latency_sample(session_id: str) -> None:
+    """Persist p50/p95 for bounded successful camera-frame processing samples."""
+    global observability_inference_latency_dropped
+    with observability_inference_latency_lock:
+        samples = list(observability_inference_latency_samples)
+        dropped = observability_inference_latency_dropped
+        observability_inference_latency_samples.clear()
+        observability_inference_latency_dropped = 0
+    if not samples:
+        return
+    ordered = sorted(samples)
+
+    def quantile(fraction: float) -> float:
+        position = (len(ordered) - 1) * fraction
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        if lower == upper:
+            return float(ordered[lower])
+        weight = position - lower
+        return float(ordered[lower] + (ordered[upper] - ordered[lower]) * weight)
+
+    sample_time = utc_now()
+    event_id = f"camera-frame-latency-{secrets.token_hex(16)}"
+    observations = [
+        {
+            "metric_key": metric_key,
+            "value": quantile(fraction),
+            "dimensions": {},
+            "provenance": "Monotonic successful camera frame-processing timing; bounded recent sample",
+            "measurement_scope": f"{len(samples)} successful camera frame-processing calls; {dropped} older samples dropped before this window was recorded",
+            "estimated": False,
+            "timestamp": sample_time,
+        }
+        for metric_key, fraction in (
+            ("inference.camera_frame_processing_latency_p50_ms", 0.50),
+            ("inference.camera_frame_processing_latency_p95_ms", 0.95),
+        )
+    ]
+    try:
+        observability_store.record_event(
+            DB_PATH,
+            event_id=event_id,
+            timestamp=sample_time,
+            event_type="inference.camera_frame_latency_sample",
+            component="inference",
+            message="A bounded successful camera frame-processing latency sample was recorded.",
+            details={"sample_count": len(samples), "dropped_sample_count": dropped},
+            session_id=session_id,
+            metric_observations=observations,
+        )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        with observability_inference_latency_lock:
+            combined = samples + list(observability_inference_latency_samples)
+            overflow = max(0, len(combined) - OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT)
+            observability_inference_latency_samples.clear()
+            observability_inference_latency_samples.extend(combined[overflow:])
+            observability_inference_latency_dropped += dropped + overflow
+        logger.debug("Could not persist sampled camera frame-processing latency quantiles; retained samples for retry", exc_info=True)
+
+
+def _record_observability_video_review_latency_sample(session_id: str) -> None:
+    """Persist p50/p95 for bounded successful local-video frame samples."""
+    global observability_video_review_latency_dropped
+    with observability_video_review_latency_lock:
+        samples = list(observability_video_review_latency_samples)
+        dropped = observability_video_review_latency_dropped
+        observability_video_review_latency_samples.clear()
+        observability_video_review_latency_dropped = 0
+    if not samples:
+        return
+    ordered = sorted(samples)
+
+    def quantile(fraction: float) -> float:
+        position = (len(ordered) - 1) * fraction
+        lower = math.floor(position)
+        upper = math.ceil(position)
+        if lower == upper:
+            return float(ordered[lower])
+        weight = position - lower
+        return float(ordered[lower] + (ordered[upper] - ordered[lower]) * weight)
+
+    sample_time = utc_now()
+    event_id = f"local-video-frame-latency-{secrets.token_hex(16)}"
+    observations = [
+        {
+            "metric_key": metric_key,
+            "value": quantile(fraction),
+            "dimensions": {},
+            "provenance": "Monotonic successful local-video frame-processing timing; bounded recent sample",
+            "measurement_scope": f"{len(samples)} successful local-video frame-processing calls; {dropped} older samples dropped before this window was recorded",
+            "estimated": False,
+            "timestamp": sample_time,
+        }
+        for metric_key, fraction in (
+            ("inference.local_video_frame_processing_latency_p50_ms", 0.50),
+            ("inference.local_video_frame_processing_latency_p95_ms", 0.95),
+        )
+    ]
+    try:
+        observability_store.record_event(
+            DB_PATH,
+            event_id=event_id,
+            timestamp=sample_time,
+            event_type="inference.local_video_frame_latency_sample",
+            component="inference",
+            message="A bounded successful local-video frame-processing latency sample was recorded.",
+            details={"sample_count": len(samples), "dropped_sample_count": dropped},
+            session_id=session_id,
+            metric_observations=observations,
+        )
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        with observability_video_review_latency_lock:
+            combined = samples + list(observability_video_review_latency_samples)
+            overflow = max(0, len(combined) - OBSERVABILITY_INFERENCE_LATENCY_SAMPLE_LIMIT)
+            observability_video_review_latency_samples.clear()
+            observability_video_review_latency_samples.extend(combined[overflow:])
+            observability_video_review_latency_dropped += dropped + overflow
+        logger.debug("Could not persist sampled local-video frame-processing latency quantiles; retained samples for retry", exc_info=True)
+
+
+def _observability_heartbeat_worker(session_id: str, stop_event: threading.Event) -> None:
+    last_retention = 0.0
+    while not stop_event.wait(30):
+        try:
+            observability_store.heartbeat_session(DB_PATH, session_id)
+        except (OSError, sqlite3.Error, ValueError):
+            logger.debug("Could not update the VAOS runtime heartbeat", exc_info=True)
+        try:
+            flush_observability_api_requests()
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.debug("Could not flush aggregated VAOS REST request counters", exc_info=True)
+        try:
+            flush_observability_training_events()
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.debug("Could not flush queued training telemetry", exc_info=True)
+        try:
+            recovered_security_events = observability_siem.flush_security_event_fallback(DB_PATH, maximum=100)
+            if recovered_security_events:
+                logger.info("Replayed %s queued authentication security event(s)", recovered_security_events)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("Could not replay queued authentication security events", exc_info=True)
+        try:
+            delivery_result = observability_siem.dispatch_pending(DB_PATH, maximum=2)
+            if delivery_result["attempted"]:
+                logger.info("VAOS SIEM delivery attempt: %s", delivery_result)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("VAOS SIEM delivery worker could not update its queue", exc_info=True)
+        try:
+            _record_observability_host_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("Could not collect or persist a VAOS host telemetry sample", exc_info=True)
+        try:
+            _record_observability_api_latency_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.debug("Could not persist a VAOS API latency sample", exc_info=True)
+        try:
+            _record_observability_inference_latency_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.debug("Could not persist VAOS camera frame-processing latency samples", exc_info=True)
+        try:
+            _record_observability_video_review_latency_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.debug("Could not persist VAOS local-video frame-processing latency samples", exc_info=True)
+        if time.monotonic() - last_retention >= 24 * 60 * 60:
+            try:
+                result = observability_store.apply_retention(DB_PATH)
+                expired_reports = observability_reports.expire_reports(DB_PATH, OBSERVABILITY_REPORT_DIR)
+                if result["metric_observations_removed"] or result["event_details_redacted"] or result["delivery_events_removed"] or expired_reports:
+                    logger.info("VAOS observability retention applied: %s; %s report(s) expired", result, expired_reports)
+                last_retention = time.monotonic()
+            except (OSError, sqlite3.Error, ValueError):
+                logger.warning("VAOS observability retention could not run; it will retry later", exc_info=True)
+
+
+def _start_observability_lifecycle() -> None:
+    global observability_session_id, observability_installation_id, observability_heartbeat_stop, observability_heartbeat_thread
+    try:
+        session_id, installation_id = observability_store.start_session(DB_PATH, component="admin", app_version=APP_VERSION)
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.exception("Could not record the VAOS admin runtime session")
+        return
+    with observability_lifecycle_lock:
+        observability_installation_id = installation_id
+        if observability_heartbeat_thread and observability_heartbeat_thread.is_alive() and not (observability_heartbeat_stop and observability_heartbeat_stop.is_set()):
+            observability_session_id = session_id
+            return
+        stop_event = threading.Event()
+        thread = threading.Thread(target=_observability_heartbeat_worker, args=(session_id, stop_event), name="vaos-observability-heartbeat", daemon=True)
+        observability_session_id = session_id
+        observability_heartbeat_stop = stop_event
+        observability_heartbeat_thread = thread
+        thread.start()
+
+
+def _stop_observability_lifecycle() -> None:
+    global observability_session_id, observability_heartbeat_stop, observability_heartbeat_thread
+    with observability_lifecycle_lock:
+        session_id = observability_session_id
+        stop_event = observability_heartbeat_stop
+        thread = observability_heartbeat_thread
+        observability_session_id = None
+        observability_heartbeat_stop = None
+        observability_heartbeat_thread = None
+        if stop_event:
+            stop_event.set()
+    if thread and thread.is_alive() and thread is not threading.current_thread():
+        thread.join(timeout=2)
+    if session_id:
+        try:
+            _record_observability_api_latency_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("A final VAOS API latency sample could not be recorded", exc_info=True)
+        try:
+            _record_observability_inference_latency_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("A final VAOS camera frame-processing latency sample could not be recorded", exc_info=True)
+        try:
+            _record_observability_video_review_latency_sample(session_id)
+        except (OSError, sqlite3.Error, ValueError, RuntimeError):
+            logger.warning("A final VAOS local-video frame-processing latency sample could not be recorded", exc_info=True)
+    try:
+        for _ in range(100):
+            persisted = flush_observability_api_requests(max_events=5000)
+            with observability_api_lock:
+                memory_fallback_pending = bool(observability_api_aggregates or observability_frame_aggregates)
+            durable_fallback_pending = observability_counter_fallback_pending()
+            if not persisted and not memory_fallback_pending and not durable_fallback_pending:
+                    break
+            if not persisted:
+                if durable_fallback_pending:
+                    logger.warning("Some VAOS request/frame counters remain in the durable secondary queue and will be retried on the next start")
+                elif memory_fallback_pending:
+                    logger.warning("Some VAOS request/frame counters remain only in bounded memory and may be lost on process exit")
+                break
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.warning("Some aggregated VAOS REST request counters could not be flushed at shutdown", exc_info=True)
+    try:
+        for _ in range(20):
+            persisted = flush_observability_training_events(max_events=25)
+            with observability_training_lock:
+                if not observability_training_queue and not observability_training_dropped:
+                    break
+            if persisted == 0:
+                break
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.warning("Some queued training telemetry could not be flushed at shutdown", exc_info=True)
+    if session_id:
+        try:
+            observability_store.end_session(DB_PATH, session_id)
+        except (OSError, sqlite3.Error, ValueError):
+            logger.exception("Could not mark the VAOS runtime session as cleanly stopped")
 
 
 @app.on_event("startup")
 def announce_startup():
+    global observability_training_recovery_started
+    _start_observability_lifecycle()
+    try:
+        for _ in range(20):
+            if not flush_observability_api_requests(max_events=5000):
+                break
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.warning("Could not reconcile durable VAOS request/frame counters at startup", exc_info=True)
+    try:
+        recovered_security_events = observability_siem.flush_security_event_fallback(DB_PATH, maximum=1000)
+        if recovered_security_events:
+            logger.info("Replayed %s queued authentication security event(s) at startup", recovered_security_events)
+    except (OSError, sqlite3.Error, ValueError, RuntimeError):
+        logger.warning("Could not reconcile queued authentication security events at startup", exc_info=True)
+    with observability_training_recovery_lock:
+        if not observability_training_recovery_started:
+            observability_training_recovery_started = True
+            threading.Thread(target=reconcile_training_log_observability, name="vaos-training-observability-recovery", daemon=True).start()
+    try:
+        queued_report_ids = observability_reports.recover_report_jobs(DB_PATH)
+        observability_reports.expire_reports(DB_PATH, OBSERVABILITY_REPORT_DIR)
+        removed_report_artifacts = observability_reports.cleanup_orphan_report_artifacts(DB_PATH, OBSERVABILITY_REPORT_DIR)
+        if removed_report_artifacts:
+            logger.info("Removed %s orphaned observability report artifact(s)", removed_report_artifacts)
+        observability_reports.submit_queued_report_jobs(DB_PATH, OBSERVABILITY_REPORT_DIR, queued_report_ids)
+    except (OSError, sqlite3.Error, RuntimeError):
+        logger.exception("Could not recover pending observability report jobs")
     logger.info("VAOS %s admin service started", APP_VERSION)
     if PRODUCTION_MODE:
         logger.info("Production administrator site is configured behind the deployment HTTPS proxy")
@@ -4364,3 +7423,8 @@ def announce_startup():
         logger.info("Admin username: admin")
         logger.info("Local password file: %s", PASSWORD_PATH)
     logger.info("Models download on first enrollment or incoming camera frame.")
+
+
+@app.on_event("shutdown")
+def record_clean_shutdown():
+    _stop_observability_lifecycle()

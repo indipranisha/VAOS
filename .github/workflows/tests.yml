@@ -1,0 +1,53 @@
+name: VAOS checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  isolated-unit-contract:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - name: Install test dependencies
+        run: python -m pip install -r requirements-dev.txt
+      - name: Compile application modules
+        run: python -m py_compile main.py camera_service.py mcp_server.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py
+      - name: Run isolated API/security contract tests
+        run: python -m unittest discover -s tests -v
+      - name: Install CLI package and verify command entry point
+        run: |
+          python -m pip install --no-deps .
+          vaos --help
+
+  mcp-stdio-host-integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        python-version: ['3.12']
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-mcp.txt
+      - name: Install the optional MCP SDK
+        run: python -m pip install -r requirements-mcp.txt
+      - name: Exercise the real SDK host and VAOS stdio bridge
+        run: python -m unittest discover -s tests -p "test_mcp_stdio_host.py" -v
