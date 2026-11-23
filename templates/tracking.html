@@ -4,20 +4,30 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>VAOS · Tracking &amp; Event Rules</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-ui-accessibility">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-tracking-layout">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
   <style>
-    .tracking-page{max-width:1500px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
+    .tracking-page{grid-column:2;grid-row:1;width:100%;max-width:1500px;height:100dvh;min-height:0;min-width:0;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
     .tracking-head,.tracking-head-actions,.tracking-card-head,.tracking-toolbar,.tracking-rule-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
     .tracking-head{margin-bottom:18px}.tracking-head h1{margin:.2rem 0}.tracking-head p{max-width:850px}
-    .tracking-grid{display:grid;grid-template-columns:minmax(340px,.85fr) minmax(0,1.3fr);gap:16px;align-items:start}
-    .tracking-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}.tracking-form label{display:grid;gap:5px}.tracking-form label.full{grid-column:1/-1}
+    .tracking-grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:16px;align-items:start}
+    .tracking-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.tracking-form label{display:grid;gap:5px}.tracking-form label.full{grid-column:1/-1}
     .tracking-form input:not([type=checkbox]):not([type=radio]),.tracking-form select,.tracking-form textarea{box-sizing:border-box;min-height:42px;line-height:1.35;padding:9px 10px}
     .tracking-form .tracking-roi{grid-column:1/-1}
     .tracking-roi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.tracking-roi label{font-size:.82rem}
-    .tracking-rule-list,.tracking-events{display:grid;gap:10px}.tracking-rule,.tracking-event{padding:13px;border:1px solid var(--line,#dce2ee);border-radius:12px;background:var(--surface,#fff)}
-    .tracking-rule h3,.tracking-event h3{margin:0;font-size:1rem}.tracking-rule p,.tracking-event p{margin:6px 0}.tracking-meta{font-size:.83rem;color:var(--muted,#667085)}
+    .tracking-rule-list,.tracking-events{display:grid;gap:10px}.tracking-rule,.tracking-event{padding:13px;border:1px solid var(--ml-border,#263747);border-radius:12px;background:var(--ml-panel-raised,#172433)}
+    .tracking-rule h3,.tracking-event h3{margin:0;font-size:1rem}.tracking-rule p,.tracking-event p{margin:6px 0}.tracking-meta{font-size:.83rem;color:var(--ml-muted,#9aabbd)}
     .tracking-events{max-height:620px;overflow:auto}.tracking-rule-actions{justify-content:flex-end;margin-top:9px}.tracking-status{min-height:24px}
+    .tracking-grid > *, .tracking-column, .tracking-form label{min-width:0}
+    .tracking-page h2{font-size:18px;line-height:1.4;margin:4px 0}
+    .tracking-page .section-title-row{flex-wrap:wrap;gap:10px;align-items:flex-start}
+    .tracking-form input:not([type=checkbox]):not([type=radio]),.tracking-form select,.tracking-form textarea{width:100%;min-width:0;border:1px solid var(--ml-border);border-radius:8px;background:var(--ml-panel-raised);color:var(--ml-text)}
+    .tracking-form > .full{grid-column:1/-1}
+    .tracking-roi{min-width:0;border:1px solid var(--ml-border);border-radius:8px;padding:12px}
+    .tracking-roi legend{font-size:11px;color:var(--ml-muted);padding:0 5px}
+    .tracking-column{display:grid;gap:16px}
+    .tracking-rule,.tracking-event{min-width:0;overflow-wrap:anywhere}
+    @media(max-width:850px){.tracking-page{height:auto;min-height:calc(100dvh - 66px);overflow:visible;scrollbar-gutter:auto}}
     @media(max-width:980px){.tracking-grid{grid-template-columns:1fr}}
     @media(max-width:560px){.tracking-form{grid-template-columns:1fr}.tracking-form label.full{grid-column:auto}.tracking-roi{grid-template-columns:1fr 1fr}}
   </style>

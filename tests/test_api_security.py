@@ -55,6 +55,13 @@ class ApiSecurityTests(unittest.TestCase):
         finally:
             _TEST_HOME.cleanup()
 
+    def test_mcp_setup_template_uses_current_server_origin(self):
+        response = self.client.get("http://127.0.0.1:8470/api/admin/integrations", auth=self.basic_auth)
+        self.assertEqual(response.status_code, 200)
+        env = response.json()["mcp_config_template"]["mcpServers"]["vaos"]["env"]
+        self.assertEqual(env["VAOS_BASE_URL"], "http://127.0.0.1:8470")
+        self.assertEqual(env["VAOS_API_TOKEN"], "PASTE_A_READ_OR_CONTROL_TOKEN_HERE")
+
     def save_integrations(self, **overrides):
         payload = {
             "api_enabled": True,

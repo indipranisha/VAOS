@@ -14,6 +14,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import observability_siem as siem
+from project_metadata import PROJECT_METADATA
 from observability_store import initialize_database, query_events, query_security_audit, record_event, verify_security_chain
 
 
@@ -572,7 +573,7 @@ class ObservabilitySiemTests(unittest.TestCase):
         event = {"timestamp": "2026-11-12T10:00:00Z", "event_id": "evt-1", "event_type": "security.auth.login_failed", "level": "WARNING", "component": "auth", "message": "login denied", "details": {"outcome": "denied", "reason": "policy"}}
         cef, content_type = siem._mapped_event(event, "cef")
         self.assertEqual(content_type, "application/cef")
-        self.assertTrue(cef.startswith(b"CEF:0|VAOS|VAOS|1.1.0|"))
+        self.assertTrue(cef.startswith(f"CEF:0|VAOS|VAOS|{PROJECT_METADATA['version']}|".encode()))
         self.assertIn(b"rt=1794477600000", cef)
         self.assertIn(b"externalId=evt-1", cef)
         self.assertIn(b"msg=login denied", cef)

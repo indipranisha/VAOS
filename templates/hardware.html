@@ -4,21 +4,34 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>VAOS · Hardware Intelligence</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-ui-accessibility">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-hardware-layout">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
   <style>
-    .hardware-page{max-width:1500px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
+    .hardware-page{grid-column:2;grid-row:1;width:100%;max-width:1500px;height:100dvh;min-height:0;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px;min-width:0;overflow-y:auto;overflow-x:hidden;scrollbar-gutter:stable}
+    .hardware-page > .panel{margin:16px 0}
+    .hardware-page .hardware-card{grid-column:auto;min-width:0;padding:18px}
+    .hardware-page .hardware-value{font-size:clamp(18px,1.7vw,24px);line-height:1.3;overflow-wrap:anywhere}
+    .hardware-page .section-title-row{flex-wrap:wrap;gap:12px;align-items:flex-start}
+    .hardware-page .section-title-row h2{font-size:18px;line-height:1.35;margin:4px 0}
+    .hardware-page .hardware-card-head{align-items:flex-start}
+    .hardware-page .hardware-card small{color:var(--ml-muted);overflow-wrap:anywhere}
+    .hardware-page .hardware-recommendations article{background:var(--ml-panel);border-color:var(--ml-border);min-width:0}
+    .hardware-page .hardware-fact-list{grid-template-columns:minmax(100px,180px) minmax(0,1fr);font-size:12px;line-height:1.6}
+    .hardware-page .hardware-muted{color:var(--ml-muted)}
+    .hardware-page .hardware-head-actions{justify-content:flex-start}
+    .hardware-page .hardware-gpus{grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr))}
     .hardware-head,.hardware-head-actions,.hardware-card-head,.hardware-actions{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
     .hardware-head{margin-bottom:18px}.hardware-head h1{margin:.2rem 0}.hardware-head p{max-width:800px}
     .hardware-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;margin:16px 0}
     .hardware-value{font-size:1.5rem;font-weight:750;display:block;margin:8px 0}.hardware-card small{display:block;line-height:1.5}
     .hardware-gpus{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px}
     .hardware-recommendations{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
-    .hardware-recommendations article{border:1px solid var(--line,#dce2ee);border-radius:12px;padding:14px;background:var(--surface,#fff)}
+    .hardware-recommendations article{border:1px solid var(--ml-border,#263747);border-radius:12px;padding:14px;background:var(--ml-panel,#111c29)}
     .hardware-recommendations p{margin:8px 0}.hardware-fact-list{display:grid;grid-template-columns:minmax(130px,220px) 1fr;gap:8px 16px}.hardware-fact-list dt{font-weight:650}.hardware-fact-list dd{margin:0;overflow-wrap:anywhere}
     .hardware-status-line{min-height:24px}.hardware-warning{border-left:4px solid #d69e32}.hardware-muted{color:var(--muted,#667085)}
+    @media(max-width:850px){.hardware-page{width:100%;height:auto;min-height:calc(100dvh - 66px);overflow:visible;scrollbar-gutter:auto}}
     @media(max-width:1000px){.hardware-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.hardware-recommendations{grid-template-columns:1fr 1fr}}
-    @media(max-width:650px){.hardware-grid,.hardware-recommendations{grid-template-columns:1fr}.hardware-fact-list{grid-template-columns:1fr;gap:3px}.hardware-fact-list dd{margin-bottom:8px}}
+    @media(max-width:650px){.hardware-grid,.hardware-recommendations{grid-template-columns:1fr}.hardware-page .hardware-fact-list{grid-template-columns:1fr;gap:3px}.hardware-fact-list dd{margin-bottom:8px}}
   </style>
 </head>
 <body class="training-shell">

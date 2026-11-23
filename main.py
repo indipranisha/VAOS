@@ -100,7 +100,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 LOCAL_WINDOWS_LAUNCHER = os.name == "nt"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
@@ -1069,6 +1069,8 @@ def get_or_create_admin_password() -> str:
         if len(configured) < 32 or configured.startswith("REPLACE_"):
             raise RuntimeError("Production requires VAOS_ADMIN_PASSWORD with at least 32 characters. Set a unique secret before starting VAOS.")
         return configured
+    if os.getenv("VAOS_ENV", "development").strip().casefold() == "staging":
+        return "1122334455"
     if configured:
         if len(configured) < 20:
             raise RuntimeError("VAOS_ADMIN_PASSWORD must contain at least 20 characters when configured.")
@@ -1903,6 +1905,16 @@ def get_system_metrics() -> dict[str, Any]:
                     metrics.update({"gpu_available": True, "gpu_name": first["name"], "gpu_utilization_percent": first["utilization_percent"], "gpu_memory_used_mb": first["memory_used_mb"], "gpu_memory_total_mb": first["memory_total_mb"], "gpu_temperature_c": first["temperature_c"], "gpu_power_draw_w": first["power_draw_w"], "gpu_devices": gpu_rows})
             except (OSError, subprocess.SubprocessError, IndexError, csv.Error):
                 logger.debug("NVIDIA system metrics are unavailable", exc_info=True)
+        from host_telemetry import collect_host_telemetry, read_linux_gpu_metrics
+        try:
+            metrics.update(collect_host_telemetry())
+        except Exception:
+            logger.debug("Extended host telemetry unavailable", exc_info=True)
+        if not metrics["gpu_available"]:
+            metrics.update(read_linux_gpu_metrics())
+        if not metrics["gpu_available"]:
+            from apple_gpu_metrics import read_apple_gpu_metrics
+            metrics.update(read_apple_gpu_metrics())
         system_metrics_cache.update({"sampled_at": now, "data": metrics})
         return dict(metrics)
 
@@ -2650,7 +2662,7 @@ def api_explorer(request: Request, _: str = Depends(require_basic_admin)) -> HTM
 
 
 @app.get("/api/admin/integrations", include_in_schema=False)
-def read_api_integrations(_: str = Depends(require_basic_admin)) -> dict[str, Any]:
+def read_api_integrations(request: Request, _: str = Depends(require_basic_admin)) -> dict[str, Any]:
     settings = get_api_settings()
     with db_connection() as db:
         tokens = db.execute("SELECT token_prefix,label,scopes,created_at,expires_at,last_used_at,revoked_at FROM api_tokens ORDER BY created_at DESC").fetchall()
@@ -2662,7 +2674,7 @@ def read_api_integrations(_: str = Depends(require_basic_admin)) -> dict[str, An
         "api_docs": "/api/docs",
         "openapi": "/api/openapi.json",
         "mcp_command": "python mcp_server.py",
-        "mcp_config_template": {"mcpServers": {"vaos": {"command": sys.executable, "args": [str(APP_DIR / "mcp_server.py")], "env": {"VAOS_BASE_URL": "http://127.0.0.1:8000", "VAOS_API_TOKEN": "PASTE_A_READ_OR_CONTROL_TOKEN_HERE"}}}},
+        "mcp_config_template": {"mcpServers": {"vaos": {"command": sys.executable, "args": [str(APP_DIR / "mcp_server.py")], "env": {"VAOS_BASE_URL": str(request.base_url).rstrip("/"), "VAOS_API_TOKEN": "PASTE_A_READ_OR_CONTROL_TOKEN_HERE"}}}},
     }
 
 

@@ -10,6 +10,7 @@ import argparse
 import ipaddress
 import json
 import os
+import random
 import signal
 import socket
 import subprocess
@@ -21,6 +22,8 @@ import webbrowser
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from project_metadata import PROJECT_METADATA
 
 APP_ROOT = Path(__file__).resolve().parent
 EXPECTED_APPS = (("admin", "main:app", "vaos-admin"), ("camera", "camera_service:app", "vaos-camera"))
@@ -69,7 +72,8 @@ def read_health(url: str, timeout: float = 1.0) -> dict[str, Any] | None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Start VAOS locally on Windows, macOS, or Linux.")
     parser.add_argument("--admin-host", default="127.0.0.1", help="Admin bind address (loopback only).")
-    parser.add_argument("--admin-port", type=int, default=8000)
+    parser.add_argument("--admin-port", type=int, default=None,
+                        help="Admin port; defaults to a random available 8xx0 port (xx=11–99).")
     parser.add_argument("--camera-host", default="127.0.0.1", help="Camera bind address (loopback only).")
     parser.add_argument("--camera-port", type=int, default=8001)
     parser.add_argument("--data-dir", type=Path, help="Optional VAOS_DATA_DIR override; defaults to the app's data folder.")
@@ -87,8 +91,18 @@ def _validate_args(args: argparse.Namespace, parser: argparse.ArgumentParser) ->
             parser.error("The local launcher binds to loopback only. Use a protected production proxy for remote access.")
         setattr(args, attribute, host)
     for port in (args.admin_port, args.camera_port):
-        if not 1 <= port <= 65535:
+        if port is not None and not 1 <= port <= 65535:
             parser.error("Ports must be between 1 and 65535.")
+    if args.admin_port is None:
+        candidates = [8000 + xx * 10 for xx in range(11, 100)]
+        random.shuffle(candidates)
+        args.admin_port = next(
+            (port for port in candidates
+             if port != args.camera_port and port_is_available(args.admin_host, port)),
+            None,
+        )
+        if args.admin_port is None:
+            parser.error("No available admin port matching 8xx0 (xx=11–99).")
     if args.admin_port == args.camera_port and args.admin_host == args.camera_host:
         parser.error("Admin and camera services need different ports.")
     if not 1 <= args.ready_timeout <= 600:
@@ -203,7 +217,10 @@ def main(argv: list[str] | None = None) -> int:
             processes.append(process)
             print(f"VAOS {name} service ready at http://{host}:{port}", flush=True)
         dashboard = f"http://{args.admin_host}:{args.admin_port}"
-        print(f"Dashboard: {dashboard}\nLogs: {logs_dir}\nPress Ctrl+C to stop these VAOS services.", flush=True)
+        print(f"VAOS version: {PROJECT_METADATA['version']}\nDashboard: {dashboard}\nLogs: {logs_dir}", flush=True)
+        if env.get("VAOS_ENV", "development").strip().casefold() == "staging":
+            print("Staging username: admin\nStaging password: 1122334455", flush=True)
+        print("Press Ctrl+C to stop these VAOS services.", flush=True)
         if not args.no_browser:
             webbrowser.open(dashboard)
         while all(process.poll() is None for process in processes):

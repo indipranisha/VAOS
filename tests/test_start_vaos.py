@@ -13,11 +13,34 @@ import urllib.error
 import urllib.request
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import start_vaos
 
 
 class LocalLauncherContractTests(unittest.TestCase):
+    def test_default_admin_port_skips_occupied_ports_and_camera_port(self) -> None:
+        parser = start_vaos.build_parser()
+        args = parser.parse_args(["--camera-port", "8120"])
+        with patch.object(start_vaos.random, "shuffle") as shuffle, patch.object(
+            start_vaos, "port_is_available", side_effect=lambda host, port: port != 8110
+        ):
+            start_vaos._validate_args(args, parser)
+        self.assertEqual(args.admin_port, 8130)
+        self.assertEqual(shuffle.call_args.args[0], list(range(8110, 9000, 10)))
+
+    def test_default_admin_port_reports_exhaustion(self) -> None:
+        parser = start_vaos.build_parser()
+        with patch.object(start_vaos, "port_is_available", return_value=False):
+            with self.assertRaises(SystemExit):
+                start_vaos._validate_args(parser.parse_args([]), parser)
+
+    def test_explicit_admin_port_is_preserved(self) -> None:
+        parser = start_vaos.build_parser()
+        args = parser.parse_args(["--admin-port", "9000"])
+        start_vaos._validate_args(args, parser)
+        self.assertEqual(args.admin_port, 9000)
+
     def test_only_loopback_hosts_are_accepted(self) -> None:
         for host in ("localhost", "127.0.0.1", "::1", "[::1]"):
             with self.subTest(host=host):

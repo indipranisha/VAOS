@@ -618,7 +618,14 @@ def vaos_api_request(method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"], p
     """Call one documented VAOS v1 API operation. For writes, JSON must match its OpenAPI schema."""
     if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
         _validate_bounded_text_size(body_json, "body_json", MAX_REQUEST_BYTES)
-    _authorize_operation(method, path)
+    try:
+        _authorize_operation(method, path)
+    except (PermissionError, RuntimeError, ValueError) as exc:
+        # Expected policy/configuration failures must reach the MCP host as
+        # actionable results; SDKs intentionally mask unexpected exceptions.
+        detail = str(exc).replace(TOKEN, "[redacted]") if TOKEN else str(exc)
+        return json.dumps({"error": True, "status": 403 if isinstance(exc, PermissionError) else 503,
+                           "detail": detail[:1000]}, ensure_ascii=False)
     body = None
     if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
         try:

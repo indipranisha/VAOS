@@ -2,6 +2,16 @@
 
 This file records work in the current source tree. It does not imply a tagged release or that the running services have loaded these changes.
 
+## v1.2.0 — frozen source baseline · 2026-11-24
+
+- Baseline includes cross-platform telemetry, randomized local dashboard ports,
+  staging startup credentials/version output, API/MCP connection fixes, and UI
+  layout, scrolling and navigation updates.
+- Subsequent completed changes increment 1.2.x using `bump_version.py` and the
+  repository's `AGENTS.md` instructions.
+- This records a source baseline; it does not create a Git tag, deployment, or
+  imply that existing services have reloaded the source.
+
 ## v1.1.0 — in progress
 
 ### Added in this working tree

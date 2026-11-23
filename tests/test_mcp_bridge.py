@@ -55,6 +55,20 @@ class McpBridgeTests(unittest.TestCase):
         sys.modules.pop(cls.bridge.__name__, None)
         cls.modules_patch.stop()
 
+    def test_policy_failure_returns_actionable_error_without_api_call(self):
+        with patch.object(self.bridge, "_authorize_operation", side_effect=RuntimeError("API access is disabled in Settings.")), patch.object(self.bridge, "_api_request") as request, patch.object(self.bridge, "_record_tool_invocation"):
+            result = json.loads(self.bridge.vaos_get_system_health())
+        self.assertTrue(result["error"])
+        self.assertIn("API access is disabled", result["detail"])
+        request.assert_not_called()
+
+    def test_denied_operation_remains_blocked_and_redacts_token(self):
+        with patch.object(self.bridge, "TOKEN", "vaos_fixture_secret"), patch.object(self.bridge, "_authorize_operation", side_effect=PermissionError("Denied vaos_fixture_secret")), patch.object(self.bridge, "_api_request") as request, patch.object(self.bridge, "_record_tool_invocation"):
+            result = json.loads(self.bridge.vaos_api_request("GET", "/api/v1/admin/ml/samples"))
+        self.assertEqual(result["status"], 403)
+        self.assertNotIn("vaos_fixture_secret", result["detail"])
+        request.assert_not_called()
+
     def test_sensitive_read_authorization_has_no_uninitialized_method_bug(self):
         policy = {
             "api_enabled": True, "mcp_enabled": True, "token_mcp_agent": True,

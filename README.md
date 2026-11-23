@@ -1,4 +1,4 @@
-# VAOS 1.1.0
+# VAOS 1.2.0
 
 **VAOS — Video Analytics Operating System** is a self-hosted video analytics application. Camera processing, face templates, reviewed samples, model files and event records are stored on the VAOS host.
 
@@ -22,7 +22,7 @@ Face templates are sensitive biometric data. Use only with informed consent and 
 
 ## Run locally
 
-Use the native Windows launcher on Windows. On Windows, macOS or Linux, you can also create the virtual environment, install the base requirements, and run `python start_vaos.py` from the project folder. This cross-platform launcher starts the admin and camera services together, waits for both health checks, opens the dashboard, writes separate logs, and stops only the services it started when you press Ctrl+C (or, on Unix-like systems, send it SIGTERM). It binds to loopback and does not create a public tunnel. See the [installation guide](docs/INSTALLATION.md) for setup and platform-specific accelerator instructions.
+Use the native Windows launcher on Windows. On Windows, macOS or Linux, you can also create the virtual environment, install the base requirements, and run `python start_vaos.py` from the project folder. This cross-platform launcher chooses a random available dashboard port matching `8xx0` (`xx` from 11 to 99, giving 8110–8990) on each launch; use the dashboard URL it prints or opens. Pass `--admin-port` to choose a fixed port. It starts the admin and camera services together, waits for both health checks, opens the dashboard, writes separate logs, and stops only the services it started when you press Ctrl+C (or, on Unix-like systems, send it SIGTERM). It binds to loopback and does not create a public tunnel. See the [installation guide](docs/INSTALLATION.md) for setup and platform-specific accelerator instructions.
 
 ### Windows launcher
 
@@ -100,7 +100,7 @@ Windows stores files in the project `data` directory by default. Containers set 
 | Variable | Purpose |
 |---|---|
 | `VAOS_ENV` | Set to `production` for production safeguards. |
-| `VAOS_ADMIN_PASSWORD` | Administrator password; required at 32+ characters in production. |
+| `VAOS_ADMIN_PASSWORD` | Administrator password; required at 32+ characters in production. Staging always uses `1122334455`, overriding this variable and saved passwords. |
 | `VAOS_PUBLIC_CAMERA_URL` | HTTPS camera-site origin, required in production. |
 | `VAOS_CAMERA_INTERNAL_URL` | Private admin-to-camera diagnostics address; the container deployment sets this automatically. |
 | `VAOS_INTERNAL_STATUS_TOKEN` | Shared private token for admin-to-camera diagnostics. |
@@ -114,3 +114,5 @@ Windows stores files in the project `data` directory by default. Containers set 
 The face pipeline uses OpenCV Zoo YuNet and SFace. Object detection uses the configured Ultralytics YOLO model when optional dependencies are installed. Custom object training uses reviewed samples and datasets that pass VAOS preparation. Labels, class coverage and data quality affect results; more epochs alone do not guarantee better accuracy. Face similarity is not a probability. Do not treat model predictions as validated safety-critical decisions.
 
 The included custom object-detection checkpoint was trained using Ultralytics YOLO and is distributed with VAOS under AGPL-3.0-only. The official [Ultralytics license guidance](https://www.ultralytics.com/license) describes licensing obligations for applications using its code or trained models. Review third-party dataset terms separately; this repository does not include the training images or annotations.
+
+For staging, launch with `VAOS_ENV=staging ./.venv/bin/python start_vaos.py --data-dir "$PWD/data"`. The staging administrator login is always `admin` / `1122334455`. Other environments retain their existing password behavior.

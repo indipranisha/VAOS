@@ -734,7 +734,7 @@ def _ecs_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "event": {"id": payload.get("event_id"), "action": event_type, "kind": "event", "category": [category], "severity": severity,
                   "outcome": outcome},
         "log": {"level": str(payload.get("level", "INFO")).casefold()}, "message": payload.get("message", ""),
-        "service": {"name": "VAOS", "version": "1.1.0"},
+        "service": {"name": "VAOS", "version": "1.2.0"},
         "vaos": {"component": payload.get("component"), "correlation_id": payload.get("correlation_id"), "details": payload.get("details", {})},
     }
 
@@ -754,7 +754,7 @@ def _mapped_event(payload: dict[str, Any], event_format: str) -> tuple[bytes, st
             extension = {"rt": cef_timestamp, **extension}
         signature = _cef_escape(payload.get("event_type", "security.event"), header=True)[:1023]
         name = _cef_escape(payload.get("message", "VAOS security event"), header=True)[:63]
-        header = f"CEF:0|VAOS|VAOS|1.1.0|{signature}|{name}|{severity}|"
+        header = f"CEF:0|VAOS|VAOS|1.2.0|{signature}|{name}|{severity}|"
         body = (header + " ".join(f"{key}={_cef_escape(value)}" for key, value in extension.items())).encode("utf-8")
         return body, "application/cef"
     if event_format == "ecs":
@@ -840,7 +840,7 @@ def _otlp_logs_payload(payload: dict[str, Any]) -> dict[str, Any]:
             {"key": "service.name", "value": {"stringValue": "VAOS"}},
             {"key": "service.namespace", "value": {"stringValue": "vaos"}},
         ]},
-        "scopeLogs": [{"scope": {"name": "vaos.security", "version": "1.1.0"}, "logRecords": [log_record]}],
+        "scopeLogs": [{"scope": {"name": "vaos.security", "version": "1.2.0"}, "logRecords": [log_record]}],
     }]}
 
 

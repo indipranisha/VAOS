@@ -10,7 +10,7 @@ from typing import Any
 METADATA_PATH = Path(__file__).resolve().with_name("VAOS_PROJECT_METADATA.json")
 _FALLBACK: dict[str, Any] = {
     "name": "VAOS",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "license": "AGPL-3.0-only",
     "creator": {
         "name": "Prateek Dubey",
