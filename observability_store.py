@@ -2256,4 +2256,4 @@ def verify_security_chain(db_path: str | Path) -> dict[str, Any]:
         if row["previous_hash"] != previous or row["integrity_hash"] != _audit_hash(previous, row):
             return {"valid": False, "checked": index, "failed_sequence": index}
         previous = row["integrity_hash"]
-    return {"valid": True, "checked": len(rows), "failed_sequence": None}\n
+    return {"valid": True, "checked": len(rows), "failed_sequence": None}

@@ -2,6 +2,8 @@
 
 This guide is for an administrator connecting an AI agent that supports local MCP servers. The MCP bridge is an optional child process. It talks to VAOS through the same authenticated, versioned REST API used by the API Explorer; it does not open a new network port.
 
+For a detailed explanation of each Settings toggle, token boundary, sensitive-data grant and approval option, read [MCP controls in VAOS Settings](MCP_SETTINGS.md).
+
 ## Compatibility status
 
 | Host / environment | Status |

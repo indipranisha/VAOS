@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>VAOS · Project bundles</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-workspace-layout">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-ui-accessibility">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
   <style>
     .project-page{max-width:1260px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
@@ -25,22 +25,14 @@
   </style>
 </head>
 <body class="training-shell">
+  <a class="app-skip-link" href="#app-main">Skip to main content</a>
   <header class="topbar training-sidebar">
     <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
     <p class="sidebar-subtitle">PROJECT WORKSPACE</p>
-    <nav class="primary-nav" aria-label="Main navigation">
-      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
-      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
-      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
-      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
-      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
-      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
-      <a class="nav-link active" href="/projects" aria-current="page"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
-      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
-          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    {% include "_admin_navigation.html" %}
     <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local project storage</span><span class="version-chip">v{{ version }}</span></div></div>
   </header>
-  <main class="page-wrap project-page">
+  <main id="app-main" tabindex="-1" class="page-wrap project-page">
     <section class="project-head"><div><p class="eyebrow">COMMUNITY / PORTABLE CONFIGURATION</p><h1>VAOS project bundles</h1><p class="lead">Share a small VAOS setup with another local installation. Bundles carry approved engine settings and names of local datasets and models so another person can see what the project expects.</p></div><button id="project-refresh" class="button button-secondary" type="button">Refresh saved bundles</button></section>
     <div class="project-notice"><strong>Privacy by design.</strong> A bundle contains configuration only. It excludes passwords, API tokens, camera and tunnel links, face profiles, review images, model weights, dataset files and executable content. Dataset/model names are references, not included files. Importing only saves the bundle; applying settings is a separate step.</div>
     <div class="project-grid">

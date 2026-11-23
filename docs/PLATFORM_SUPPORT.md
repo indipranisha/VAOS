@@ -17,9 +17,9 @@ VAOS has source-level support paths for Windows, macOS and Linux, with CPU as th
 
 ## Native macOS and Linux quick start
 
-The Windows PowerShell launcher is not used on macOS/Linux. For a local single-machine development run, use Python 3.12 and two terminal windows in the repository root. This starts the admin service on loopback port 8000 and camera service on loopback port 8001; it does not create a public tunnel. Settings still lets you save the selected detector, but local model changes require restarting both Uvicorn services from those terminals or your process manager. The Windows-only restart and temporary tunnel buttons are hidden on macOS/Linux so they do not imply unsupported control.
+The Windows PowerShell launcher is not used on macOS/Linux. For a local single-machine development run, use Python 3.12 and the repository's cross-platform `start_vaos.py` from the project root. It starts the admin service on loopback port 8000 and camera service on loopback port 8001, verifies both health endpoints, and stops only its own child processes on Ctrl+C (or SIGTERM on Unix-like systems). It does not create a public tunnel. Settings still lets you save the selected detector, but local model changes require restarting the launcher. The Windows-only Quick Tunnel and restart buttons are hidden on macOS/Linux so they do not imply unsupported control.
 
-In the first terminal, create and activate a virtual environment and install web-service dependencies:
+Create and activate a virtual environment and install web-service dependencies:
 
 ```sh
 python3.12 -m venv .venv
@@ -28,22 +28,13 @@ python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
 ```
 
-Start the private admin app:
+Start both services:
 
 ```sh
-export VAOS_DATA_DIR="$PWD/data"
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+python start_vaos.py
 ```
 
-In the second terminal, activate the same environment, then start the camera app:
-
-```sh
-source .venv/bin/activate
-export VAOS_DATA_DIR="$PWD/data"
-python -m uvicorn camera_service:app --host 127.0.0.1 --port 8001
-```
-
-Open `http://127.0.0.1:8000`. On a fresh development data directory, VAOS creates an admin password in `data/admin_password.txt`; protect that file. Stop each service with Ctrl+C in its own terminal. Do not run the development commands on an internet-facing interface. For production, follow the protected HTTPS reverse-proxy/container procedure in the [main README](../README.md).
+Open `http://127.0.0.1:8000`. On a fresh development data directory, VAOS creates an admin password in `data/admin_password.txt`; protect that file. Stop both services with Ctrl+C in the launcher terminal or send SIGTERM to the launcher on macOS/Linux. The launcher refuses non-loopback binds and occupied ports; it will not stop another process. Do not run the development services on an internet-facing interface. For production, follow the protected HTTPS reverse-proxy/container procedure in the [main README](../README.md).
 
 ### Optional object detection and training dependencies
 
@@ -56,7 +47,7 @@ python -m pip install --no-deps "ultralytics==8.4.183"
 
 VAOS installs Ultralytics without its default OpenCV wheel so it retains `opencv-contrib-python-headless` for `cv2.face`; the object-detection requirements explicitly include the remaining Ultralytics runtime dependencies, including NVIDIA telemetry and the optional platform SDK on Python 3.11+. On Apple Silicon, use a macOS/Python combination supported by that PyTorch build and check `torch.backends.mps.is_available()` before selecting MPS. On Linux, select CPU or a CUDA-compatible wheel matching the installed driver. A successful package install does not prove that a model, kernel or training workload will fit available memory.
 
-The manual startup does not provide the Windows-only tunnel or service-restart controls. A remote camera deployment needs a separately configured authenticated HTTPS reverse proxy and firewall policy; never expose the admin service directly.
+The source launcher does not provide the Windows-only tunnel or in-app service-restart controls. A remote camera deployment needs a separately configured authenticated HTTPS reverse proxy and firewall policy; never expose the admin service directly.
 
 ## Memory and performance limits
 
@@ -66,7 +57,7 @@ Apple unified memory is shared by the OS, GPU and other apps. VAOS reports wheth
 
 ## Cross-platform gaps before staging
 
-- Native service restart and temporary public tunnel controls are wired to the Windows PowerShell launcher. For local macOS/Linux development, stop and restart each Uvicorn service in its terminal; for production, use the container or host process manager. The Windows launcher controls are not portable yet.
+- The source launcher now starts and supervises both local services on Windows, macOS and Linux. The temporary public tunnel and in-app restart controls remain Windows PowerShell features; on other platforms, stop and restart the source launcher or use the production process manager.
 - The macOS and Linux clean-install, startup, camera, dataset, training and shutdown journeys need to pass in CI or on isolated target machines. Configured contract jobs are not yet recorded as passing results and cannot establish a real camera/GPU run.
 - Verify model checkpoint load/save, MPS fallback behavior, supported PyTorch/Ultralytics versions, and actual training stability on an Apple Silicon Mac.
 - Verify Linux CPU and NVIDIA Docker image builds, migrations, storage permissions, proxy configuration, and rollback on a representative host.

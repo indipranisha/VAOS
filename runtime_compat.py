@@ -208,4 +208,4 @@ def training_resource_profile(
         "image_size": image_size,
         "profile": profile,
         "cpu_threads": threads,
-    }\n
+    }

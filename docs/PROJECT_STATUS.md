@@ -1,21 +1,28 @@
 # VAOS project status
 
-## Current owner-selected scope checkpoint (2026-11-15)
+## Current owner-selected scope checkpoint (2026-11-18)
 
 The owner selected **(1) cross-platform operation** and **(5) MCP host integration plus documentation** to remain active. All other feature expansion and release certification may be deferred; existing working functionality should be retained. This includes AI Model Arena and Ready-to-Run Vision Applications, which remain outside v1.1.0, as well as broader API Explorer, tracking, project-bundle, observability/SIEM, persona/accessibility, restore/performance, and advanced hardware-certification work. Those items may appear in the inventory below for context, but they are not active milestones for this work period. Older broad-scope estimates are historical and do not supersede the retained-scope estimates above.
 
-| Retained work | Current estimate | Focused effort remaining | Evidence still required |
-| --- | ---: | ---: | --- |
-| Cross-platform operation | 35% | 15-24 hours | Green Windows/macOS/Ubuntu CI; native Mac/Linux startup and camera checks; MPS/CUDA device testing; bounded memory/resource tests; verify the newly explicit manual restart and unsupported tunnel behavior on non-Windows hosts. |
-| MCP bridge and manuals | 92% | 1-2 hours | Run the configured SDK stdio-host matrix in CI, verify at least one named agent host if available, and complete the remaining operator-manual source review. |
+| Retained work | Current source status | Evidence still required |
+| --- | --- | --- |
+| Cross-platform operation | A loopback-only Python launcher now runs both local services; macOS/Linux install guidance, conditional CPU/CUDA/MPS setup notes, and Windows/macOS/Ubuntu CI jobs are present. The launcher integration passed on Windows/Python 3.12. | Green CI on each OS; native Mac/Linux startup and camera checks; actual Apple MPS/CUDA workload testing; bounded-memory/resource tests. Source support is not native-device certification. |
+| MCP bridge and manuals | Settings already expose API/MCP policy, tokens, capability groups and approvals; this update adds an in-app MCP controls guide and clarifies the operator instructions. | Run the configured MCP SDK stdio matrix in CI, verify at least one named agent host if available, and demonstrate the token/approval journey in an isolated browser. |
 
-The retained implementation/documentation work is estimated at **16-26 focused hours**, excluding time waiting for CI and access to Mac/Linux/GPU/agent-host devices. This is not a staging date. By 2026-11-21, source changes and documentation can be completed, but the release cannot be called cross-platform certified without the target-host results. Keep **NO-GO for staging** until applicable checks pass; do not claim support for arbitrary RAM or every GPU.
+The remaining release effort depends on the availability of CI, Mac/Linux/GPU devices, and an agent host; this status is not a calendar promise. Source and manual work has advanced, but the release cannot be called cross-platform certified without the target-host results. Keep **NO-GO for staging** until applicable checks pass; do not claim support for arbitrary RAM or every GPU.
 
-
-**Last audited:** 2026-11-15
+**Last audited:** 2026-11-18
 **Source:** 1.1.0 on `staging`
 **Live services observed:** admin health at 127.0.0.1:8000 reported 1.1.0 on 2026-11-12; listeners were present on ports 8000 and 8001 during the 2026-11-13 read-only check. Windows identified Python as the listener process, but executable paths and command lines were unavailable. Camera health and source paths remain unverified, so this does not prove that either service serves the current working tree. No service was restarted.
 **Release posture:** v1.1.0 feature release is not ready for staging.
+
+### 18 November source and usability update
+
+This Windows/Python 3.12.10 workspace adds a loopback-only `start_vaos.py` launcher for the admin and camera services, including occupied-port refusal, health checks, log separation, isolated data-directory support, and cleanup of only launcher-owned child processes on Ctrl+C, Windows Ctrl+Break, or Unix-like SIGTERM. The platform guide now documents native macOS/Linux setup, optional PyTorch/MPS installation, CPU fallback, and the boundary around Windows-only tunnel/restart controls. CI is configured for Windows, macOS, and Ubuntu, but no CI result or native Apple Silicon/Linux check was available in this session; macOS source support is therefore implemented but not certified.
+
+MCP settings now link to a dedicated in-app and repository operator guide covering tokens, capability scopes, read-only defaults, one-time approvals, revocation, privacy, and troubleshooting. The existing API/MCP policy controls remain the implementation; the guide does not expose a public MCP listener. Observability/Analytics retains its existing metric, event, report, and export functionality; this update addresses page navigation, text contrast, heading hierarchy, focus-to-content and Settings section jumps. A UI/UX agent reviewed and rechecked API Explorer, Training, Video Review, Settings, Tracking, and Observability; the reported light-theme contrast defects were corrected and verified in a second isolated pass.
+
+The full local Windows repository suite ran **311 tests successfully with 2 skips**. After the last UI contrast adjustment, **28 focused UI/Observability tests passed**, **5 launcher tests passed** (including starting both services on temporary loopback ports and stopping them through the Windows interrupt path), Python compilation passed for the launcher and affected backend modules, and `git diff --check` passed. This is local source/test evidence only; it does not replace GitHub Actions, native macOS/MPS/Linux, representative hardware, real MCP host, camera, performance, restore/rollback, external receiver, or full release usability/security checks. The reported SyntaxErrors in `runtime_compat.py` and `observability_store.py` caused by literal `\\n` file suffixes were corrected. **Staging remains NO-GO.**
 
 **Cross-platform/hardware portability:** work has started but is not release-ready. The shared runtime includes mocked/testable CPU/CUDA/MPS selection, process-visible CPU counting, platform-native dataset-root defaults and conservative memory-aware training defaults. The Settings page now hides the Windows-only restart/tunnel controls on macOS/Linux, explains manual local restarts, and the API rejects unsupported restart requests instead of leaving a command that no supervisor will consume. Missing optional ML packages now produce platform-neutral setup guidance. The hardware page distinguishes reported MPS from CPU/CUDA without inventing Apple GPU telemetry. Docker includes the shared helper, and CI is configured for a macOS runner. These source changes remain pending CI evidence: this Windows host has not exercised macOS, Apple Silicon/MPS or Linux. NVIDIA-only GPU discovery/telemetry remains; AMD/Intel acceleration is not certified. Arbitrary or insufficient RAM cannot be promised. See [Platform support](PLATFORM_SUPPORT.md). **Staging: NO-GO.**
 

@@ -1,6 +1,6 @@
 # VAOS quick start
 
-VAOS runs as two local web services: an administrator site and a camera/enrollment site. The current ready-made launcher is for Windows. macOS/Linux source commands are in the [installation guide](INSTALLATION.md), with platform limits in [PLATFORM_SUPPORT.md](PLATFORM_SUPPORT.md).
+VAOS runs as two local web services: an administrator site and a camera/enrollment site. The cross-platform `start_vaos.py` launcher starts both on Windows, macOS and Linux from one terminal. Windows users can also use `start_windows.bat`, which includes the temporary camera tunnel. See the [installation guide](INSTALLATION.md) and [platform support matrix](PLATFORM_SUPPORT.md).
 
 ## First administrator session
 

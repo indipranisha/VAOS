@@ -5,34 +5,26 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>VAOS · API Explorer</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-workspace-layout">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-ui-accessibility">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
   <style>
     .explorer-page{max-width:1500px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
     .explorer-head,.explorer-toolbar,.explorer-detail-head,.explorer-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
     .explorer-head{margin-bottom:20px}.explorer-head h1{margin:.2rem 0}.explorer-head p{max-width:760px}
     .explorer-toolbar{margin:16px 0}.explorer-toolbar input{flex:1;min-width:220px}.explorer-layout{display:grid;grid-template-columns:minmax(250px,330px) minmax(0,1fr);gap:18px;align-items:start}
-    .explorer-list,.explorer-detail{min-width:0;max-height:calc(100vh - 220px);overflow:auto}.explorer-list{position:sticky;top:14px}.explorer-operation{width:100%;text-align:left;display:grid;grid-template-columns:62px 1fr;gap:8px;align-items:center;padding:10px;margin:5px 0;border:1px solid var(--line,#dce2ee);border-radius:10px;background:var(--surface,#fff);color:inherit;cursor:pointer}.explorer-operation[aria-current=true]{outline:2px solid var(--accent,#5574de)}.explorer-verb{font-size:.72rem;font-weight:800}.verb-get{color:#12835f}.verb-post{color:#3559c7}.verb-put,.verb-patch{color:#a15b00}.verb-delete{color:#bb3d54}.explorer-operation-path{font: .78rem ui-monospace,Consolas,monospace;overflow-wrap:anywhere}.explorer-schema{font: .82rem ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto;padding:12px;border-radius:8px;background:var(--code-surface,#f2f5fa)}.explorer-form{display:grid;gap:9px}.explorer-form label{display:grid;gap:5px}.explorer-form input,.explorer-form textarea,.explorer-toolbar input{width:100%}.explorer-try{display:grid;gap:12px}.explorer-result{min-height:80px}.explorer-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:440px;overflow:auto}.explorer-method-note{padding:10px 12px;border-radius:8px;background:var(--soft-warning,#fff4dc)}.explorer-tag{margin:3px}.explorer-empty{padding:22px;text-align:center}.explorer-foot{margin-top:14px}
+    .explorer-list,.explorer-detail{min-width:0;max-height:calc(100vh - 220px);overflow:auto}.explorer-list{position:sticky;top:14px}.explorer-operation{width:100%;text-align:left;display:grid;grid-template-columns:62px 1fr;gap:8px;align-items:center;padding:10px;margin:5px 0;border:1px solid var(--ml-border,#dce2ee);border-radius:10px;background:var(--ml-panel-raised,#f7f9fc);color:var(--ml-text,#172536);cursor:pointer}.explorer-operation:hover{border-color:var(--ml-cyan,#12a9bd)}.explorer-operation:focus-visible{outline:3px solid var(--ml-cyan,#12a9bd);outline-offset:2px}.explorer-operation[aria-current=true]{outline:2px solid var(--ml-cyan,#12a9bd)}.explorer-verb{font-size:.78rem;font-weight:800}.verb-get{color:#168b68}.verb-post{color:#6c8fff}.verb-put,.verb-patch{color:#d89c41}.verb-delete{color:#ff8090}.explorer-operation-path{font: .84rem ui-monospace,Consolas,monospace;overflow-wrap:anywhere}.explorer-schema{font: .84rem ui-monospace,Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;max-height:230px;overflow:auto;padding:12px;border-radius:8px;background:var(--ml-panel-raised,#f2f5fa)}.explorer-form{display:grid;gap:9px}.explorer-form label{display:grid;gap:5px}.explorer-form input,.explorer-form textarea,.explorer-toolbar input{width:100%}.explorer-try{display:grid;gap:12px}.explorer-result{min-height:80px}.explorer-result pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:440px;overflow:auto}.explorer-method-note{padding:10px 12px;border-radius:8px;background:var(--soft-warning,#fff4dc)}.explorer-tag{margin:3px}.explorer-empty{padding:22px;text-align:center}.explorer-foot{margin-top:14px}
     @media(max-width:850px){.explorer-layout{grid-template-columns:1fr}.explorer-list{position:static;max-height:38vh}.explorer-detail{max-height:none}}
   </style>
 </head>
 <body class="training-shell">
+  <a class="app-skip-link" href="#app-main">Skip to main content</a>
   <header class="topbar training-sidebar">
     <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
     <p class="sidebar-subtitle">DEVELOPER TOOLS</p>
-    <nav class="primary-nav" aria-label="Main navigation">
-      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
-      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
-      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
-      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
-      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
-      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
-      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
-      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
-          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    {% include "_admin_navigation.html" %}
     <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local API · v{{ version }}</span></div></div>
   </header>
-  <main class="page-wrap explorer-page">
+  <main id="app-main" tabindex="-1" class="page-wrap explorer-page">
     <section class="explorer-head"><div><p class="eyebrow">DEVELOPER TOOLS / REST</p><h1>API Explorer</h1><p class="lead">Search the endpoints VAOS actually exposes, inspect their permissions and schemas, then try a request against this same VAOS server.</p></div><div class="inline-actions"><a class="button button-secondary" href="/statistics?report=api-activity">API activity report</a><a class="button button-secondary" href="/api/docs" target="_blank" rel="noopener noreferrer">Open full OpenAPI reference ↗</a><a class="button button-secondary" href="/settings">Back to settings</a></div></section>
     <div id="explorer-message" class="result-box" role="status" aria-live="polite">Loading the current API contract…</div>
     <div class="explorer-toolbar"><input id="explorer-search" type="search" autocomplete="off" placeholder="Search by endpoint, action, or description" aria-label="Search API endpoints"><label><input id="explorer-include-health" type="checkbox" checked> Include health endpoint</label><span id="explorer-count" class="subtle-tag">— endpoints</span></div>

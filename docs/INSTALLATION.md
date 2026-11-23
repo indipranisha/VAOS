@@ -1,6 +1,6 @@
 # Install and run VAOS
 
-This guide covers the supported local source setup and the included production deployment. See [platform support](PLATFORM_SUPPORT.md) before choosing a non-Windows host: native macOS/Linux commands are documented, but they have not yet been validated on physical devices in this checkout.
+This guide covers local source setup and the included production deployment. The repository provides a loopback-only source launcher for Windows, macOS and Linux; platform and accelerator certification still depends on the evidence in [platform support](PLATFORM_SUPPORT.md).
 
 ## Local Windows setup
 
@@ -10,24 +10,19 @@ Stop the local launcher through its documented console prompt so it can stop the
 
 ## Local macOS/Linux source setup
 
-Python 3.12 and a POSIX shell are used in the example. Run from the repository root in two terminal sessions:
+Python 3.12 and a POSIX shell are used in the example. Run from the repository root:
 
 ```sh
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-export VAOS_DATA_DIR="$PWD/data"
-python -m uvicorn main:app --host 127.0.0.1 --port 8000
+python start_vaos.py
 ```
 
-In a second terminal, activate the same environment, export the same data path, and run:
+The launcher starts both services on loopback, opens the dashboard, writes logs under `data/logs/local-launcher-*`, and stops only the child services it started when you press Ctrl+C (or, on Unix-like systems, send it SIGTERM). Use `python start_vaos.py --help` to select a separate data folder or suppress automatic browser opening. It does not create a public tunnel. On a fresh data directory the generated password is written to `data/admin_password.txt`; protect that file. Never expose the development services directly to the internet. The Windows-specific `start_windows.bat` remains available when its Quick Tunnel and launcher controls are needed.
 
-```sh
-python -m uvicorn camera_service:app --host 127.0.0.1 --port 8001
-```
-
-Open `http://127.0.0.1:8000`. On a fresh data directory the generated password is written to `data/admin_password.txt`. Stop each service with Ctrl+C in its own terminal. These are development commands and bind to loopback; do not expose them directly to the internet. See the [platform matrix](PLATFORM_SUPPORT.md) for accelerator setup and limits.
+**Apple Silicon:** the base application runs on CPU. For object detection/training, install the PyTorch and torchvision build recommended for your Mac/Python combination, then install the detector requirements. VAOS offers MPS only when the installed runtime reports it available and falls back to CPU otherwise. No Mac device was available for native verification in this checkout; see [platform support](PLATFORM_SUPPORT.md) before relying on GPU behavior.
 
 ## Optional object detection and training
 

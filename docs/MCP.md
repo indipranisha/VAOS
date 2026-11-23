@@ -2,7 +2,7 @@
 
 VAOS includes an optional Model Context Protocol (MCP) bridge. MCP hosts that support local stdio processes can discover the API reference and call documented VAOS operations through guarded tools. The bridge is a separate stdio process; it does not add a permanent service, open a new port, or restart the running application. See [MCP host setup](MCP_HOST_SETUP.md) for a non-programmer connection guide and the evidence-based host compatibility status.
 
-New installations expose only the **Diagnostics** group by default. Administrators opt in to other groups in Settings and each token also needs the corresponding group. Existing saved group selections are preserved; this default change does not silently rewrite an installation's saved MCP policy.
+New installations expose only the **Diagnostics** group by default. Administrators opt in to other groups in Settings and each token also needs the corresponding group. Existing saved group selections are preserved; this default change does not silently rewrite an installation's saved MCP policy. For a step-by-step explanation of every Settings switch, see [MCP controls in VAOS Settings](MCP_SETTINGS.md).
 
 ## Current MCP tools and resources
 

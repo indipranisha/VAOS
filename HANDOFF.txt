@@ -1,0 +1,41 @@
+VAOS Mac handoff overlay
+Updated: 2026-11-23
+Base checkout: https://github.com/indipranisha/VAOS.git, branch staging, commit 411ee50
+
+Contains intended source, documentation, UI, and test changes. The macOS launcher shutdown test checks for a remaining listener without relying on port rebinding during TIME_WAIT. Excludes .venv, datasets, runtime data and the separate preservation-only *- Copy archive. The base checkout contains the committed data/ml_training/active/best.pt. D:\VAOS_Datasets is intentionally not included; redownload datasets on the Mac as required. Read docs/MAC_DEVELOPMENT.md before migrating personal review/training history.
+
+  .github/workflows/tests.yml
+  README.md
+  docs/FRONTEND_CATALOG.md
+  docs/INSTALLATION.md
+  docs/MAC_DEVELOPMENT.md
+  docs/MCP.md
+  docs/MCP_HOST_SETUP.md
+  docs/MCP_SETTINGS.md
+  docs/PLATFORM_SUPPORT.md
+  docs/PROJECT_STATUS.md
+  docs/QUICK_START.md
+  docs/README.md
+  docs/function-catalogue.md
+  docs/validation/platform-mcp.md
+  main.py
+  observability_store.py
+  runtime_compat.py
+  start_vaos.py
+  static/style.css
+  templates/_admin_navigation.html
+  templates/about.html
+  templates/api_explorer.html
+  templates/dataset_manager.html
+  templates/hardware.html
+  templates/index.html
+  templates/live_system.html
+  templates/observability.html
+  templates/projects.html
+  templates/tracking.html
+  templates/training.html
+  templates/training_activity.html
+  templates/video_review.html
+  tests/test_observability_frontend.py
+  tests/test_start_vaos.py
+  tests/test_ui_shell_contracts.py

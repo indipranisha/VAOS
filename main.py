@@ -2896,6 +2896,15 @@ def hardware_guide() -> Response:
         raise HTTPException(status_code=404, detail="The Hardware Intelligence guide is not installed in this build.") from exc
 
 
+@app.get("/docs/MCP_SETTINGS.md", include_in_schema=False)
+def mcp_settings_guide() -> Response:
+    guide_path = APP_DIR / "docs" / "MCP_SETTINGS.md"
+    try:
+        return Response(guide_path.read_text(encoding="utf-8"), media_type="text/markdown; charset=utf-8")
+    except OSError as exc:
+        raise HTTPException(status_code=404, detail="The MCP Settings guide is not installed in this build.") from exc
+
+
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "project": PROJECT_METADATA})

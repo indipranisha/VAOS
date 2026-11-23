@@ -4,34 +4,24 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VAOS · Video Analytics - Operating System</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-workspace-layout">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-ui-accessibility">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
 </head>
 <body class="training-shell dashboard-shell{% if settings_only|default(false) %} settings-page{% endif %}">
+  <a class="app-skip-link" href="#app-main">Skip to main content</a>
   <header class="topbar training-sidebar">
     <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
     <p class="sidebar-subtitle">VIDEO ANALYTICS OS</p>
-    <nav class="primary-nav" aria-label="Main navigation">
-      <a class="nav-link{% if not settings_only|default(false) %} active{% endif %}" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
-
-      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
-      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
-      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
-      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
-      <a class="nav-link" href="/tracking"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
-      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
-      <a class="nav-link" href="/training?view=activity"><span class="nav-icon" aria-hidden="true">≋</span>Training activity</a>
-      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link{% if settings_only|default(false) %} active{% endif %}" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
-          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    {% include "_admin_navigation.html" %}
     <div class="sidebar-bottom"><div class="admin-sidebar-tools">{% if admin_password is defined and admin_password %}<div class="sidebar-password" tabindex="0" aria-label="Local admin password. Hover or focus to reveal."><span>LOCAL ADMIN PASSWORD</span><strong class="admin-pin-value">{{ admin_password }}</strong><small>Hover or focus to reveal</small></div>{% endif %}<button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local analytics engine</span><span class="version-chip">v{{ version }}</span></div></div>
   </header>
 
-  <main class="page-wrap dashboard-page">
-    {% if settings_only %}<section class="intro-row settings-heading"><div><p class="eyebrow">CONFIGURATION</p><h2>Settings</h2><p class="lead">Manage cameras, core detection controls, model selection, services, and separate camera and dashboard tunnels.</p></div></section>{% endif %}
+  <main id="app-main" tabindex="-1" class="page-wrap dashboard-page">
+    {% if settings_only %}<section class="intro-row settings-heading"><div><p class="eyebrow">CONFIGURATION</p><h1>Settings</h1><p class="lead">Manage cameras, core detection controls, model selection, services, and separate camera and dashboard tunnels.</p></div></section><nav class="settings-jump-nav settings-only" aria-label="Settings sections"><a href="#settings">Camera links</a><a href="#engine-settings">Detection &amp; model</a><a href="#system-settings">Services &amp; tunnels</a><a href="#api-mcp-settings">API &amp; AI agents</a><a href="#model-enrichment">Custom detector</a></nav>{% endif %}
     <section class="intro-row dashboard-only">
       <div>
         <p class="eyebrow">CONTROL ROOM</p>
-        <h2>Observe repeat sightings.<br><span class="muted-heading">Keep the data on your PC.</span></h2>
+        <h1>Observe repeat sightings.<br><span class="muted-heading">Keep the data on your PC.</span></h1>
         <p class="lead">Add a camera link, enroll a consenting participant, and review matches as they arrive.</p>
         <a class="button button-secondary button-small" href="/statistics?report=lifetime-statistics">Create statistics report</a>
       </div>
@@ -151,7 +141,7 @@
     </section>
 
     <section class="panel section-panel settings-only" id="api-mcp-settings">
-      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · INTEGRATIONS</p><h3>API and AI agent access</h3></div><div class="inline-actions"><a class="button button-secondary button-small" href="/statistics?report=api-activity">API activity report</a><a class="button button-secondary button-small" href="/statistics?report=mcp-activity">MCP activity report</a><a class="button button-secondary button-small" href="/statistics?report=security-events">Security audit report</a><a class="button button-secondary button-small" href="/api-explorer">Explore APIs</a><a class="button button-secondary button-small" href="/api/docs" target="_blank" rel="noopener noreferrer">Open OpenAPI reference ↗</a></div></div>
+      <div class="section-title-row"><div><p class="eyebrow">SETTINGS · INTEGRATIONS</p><h3>API and AI agent access</h3></div><div class="inline-actions"><a class="button button-secondary button-small" href="/docs/MCP_SETTINGS.md" target="_blank" rel="noopener noreferrer">MCP controls guide</a><a class="button button-secondary button-small" href="/statistics?report=api-activity">API activity report</a><a class="button button-secondary button-small" href="/statistics?report=mcp-activity">MCP activity report</a><a class="button button-secondary button-small" href="/statistics?report=security-events">Security audit report</a><a class="button button-secondary button-small" href="/api-explorer">Explore APIs</a><a class="button button-secondary button-small" href="/api/docs" target="_blank" rel="noopener noreferrer">Open OpenAPI reference ↗</a></div></div>
       <p class="helper">Connect scripts and AI agents to VAOS. Access starts disabled. Read-only agent access is the safe default; control access needs a separate control token.</p>
       <div class="api-integration-grid">
         <article class="api-integration-card">

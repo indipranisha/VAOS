@@ -25,7 +25,9 @@ jobs:
       - name: Install test dependencies
         run: python -m pip install -r requirements-dev.txt
       - name: Compile application modules
-        run: python -m py_compile main.py camera_service.py mcp_server.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py
+        run: python -m py_compile main.py camera_service.py mcp_server.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py start_vaos.py
+      - name: Check portable local launcher usage
+        run: python start_vaos.py --help
       - name: Run isolated API/security contract tests
         run: python -m unittest discover -s tests -v
       - name: Install CLI package and verify command entry point

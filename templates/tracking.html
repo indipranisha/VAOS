@@ -4,7 +4,7 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
   <title>VAOS · Tracking &amp; Event Rules</title>
-  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-workspace-layout">
+  <link rel="stylesheet" href="/static/style.css?v=vaos-1.1.0-ui-accessibility">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
   <style>
     .tracking-page{max-width:1500px;margin:0 auto;padding:24px clamp(16px,3vw,42px) 48px}
@@ -12,6 +12,8 @@
     .tracking-head{margin-bottom:18px}.tracking-head h1{margin:.2rem 0}.tracking-head p{max-width:850px}
     .tracking-grid{display:grid;grid-template-columns:minmax(340px,.85fr) minmax(0,1.3fr);gap:16px;align-items:start}
     .tracking-form{display:grid;grid-template-columns:1fr 1fr;gap:10px}.tracking-form label{display:grid;gap:5px}.tracking-form label.full{grid-column:1/-1}
+    .tracking-form input:not([type=checkbox]):not([type=radio]),.tracking-form select,.tracking-form textarea{box-sizing:border-box;min-height:42px;line-height:1.35;padding:9px 10px}
+    .tracking-form .tracking-roi{grid-column:1/-1}
     .tracking-roi{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:8px}.tracking-roi label{font-size:.82rem}
     .tracking-rule-list,.tracking-events{display:grid;gap:10px}.tracking-rule,.tracking-event{padding:13px;border:1px solid var(--line,#dce2ee);border-radius:12px;background:var(--surface,#fff)}
     .tracking-rule h3,.tracking-event h3{margin:0;font-size:1rem}.tracking-rule p,.tracking-event p{margin:6px 0}.tracking-meta{font-size:.83rem;color:var(--muted,#667085)}
@@ -21,22 +23,14 @@
   </style>
 </head>
 <body class="training-shell">
+  <a class="app-skip-link" href="#app-main">Skip to main content</a>
   <header class="topbar training-sidebar">
     <a class="brand-lockup" href="/" aria-label="VAOS dashboard"><img class="vaos-brand-image" src="/static/vaos-logo.png?v=1" alt="VAOS"></a>
     <p class="sidebar-subtitle">LIVE SYSTEM</p>
-    <nav class="primary-nav" aria-label="Main navigation">
-      <a class="nav-link" href="/"><span class="nav-icon" aria-hidden="true">⌂</span>Control room</a>
-      <a class="nav-link" href="/training"><span class="nav-icon" aria-hidden="true">▦</span>ML training</a>
-      <a class="nav-link" href="/video-review"><span class="nav-icon" aria-hidden="true">▶</span>Video review</a>
-      <a class="nav-link" href="/datasets"><span class="nav-icon" aria-hidden="true">▧</span>Dataset preparation</a>
-      <a class="nav-link" href="/hardware"><span class="nav-icon" aria-hidden="true">◫</span>Hardware</a>
-      <a class="nav-link active" href="/tracking" aria-current="page"><span class="nav-icon" aria-hidden="true">◎</span>Tracking rules</a>
-      <a class="nav-link" href="/projects"><span class="nav-icon" aria-hidden="true">◇</span>Project bundles</a>
-      <a class="nav-link" href="/about"><span class="nav-icon" aria-hidden="true">ⓘ</span>About VAOS</a><a class="nav-link" href="/settings"><span class="nav-icon" aria-hidden="true">⚙</span>Settings</a>
-          <a class="nav-link{% if request.url.path == '/statistics' %} active{% endif %}" href="/statistics"{% if request.url.path == '/statistics' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▤</span>Statistics &amp; observability</a></nav>
+    {% include "_admin_navigation.html" %}
     <div class="sidebar-bottom"><div class="admin-sidebar-tools"><button id="theme-toggle" class="theme-toggle" type="button" aria-pressed="false" title="Switch between dark and light mode"><span aria-hidden="true">☼</span><span id="theme-toggle-label">Light mode</span></button></div><div class="sidebar-system"><span class="status-dot"></span><span>Local object events</span><span class="version-chip">v{{ version }}</span></div></div>
   </header>
-  <main class="page-wrap tracking-page">
+  <main id="app-main" tabindex="-1" class="page-wrap tracking-page">
     <section class="tracking-head"><div><p class="eyebrow">LIVE SYSTEM / CAMERA EVENTS</p><h1>Tracking &amp; Event Rules</h1><p class="lead">Create camera rules for repeated object counts or a tracked object remaining inside a region. VAOS reuses its current detector and short-term tracker; track continuity is approximate and is not identity recognition.</p></div><div class="tracking-head-actions"><button id="tracking-refresh" class="button button-secondary" type="button">Refresh</button><a class="button button-secondary" href="/statistics?report=tracking-events">Event report</a><a class="button button-secondary" href="/api-explorer">API Explorer</a></div></section>
     <div id="tracking-message" class="result-box tracking-status" role="status" aria-live="polite">Loading cameras and rules…</div>
     <div class="tracking-grid">

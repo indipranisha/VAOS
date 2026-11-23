@@ -1,11 +1,15 @@
 # Platform and MCP validation record
 
-**Updated:** 2026-11-15
+**Updated:** 2026-11-18
 
 **Scope retained by product owner:** cross-platform operation and the MCP bridge/manuals.
 **Scope deferred:** external SIEM/restore/performance certification, broad persona/accessibility validation, advanced tracking work, AI Model Arena and Ready-to-Run Vision Applications.
 
 ## Evidence available in this work session
+
+- 18 November update: source launcher `start_vaos.py` starts the admin and camera apps only on loopback, checks port availability and both health routes, and cleans up only owned child processes on normal interrupt/termination. The isolated launcher integration test passed on Windows with Python 3.12.10, including startup of both services and verified shutdown. The macOS/Ubuntu CI jobs remain configured but were not run here; no native Mac/MPS or Linux result is claimed.
+- The in-app MCP Settings guide is bundled at `docs/MCP_SETTINGS.md` and served locally at `/docs/MCP_SETTINGS.md`; the isolated UI/UX pass verified an HTTP 200 response with the expected guide content. The Settings link and policy controls are present. No named third-party MCP host was exercised in this pass.
+- The full local Windows `unittest` suite passed **311 tests with 2 skips**. After the latest UI CSS changes, **28 focused UI/Observability tests** and **5 cross-platform launcher tests** passed; backend syntax compilation and `git diff --check` passed. The UI/UX agent rechecked the light-theme fixes for the Observability notice, metric IDs, and sidebar/footer; all were legible. The same review checked API Explorer themes, Settings jump links, Tracking layout, keyboard skip navigation, and shared page navigation.
 
 - Windows / Python 3.12.10 local source tree. The latest full isolated suite passed **296 tests in 65.020 seconds**, with one skip: a POSIX-permission test that Windows cannot exercise. The official MCP SDK v2.3 stdio integration and the non-Windows service-control regressions also passed locally. Earlier focused and full-suite checkpoints are historical only.
 - `runtime_compat.py` has unit coverage for Windows/POSIX dataset-root selection, process-visible CPU counting, mocked CUDA/MPS/CPU resolution and conservative memory profiles. These checks do not load drivers or run a model.

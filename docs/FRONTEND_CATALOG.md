@@ -1,13 +1,13 @@
 # Frontend page and asset catalogue
 
-VAOS currently uses FastAPI-served HTML templates with JavaScript and CSS assets, not a separately built SPA. Page handlers and much of the service logic live in `main.py`; the camera application is in `camera_service.py`. Navigation is still repeated across several templates, so a change to global navigation or shared layout should be checked across all pages.
+VAOS currently uses FastAPI-served HTML templates with JavaScript and CSS assets, not a separately built SPA. Page handlers and much of the service logic live in `main.py`; the camera application is in `camera_service.py`. Admin pages share the `_admin_navigation.html` include, and the shell contract tests verify consistent links/current-page state.
 
 ## Main pages
 
 | User-facing page | Template / primary assets | Main purpose |
 | --- | --- | --- |
 | Control Room/dashboard | `templates/index.html` | Camera overview, status, people/events and engine controls. |
-| Settings | `/settings` route reuses `templates/index.html` with settings-only context | Application, API/MCP, tunnel and service settings. |
+| Settings | `/settings` route reuses `templates/index.html` with settings-only context | Application, API/MCP, tunnel and service settings, with section jump links. |
 | ML Training | `templates/training.html` | Dataset selection, sample review, training start and status; current page behavior is implemented in the template rather than a dedicated `training.js` asset. |
 | Training Activity | `templates/training_activity.html` | Training log and per-epoch activity view. |
 | Dataset manager | `templates/dataset_manager.html` | Dataset import and preparation workflows. |
@@ -18,6 +18,7 @@ VAOS currently uses FastAPI-served HTML templates with JavaScript and CSS assets
 | API Explorer | `templates/api_explorer.html`, `static/api_explorer.js` | Protected generated OpenAPI endpoint explorer. |
 | Project Bundles | `templates/projects.html`, `static/projects.js` | Import/export of constrained configuration bundles. |
 | About VAOS | `templates/about.html` | Product and creator/community attribution. |
+| Shared admin navigation | `templates/_admin_navigation.html` | Canonical navigation labels and active-page state for the admin UI. |
 | Camera and enrollment pages | `templates/camera.html`, `templates/enroll.html` | Browser frame capture and consent-based enrollment. |
 
 ## Shared styles and interaction

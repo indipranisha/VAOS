@@ -50,11 +50,12 @@ class ObservabilityFrontendSafetyTests(unittest.TestCase):
         self.assertIn(".observability-header { width: 100%; min-width: 0; flex-direction: column", phone_rules.group(1))
         self.assertIn(".training-sidebar .primary-nav { width: 100%; min-width: 0; max-width: 100%", phone_rules.group(1))
         self.assertIn(".training-sidebar .nav-link { display: grid; grid-template-columns: 16px minmax(0,1fr)", phone_rules.group(1))
-        nav_links = re.findall(r'<a class="nav-link"[^>]*>(.*?)</a>', page, flags=re.DOTALL)
-        self.assertEqual(len(nav_links), 11)
+        shared_navigation = (Path(__file__).resolve().parents[1] / "templates" / "_admin_navigation.html").read_text(encoding="utf-8")
+        nav_links = re.findall(r'<a class="nav-link[^\"]*"[^>]*>(.*?)</a>', shared_navigation, flags=re.DOTALL)
+        self.assertEqual(len(nav_links), 12)
         self.assertTrue(all('class="nav-label"' in item for item in nav_links))
         self.assertIn(".training-sidebar .nav-label { display: block; width: 100%; min-width: 0; max-width: 100%", phone_rules.group(1))
-        self.assertIn("style.css?v=vaos-1.1.0-workspace-layout", page)
+        self.assertIn("style.css?v=vaos-1.1.0-ui-accessibility", page)
 
     def test_statistics_page_provides_keyboard_skip_navigation_and_screen_reader_captions(self):
         root = Path(__file__).resolve().parents[1]

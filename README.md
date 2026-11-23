@@ -20,7 +20,11 @@
 
 Face templates are sensitive biometric data. Use only with informed consent and appropriate authorization. Validate accuracy for the intended setting, restrict administrator access, define retention/deletion practices, and meet applicable privacy and biometric requirements before operational use. This release uses one administrator account and one instance of each service; do not horizontally scale without first moving runtime state and training coordination into shared infrastructure.
 
-## Run on Windows
+## Run locally
+
+Use the native Windows launcher on Windows. On Windows, macOS or Linux, you can also create the virtual environment, install the base requirements, and run `python start_vaos.py` from the project folder. This cross-platform launcher starts the admin and camera services together, waits for both health checks, opens the dashboard, writes separate logs, and stops only the services it started when you press Ctrl+C (or, on Unix-like systems, send it SIGTERM). It binds to loopback and does not create a public tunnel. See the [installation guide](docs/INSTALLATION.md) for setup and platform-specific accelerator instructions.
+
+### Windows launcher
 
 1. Use Windows 10/11 and Python 3.12.
 2. Start `start_windows.bat` and leave its window open while VAOS is in use.
@@ -32,7 +36,7 @@ The Windows launcher installs local dependencies, optional object-detection supp
 
 ## Cross-platform support status
 
-The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. Contract checks are configured for Windows, macOS and Ubuntu; the optional MCP stdio protocol check also runs against the official SDK client on that matrix. These jobs have not yet produced a recorded result for this checkout, and there is no local Mac/Linux device available for native verification. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [tested-versus-planned platform matrix](docs/PLATFORM_SUPPORT.md) for native setup steps and boundaries.
+The source includes CPU fallback, NVIDIA CUDA selection and conditional Apple MPS selection. Contract checks are configured for Windows, macOS and Ubuntu; the optional MCP stdio protocol check also runs against the official SDK client on that matrix. A passing CI result and native Mac/Linux device evidence are still required before those combinations are certified. The Windows launcher and temporary tunnel controls remain Windows-specific. VAOS cannot promise operation on arbitrary RAM or every GPU vendor; see the [platform matrix](docs/PLATFORM_SUPPORT.md) for setup steps and boundaries.
 
 ## Deploy on a production server
 
