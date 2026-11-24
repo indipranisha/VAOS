@@ -41,7 +41,8 @@ import observability_store
 import observability_reports
 import observability_siem
 from project_bundles import BundleError, build_bundle, inspect_bundle
-from project_metadata import PROJECT_METADATA
+from project_metadata import PROJECT_METADATA, load_project_metadata
+from release_updates import check_release
 from runtime_compat import available_cpu_threads, default_datasets_dir, mps_is_available, resolve_inference_backend, resolve_training_device, training_resource_profile
 from tracking_rules import evaluate_rules, validate_rule
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
@@ -100,7 +101,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.6"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 LOCAL_WINDOWS_LAUNCHER = os.name == "nt"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
@@ -2942,6 +2943,11 @@ def project_bundles_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "projects.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
 
 
+@app.get("/api/admin/releases", include_in_schema=False)
+def release_status(_: str = Depends(require_admin)):
+    return check_release(load_project_metadata()["version"])
+
+
 @app.get("/about", response_class=HTMLResponse)
 def about_vaos_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "about.html", {"version": APP_VERSION, "project": PROJECT_METADATA})
@@ -4787,22 +4793,35 @@ def prepare_local_dataset(payload: dict[str, Any], _: str = Depends(require_admi
 def purge_managed_dataset(dataset_id: str, payload: dict[str, Any] | None = None, _: str = Depends(require_admin)):
     imports = load_public_dataset_imports()
     record = imports.get(dataset_id)
-    if not dataset_id.startswith("local_") or not isinstance(record, dict) or record.get("managed_local_dataset") is not True:
+    public_coco = dataset_id == "coco2017" and isinstance(record, dict)
+    if not public_coco and (not dataset_id.startswith("local_") or not isinstance(record, dict) or record.get("managed_local_dataset") is not True):
         raise HTTPException(status_code=404, detail="This managed local dataset was not found.")
     expected_name = str(record.get("name", ""))
     if str((payload or {}).get("confirm_name", "")) != expected_name:
         raise HTTPException(status_code=400, detail="Confirmation did not match the dataset name.")
     if ml_training_lock.locked() or ml_dataset_import_lock.locked() or ml_dataset_prepare_lock.locked():
         raise HTTPException(status_code=409, detail="Stop/wait for training and dataset preparation/downloads to finish before purging a dataset.")
-    raw_root = record.get("source_root")
+    raw_root = str(ML_DATASETS_DIR / "coco2017") if public_coco else record.get("source_root")
     if not raw_root:
         raise HTTPException(status_code=409, detail="This dataset has no recorded source folder, so VAOS cannot safely purge it.")
+    if Path(str(raw_root)).is_symlink():
+        raise HTTPException(status_code=403, detail="Linked dataset roots cannot be purged.")
     source_root = Path(str(raw_root)).resolve()
     yaml_value = str(record.get("data_yaml", ""))
     yaml_path = Path(yaml_value).resolve() if yaml_value else Path()
     allowed_roots = _dataset_allowed_roots()
     if source_root.is_symlink() or source_root in allowed_roots or not any(_path_is_within(source_root, root) for root in allowed_roots) or not yaml_value or yaml_path.suffix.lower() not in {".yaml", ".yml"} or not _path_is_within(yaml_path, source_root):
         raise HTTPException(status_code=403, detail="The recorded folder is outside approved dataset roots or is not safe to purge.")
+    if public_coco and yaml_path != (source_root / "dataset.yaml"):
+        raise HTTPException(status_code=403, detail="The public COCO manifest does not match its managed folder.")
+    for other_id, other in imports.items():
+        if other_id == dataset_id or not isinstance(other, dict):
+            continue
+        other_root = other.get("source_root") or other.get("data_root")
+        if not other_root and other.get("data_yaml"):
+            other_root = str(Path(other["data_yaml"]).parent)
+        if other_root and (_path_is_within(Path(other_root).resolve(), source_root) or _path_is_within(source_root, Path(other_root).resolve())):
+            raise HTTPException(status_code=409, detail="Another registered dataset shares this folder. Remove the overlapping registration first.")
     if not source_root.is_dir():
         imports.pop(dataset_id, None)
         write_public_dataset_imports(imports)
@@ -7408,6 +7427,7 @@ def _stop_observability_lifecycle() -> None:
 
 @app.on_event("startup")
 def announce_startup():
+    threading.Thread(target=check_release, args=(APP_VERSION,), daemon=True, name="release-check").start()
     global observability_training_recovery_started
     _start_observability_lifecycle()
     try:

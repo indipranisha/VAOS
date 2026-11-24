@@ -1448,3 +1448,31 @@ body.vaos-dark .training-page .dataset-prepare-row strong { color:var(--ml-text)
 @media(max-width:560px) { .training-page.training-center-page > .ml-dashboard-top { grid-template-columns:minmax(0,1fr); } }
 
 .training-center-page .reviewable-total { background:var(--ml-panel-raised); color:var(--ml-text); border:1px solid var(--ml-border); }
+
+/* Accessible read-only class distribution dialog, independent of training controls. */
+.distribution-modal { width:min(900px,calc(100vw - 32px)); max-width:calc(100vw - 32px); max-height:calc(100dvh - 32px); padding:0; border:1px solid var(--ml-border); border-radius:14px; background:var(--ml-panel); color:var(--ml-text); }
+.distribution-modal[open] { display:flex; flex-direction:column; }
+.distribution-modal::backdrop { background:rgb(0 0 0 / 65%); }
+.distribution-header,.distribution-footer { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:12px; padding:16px; flex-shrink:0; }
+.distribution-header { border-bottom:1px solid var(--ml-border); }
+.distribution-header h2 { font-size:20px; margin:0; color:var(--ml-text); }
+.distribution-body { padding:16px; overflow-y:auto; min-height:0; }
+.distribution-tools { display:flex; align-items:end; flex-wrap:wrap; gap:12px; }
+.distribution-modal label { display:grid; gap:5px; min-width:0; font-size:12px; }
+.distribution-tools label { flex:1 1 200px; }
+.distribution-modal input,.distribution-modal select { width:100%; min-width:0; min-height:40px; padding:8px; border:1px solid var(--ml-border); border-radius:8px; color:var(--ml-text); background:var(--ml-panel-raised); }
+.distribution-modal .helper,.distribution-help { color:var(--ml-muted); font-size:12px; overflow-wrap:anywhere; }
+.distribution-help summary { cursor:pointer; min-height:30px; }
+.distribution-table-wrap { overflow:auto; margin-top:12px; }
+.distribution-modal table { width:100%; border-collapse:collapse; font-size:13px; }
+.distribution-modal caption { text-align:left; color:var(--ml-muted); padding:8px 0; font-size:12px; }
+.distribution-modal th,.distribution-modal td { padding:10px; text-align:left; border-bottom:1px solid var(--ml-border); color:var(--ml-text); background:transparent; overflow-wrap:anywhere; }
+.distribution-modal td:first-child { max-width:240px; }
+.distribution-modal progress { width:100%; min-width:70px; accent-color:var(--ml-cyan); }
+.distribution-footer { border-top:1px solid var(--ml-border); justify-content:flex-start; }
+.distribution-modal :focus-visible { outline:3px solid var(--ml-cyan); outline-offset:2px; }
+@media(max-width:560px) { .distribution-modal { width:calc(100vw - 12px); max-width:calc(100vw - 12px); max-height:calc(100dvh - 12px); } .distribution-header,.distribution-body,.distribution-footer { padding:12px; } .distribution-footer label { flex:1 1 100%; } .distribution-footer .button { flex:1; } .distribution-modal th,.distribution-modal td { padding:8px 5px; } }
+
+.release-update-banner{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:14px;margin-bottom:18px;border:1px solid var(--ml-cyan,#60d5cb);border-radius:10px;background:var(--ml-card,#101d2a);color:var(--ml-text,#edf5fa)}
+.release-update-banner a{color:var(--ml-cyan,#60d5cb);text-decoration:underline}.release-update-banner small{flex-basis:100%;color:var(--ml-muted,#a9bac8)}
+.release-update-banner button{padding:7px 12px;border:1px solid currentColor;border-radius:6px;background:transparent;color:inherit;cursor:pointer}

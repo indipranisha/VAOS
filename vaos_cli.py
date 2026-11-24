@@ -74,7 +74,7 @@ class Client:
         url = f"{self.base}/api/v1{path}"
         if query:
             url += "?" + urlencode({key: value for key, value in query.items() if value is not None and value != ""})
-        headers = {"Accept": "application/json, application/pdf, text/csv", "User-Agent": "vaos-cli/1.2.0"}
+        headers = {"Accept": "application/json, application/pdf, text/csv", "User-Agent": "vaos-cli/1.2.6"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         elif self.auth:

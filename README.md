@@ -1,6 +1,8 @@
-# VAOS 1.2.0
+# VAOS 1.2.6
 
 **VAOS — Video Analytics Operating System** is a self-hosted video analytics application. Camera processing, face templates, reviewed samples, model files and event records are stored on the VAOS host.
+
+[Wiki](https://github.com/indipranisha/VAOS/wiki) · [Releases](https://github.com/indipranisha/VAOS/releases) · [Report an issue](https://github.com/indipranisha/VAOS/issues) · [Security policy](SECURITY.md)
 
 ## Capabilities
 
@@ -116,3 +118,7 @@ The face pipeline uses OpenCV Zoo YuNet and SFace. Object detection uses the con
 The included custom object-detection checkpoint was trained using Ultralytics YOLO and is distributed with VAOS under AGPL-3.0-only. The official [Ultralytics license guidance](https://www.ultralytics.com/license) describes licensing obligations for applications using its code or trained models. Review third-party dataset terms separately; this repository does not include the training images or annotations.
 
 For staging, launch with `VAOS_ENV=staging ./.venv/bin/python start_vaos.py --data-dir "$PWD/data"`. The staging administrator login is always `admin` / `1122334455`. Other environments retain their existing password behavior.
+
+### Software update checks
+
+VAOS checks published stable GitHub releases and shows a dismissible update notice. About includes release notes, issue reporting and a manual check. Installation remains manual in this first stage. See [software update behavior](docs/SOFTWARE_UPDATES.md) for offline handling, opt-out and safe upgrade guidance.

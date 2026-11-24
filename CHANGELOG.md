@@ -2,6 +2,17 @@
 
 This file records work in the current source tree. It does not imply a tagged release or that the running services have loaded these changes.
 
+## v1.2.6 — 2026-11-24
+
+- Reviewed-sample class distribution now opens in a searchable modal with CSV/JSON exports, separate model counts, explicit refresh and unavailable states.
+- About distinguishes installed and running versions and links to GitHub issues and releases.
+- Background stable-release checks add a dismissible update banner, offline handling and an opt-out. Installation remains manual.
+- Dataset preparation lists completed public imports; public dataset purge validates managed roots and overlapping registrations.
+- Added release documentation, private security-reporting guidance, contribution templates and dependency-update configuration.
+- Retains the 1.2.0 launcher, telemetry, API/MCP and UI improvements. Source uses AGPL-3.0-only; see LICENSE and model notices.
+
+Upgrade after active jobs finish. Back up configuration and data and preserve local changes. No automatic installation or rollback is included. Native accelerator certification and production deployment validation remain operator responsibilities.
+
 ## v1.2.0 — frozen source baseline · 2026-11-24
 
 - Baseline includes cross-platform telemetry, randomized local dashboard ports,

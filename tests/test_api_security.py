@@ -62,6 +62,33 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertEqual(env["VAOS_BASE_URL"], "http://127.0.0.1:8470")
         self.assertEqual(env["VAOS_API_TOKEN"], "PASTE_A_READ_OR_CONTROL_TOKEN_HERE")
 
+    def test_public_coco_purge_requires_confirmation_and_removes_only_its_folder(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            coco = root / "coco2017"
+            coco.mkdir()
+            manifest = coco / "dataset.yaml"
+            manifest.write_text("names: [person]\n")
+            sibling = root / "coco2017_detection"
+            sibling.mkdir()
+            record = {"id": "coco2017", "name": "COCO 2017", "data_yaml": str(manifest)}
+            with patch.object(main, "ML_DATASETS_DIR", root), patch.object(main, "_dataset_allowed_roots", return_value=[root]), patch.object(main, "load_public_dataset_imports", return_value={"coco2017": record}), patch.object(main, "write_public_dataset_imports") as save, patch.object(main, "ml_training_lock") as training, patch.object(main, "ml_dataset_import_lock") as importing, patch.object(main, "ml_dataset_prepare_lock") as preparing:
+                training.locked.return_value = importing.locked.return_value = preparing.locked.return_value = False
+                with self.assertRaises(main.HTTPException) as wrong:
+                    main.purge_managed_dataset("coco2017", {"confirm_name": "wrong"})
+                self.assertEqual(wrong.exception.status_code, 400)
+                self.assertTrue(coco.exists())
+                training.locked.return_value = True
+                with self.assertRaises(main.HTTPException) as busy:
+                    main.purge_managed_dataset("coco2017", {"confirm_name": "COCO 2017"})
+                self.assertEqual(busy.exception.status_code, 409)
+                training.locked.return_value = False
+                result = main.purge_managed_dataset("coco2017", {"confirm_name": "COCO 2017"})
+                self.assertTrue(result["folder_removed"])
+                self.assertFalse(coco.exists())
+                self.assertTrue(sibling.exists())
+                save.assert_called_once_with({})
+
     def save_integrations(self, **overrides):
         payload = {
             "api_enabled": True,

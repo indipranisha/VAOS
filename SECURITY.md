@@ -4,11 +4,11 @@ VAOS is a local-first application that can store face templates, camera enrollme
 
 ## Supported versions
 
-This repository is an actively developed v1.1.0 source tree. The live installation may be on a different version; check `docs/PROJECT_STATUS.md` before assuming a source fix is active. Security fixes are not considered deployed until a release is reviewed and activated by the operator.
+Security fixes target the latest 1.2.x release. Older releases should be upgraded after reviewing migration notes. The live installation may be on a different version; check `docs/PROJECT_STATUS.md` before assuming a source fix is active. Security fixes are not considered deployed until a release is reviewed and activated by the operator.
 
 ## Reporting a vulnerability
 
-Do not publish an unpatched vulnerability, API token, camera/enrollment link, face data, private endpoint path or secret value in a public issue. Contact the project maintainer through the repository's private security-reporting channel when one is configured. Until then, contact the project through its published website and request a private vulnerability-reporting route. Include affected version, impact and minimal reproduction steps; remove personal or biometric data.
+Do not publish an unpatched vulnerability, API token, camera/enrollment link, face data, private endpoint path or secret value in a public issue. Use [GitHub private vulnerability reporting](https://github.com/indipranisha/VAOS/security/advisories/new). If unavailable, contact the creator through https://prateekdubey.in and request a private reporting route. Include affected version, impact and minimal reproduction steps; remove personal or biometric data.
 
 ## Security design notes
 
@@ -17,3 +17,7 @@ Do not publish an unpatched vulnerability, API token, camera/enrollment link, fa
 - MCP starts read-only and sensitive writes require the configured one-time administrator approval.
 - External observability delivery is disabled by default and uses signed HTTPS JSON only. Do not place credentials in webhook paths or query strings.
 - See [observability security and privacy](docs/observability/security.md), [API guide](docs/API.md), [MCP guide](docs/MCP.md) and [production setup](README.md).
+
+## Staging credentials
+
+The explicitly selected staging environment uses a fixed development password by design. Keep staging on loopback or an isolated trusted network. Never expose staging to the public internet or use its password in production. Production requires a unique configured secret of at least 32 characters.

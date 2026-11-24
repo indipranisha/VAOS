@@ -24,6 +24,7 @@ def set_version(version: str) -> None:
     data = path.read_bytes()
     data = re.sub(rb'\A# VAOS [0-9]+\.[0-9]+\.[0-9]+', f'# VAOS {version}'.encode(), data)
     path.write_bytes(data)
+    (ROOT / 'static' / 'version.json').write_text(json.dumps({'version': version}) + '\n')
     print(f'VAOS {previous} -> {version}')
 
 
