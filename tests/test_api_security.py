@@ -1575,6 +1575,21 @@ class ApiSecurityTests(unittest.TestCase):
         }, auth=self.basic_auth)
         self.assertEqual(invalid.status_code, 400)
 
+    def test_video_cpu_selection_and_invalid_device(self):
+        response = self.client.post('/api/admin/video-review/sessions', auth=self.basic_auth,
+                                    json={'source_type':'local_video','file_name':'test.mp4'})
+        url = '/api/admin/video-review/sessions/' + response.json()['session_id'] + '/frame'
+        with patch('main.process_video_review_frame', return_value={'objects':[]}) as process:
+            result = self.client.post(url, auth=self.basic_auth, content=b'frame',
+                                     headers={'Content-Type':'image/jpeg','X-Analysis-Device':'cpu'})
+            self.assertEqual(result.status_code, 200)
+            self.assertEqual(process.call_args.args[-1], 'cpu')
+            process.reset_mock()
+            result = self.client.post(url, auth=self.basic_auth, content=b'frame',
+                                     headers={'Content-Type':'image/jpeg','X-Analysis-Device':'invalid'})
+            self.assertEqual(result.status_code, 400)
+            process.assert_not_called()
+
     def test_local_video_review_frames_are_counted_without_video_identity(self):
         session = self.client.post(
             "/api/admin/video-review/sessions",
@@ -2227,6 +2242,33 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertFalse(updated.json()["rule"]["enabled"])
         removed = self.client.delete(f"/api/admin/tracking/rules/{rule_id}", auth=self.basic_auth)
         self.assertEqual(removed.status_code, 200, removed.text)
+
+    def test_encrypted_project_export_import(self):
+        response = self.client.post("/api/admin/projects/export", auth=self.basic_auth, json={"name":"Encrypted test", "passphrase":"Ab12Cd34"})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        upload = {"file": ("test.vaosproject", response.content, "application/octet-stream")}
+        wrong = self.client.post("/api/admin/projects/import", auth=self.basic_auth, files=upload, data={"passphrase":"Ab12Cd35"})
+        self.assertEqual(wrong.status_code, 400)
+        preview = self.client.post("/api/admin/projects/import?dry_run=true", auth=self.basic_auth, files=upload, data={"passphrase":"Ab12Cd34"})
+        self.assertEqual(preview.status_code, 200, preview.text)
+        self.assertFalse(preview.json()["saved"])
+        saved = self.client.post("/api/admin/projects/import?dry_run=false", auth=self.basic_auth, files=upload, data={"passphrase":"Ab12Cd34"})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertTrue(saved.json()["saved"])
+        review = self.client.get("/api/admin/projects/"+saved.json()["bundle_id"], auth=self.basic_auth)
+        self.assertEqual(review.status_code, 200, review.text)
+        invalid = self.client.post("/api/admin/projects/export", auth=self.basic_auth, json={"passphrase":"bad"})
+        self.assertEqual(invalid.status_code, 400)
+
+    def test_training_status_refresh_setting_is_persisted_and_bounded(self):
+        for value in (1, 5, 10):
+            response = self.client.post("/api/admin/engine-settings", auth=self.basic_auth, json={"training_status_refresh_seconds":value})
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["settings"]["training_status_refresh_seconds"], value)
+        for value in (0, 11):
+            response = self.client.post("/api/admin/engine-settings", auth=self.basic_auth, json={"training_status_refresh_seconds":value})
+            self.assertEqual(response.status_code, 400)
 
     def test_project_bundle_group_and_mcp_import_approval(self):
         self.save_integrations(api_enabled=True, mcp_enabled=True, mcp_read_only=False,

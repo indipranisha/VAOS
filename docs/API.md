@@ -174,9 +174,9 @@ Dataset preparation/import can consume substantial disk, CPU, and time. Training
 | Method | Versioned path | Purpose |
 | --- | --- | --- |
 | `GET` | `/admin/projects` | List saved configuration-only project bundles. |
-| `GET` | `/admin/projects/export?name=...` | Download allowlisted engine settings and local dataset/model names as `.vaosproject`. |
+| `POST` | `/admin/projects/export` | JSON `{name, passphrase}`; download encrypted `.vaosproject`. Passphrase must be exactly 8 ASCII letters/digits. |
 | `GET` | `/admin/projects/{bundle_id}` | Review a saved bundle and check which referenced dataset/model IDs are available locally. |
-| `POST` | `/admin/projects/import?dry_run=true` | Validate and preview a multipart `.vaosproject` upload without writing it. |
+| `POST` | `/admin/projects/import?dry_run=true` | Validate and preview a multipart encrypted `.vaosproject` upload (`file` and `passphrase` fields) without writing it. |
 | `POST` | `/admin/projects/import?dry_run=false` | Save the validated configuration archive locally without applying its settings. |
 | `POST` | `/admin/projects/{bundle_id}/apply` | Apply only reviewed engine settings after `{ "confirm": true }`. |
 | `DELETE` | `/admin/projects/{bundle_id}` | Remove the saved archive; it does not delete referenced datasets or model weights. |

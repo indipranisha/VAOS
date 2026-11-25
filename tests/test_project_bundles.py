@@ -5,7 +5,7 @@ import json
 import unittest
 import zipfile
 
-from project_bundles import BundleError, build_bundle, inspect_bundle
+from project_bundles import BundleError, build_bundle, inspect_bundle, encrypt_bundle, decrypt_bundle, ENVELOPE_MAGIC
 
 
 def sample_project():
@@ -21,6 +21,7 @@ def sample_project():
             "event_cooldown_seconds": 60,
             "object_image_size": 512,
             "camera_frame_interval_ms": 500,
+            "training_status_refresh_seconds": 5,
             "camera_max_dimension": 640,
         },
         "dataset_refs": [{"id": "uvh26", "name": "UVH-26", "format": "YOLO detection", "train_count": 120, "val_count": 30, "class_count": 14}],
@@ -85,3 +86,27 @@ class ProjectBundleTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EncryptedBundleTests(unittest.TestCase):
+    def setUp(self):
+        self.archive, _ = build_bundle(sample_project(), app_version="1.2.10", created_at="2026-11-25")
+
+    def test_roundtrip_and_randomized_encryption(self):
+        first = encrypt_bundle(self.archive, "Ab12Cd34")
+        second = encrypt_bundle(self.archive, "Ab12Cd34")
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.startswith(ENVELOPE_MAGIC))
+        self.assertEqual(decrypt_bundle(first, "Ab12Cd34"), self.archive)
+        self.assertNotIn(b"Road scene review", first)
+
+    def test_wrong_key_tamper_and_plaintext_rejected(self):
+        sealed = encrypt_bundle(self.archive, "Ab12Cd34")
+        for data, key in [(sealed, "Ab12Cd35"), (sealed[:-8] + b"AAAAAAAA", "Ab12Cd34"), (self.archive, "Ab12Cd34"), (ENVELOPE_MAGIC+b"!", "Ab12Cd34")]:
+            with self.assertRaises(BundleError):
+                decrypt_bundle(data, key)
+
+    def test_exact_ascii_passphrase_required(self):
+        for key in ["", "abcdefg", "abcdefghi", "abcd!234", "ébcdef12", None]:
+            with self.assertRaises(BundleError):
+                encrypt_bundle(self.archive, key)

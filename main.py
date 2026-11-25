@@ -40,7 +40,7 @@ from hardware_intelligence import build_hardware_report
 import observability_store
 import observability_reports
 import observability_siem
-from project_bundles import BundleError, build_bundle, inspect_bundle
+from project_bundles import BundleError, build_bundle, inspect_bundle, encrypt_bundle, decrypt_bundle, MAX_ENCRYPTED_BYTES
 from project_metadata import PROJECT_METADATA, load_project_metadata
 from release_updates import check_release
 from runtime_compat import available_cpu_threads, default_datasets_dir, mps_is_available, resolve_inference_backend, resolve_training_device, training_resource_profile
@@ -101,7 +101,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.2.6"
+APP_VERSION = "1.2.18"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 LOCAL_WINDOWS_LAUNCHER = os.name == "nt"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
@@ -124,6 +124,7 @@ ENGINE_SETTING_DEFAULTS = {
     "object_confidence": "0.25",
     "object_image_size": "512",
     "camera_frame_interval_ms": "500",
+    "training_status_refresh_seconds": "5",
     "camera_max_dimension": "640",
 }
 MAX_IMAGE_BYTES = 6 * 1024 * 1024
@@ -1815,6 +1816,7 @@ def get_engine_settings() -> dict[str, Any]:
             "object_confidence": min(0.95, max(0.05, float(values["object_confidence"]))),
             "object_image_size": int(values["object_image_size"]) if int(values["object_image_size"]) in {320, 416, 512, 640, 768} else 512,
             "camera_frame_interval_ms": int(values["camera_frame_interval_ms"]) if int(values["camera_frame_interval_ms"]) in {250, 500, 750, 1000, 1500} else 500,
+            "training_status_refresh_seconds": min(10, max(1, int(values["training_status_refresh_seconds"]))),
             "camera_max_dimension": int(values["camera_max_dimension"]) if int(values["camera_max_dimension"]) in {480, 640, 800, 960, 1280} else 640,
         }
     except (KeyError, TypeError, ValueError):
@@ -2260,11 +2262,11 @@ def get_object_detector():
 
 class YOLO26Runtime:
     """YOLO object detector using CUDA, Apple MPS, or CPU with safe fallback."""
-    def __init__(self, model_path: str):
+    def __init__(self, model_path: str, device_override: str | None = None):
         import torch
         from ultralytics import YOLO
 
-        selected = resolve_inference_backend(torch, os.getenv("OBJECT_DETECTOR_DEVICE", "auto"))
+        selected = resolve_inference_backend(torch, device_override or os.getenv("OBJECT_DETECTOR_DEVICE", "auto"))
         self.device_kind = str(selected["backend"])
         self.use_cuda = self.device_kind == "cuda"
         self.use_mps = self.device_kind == "mps"
@@ -2570,17 +2572,37 @@ def process_frame(token: str, content: bytes) -> dict[str, Any]:
     }
 
 
-def process_video_review_frame(token: str, content: bytes, source_time_seconds: float, save_samples: bool) -> dict[str, Any]:
+video_cpu_detector = None
+
+
+def process_video_review_frame(token: str, content: bytes, source_time_seconds: float, save_samples: bool, analysis_device: str = "auto") -> dict[str, Any]:
     """Detect objects in a browser-decoded local video frame and optionally queue crops for review."""
     image = decode_image(content)
     engine_settings = get_engine_settings()
     if not engine_settings["object_detection_enabled"]:
         raise RuntimeError("Object detection is turned off in Settings. Enable it, then retry.")
     with recognition_lock:
-        detector = get_object_detector()
+        global video_cpu_detector
+        if analysis_device == "cpu":
+            model_path = str(selected_object_model_path())
+            stamp = (model_path, Path(model_path).stat().st_mtime_ns)
+            if video_cpu_detector is None or video_cpu_detector[0] != stamp:
+                video_cpu_detector = (stamp, YOLO26Runtime(model_path, device_override="cpu"))
+            detector = video_cpu_detector[1]
+        else:
+            detector = get_object_detector()
         if detector is None:
             raise RuntimeError("The object detector is not ready. Check Model details and retry.")
-        objects = detector.infer(image, confidence=engine_settings["object_confidence"], image_size=engine_settings["object_image_size"])
+        if analysis_device == "cpu":
+            import torch
+            previous_threads = torch.get_num_threads()
+            try:
+                torch.set_num_threads(available_cpu_threads())
+                objects = detector.infer(image, confidence=engine_settings["object_confidence"], image_size=engine_settings["object_image_size"])
+            finally:
+                torch.set_num_threads(previous_threads)
+        else:
+            objects = detector.infer(image, confidence=engine_settings["object_confidence"], image_size=engine_settings["object_image_size"])
 
     with db_connection() as db:
         remaining = max(0, MAX_ML_SAMPLES - int(db.execute("SELECT COUNT(*) FROM ml_samples").fetchone()[0])) if save_samples else 0
@@ -3826,6 +3848,11 @@ def update_engine_settings(payload: dict[str, Any], _: str = Depends(require_adm
             if not 15 <= value <= 3600:
                 raise ValueError("Event cooldown must be between 15 and 3,600 seconds")
             updates["event_cooldown_seconds"] = str(value)
+        if "training_status_refresh_seconds" in payload:
+            value = int(payload["training_status_refresh_seconds"])
+            if not 1 <= value <= 10:
+                raise ValueError("Training status refresh interval must be between 1 and 10 seconds")
+            updates["training_status_refresh_seconds"] = str(value)
         for key, allowed in enum_values.items():
             if key in payload:
                 value = int(payload[key])
@@ -5413,7 +5440,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
     label_filter = " AND lower(COALESCE(s.confirmed_label,s.suggested_label))=lower(?)" if label else ""
     label_params = (label,) if label else ()
     with db_connection() as db:
-        rows = db.execute("SELECT s.id,s.created_at,s.suggested_label,s.confidence,s.review_state,s.confirmed_label,s.source_time_seconds,COALESCE(s.confirmed_label,s.suggested_label) AS review_label,c.name AS camera_name FROM ml_samples s JOIN cameras c ON c.token=s.camera_token WHERE s.review_state IN ('pending','later')" + label_filter + " ORDER BY COALESCE(s.confirmed_label,s.suggested_label) COLLATE NOCASE,s.id DESC LIMIT ? OFFSET ?", (*label_params, limit, offset)).fetchall()
+        rows = db.execute("SELECT s.id,s.created_at,s.suggested_label,s.bbox,s.confidence,s.review_state,s.confirmed_label,s.source_time_seconds,COALESCE(s.confirmed_label,s.suggested_label) AS review_label,c.name AS camera_name FROM ml_samples s JOIN cameras c ON c.token=s.camera_token WHERE s.review_state IN ('pending','later')" + label_filter + " ORDER BY COALESCE(s.confirmed_label,s.suggested_label) COLLATE NOCASE,s.id DESC LIMIT ? OFFSET ?", (*label_params, limit, offset)).fetchall()
         totals = db.execute("SELECT review_state,COUNT(*) AS n FROM ml_samples GROUP BY review_state").fetchall()
         reviewable_class_counts = db.execute("SELECT COALESCE(confirmed_label,suggested_label) AS label,COUNT(*) AS n FROM ml_samples WHERE review_state IN ('pending','later') AND COALESCE(confirmed_label,suggested_label) IS NOT NULL GROUP BY COALESCE(confirmed_label,suggested_label) ORDER BY label COLLATE NOCASE").fetchall()
         filtered_reviewable_total = int(db.execute("SELECT COUNT(*) FROM ml_samples s WHERE s.review_state IN ('pending','later')" + label_filter, label_params).fetchone()[0])
@@ -6628,8 +6655,11 @@ def list_project_bundles(_: str = Depends(require_admin)) -> dict[str, Any]:
     return {"bundles": bundles, "count": len(bundles), "storage_note": "Bundles store settings and local resource names only; private records, images, credentials, model weights, and executable files are excluded."}
 
 
-@app.get("/api/admin/projects/export")
-def export_project_bundle(name: str = "VAOS project", _: str = Depends(require_admin)) -> Response:
+@app.post("/api/admin/projects/export")
+def export_project_bundle(payload: dict[str, Any], _: str = Depends(require_admin)) -> Response:
+    name = payload.get("name", "VAOS project")
+    if not isinstance(name, str):
+        raise HTTPException(status_code=400, detail="Bundle name must be text.")
     imports = load_public_dataset_imports()
     dataset_refs = []
     for dataset_id, item in imports.items():
@@ -6645,10 +6675,11 @@ def export_project_bundle(name: str = "VAOS project", _: str = Depends(require_a
     model_refs = [{"id": str(item["id"]), "name": str(item["name"]), "kind": str(item["kind"])} for item in list_ml_model_sources("admin").get("sources", [])]
     try:
         content, manifest = build_bundle({"name": name.strip() or "VAOS project", "description": "VAOS engine configuration and local dataset/model references.", "engine_settings": get_engine_settings(), "dataset_refs": dataset_refs[:100], "model_refs": model_refs[:100]}, app_version=APP_VERSION, created_at=utc_now())
+        content = encrypt_bundle(content, payload.get("passphrase", ""))
     except (BundleError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     safe_name = "".join(char for char in name.casefold() if char.isalnum() or char in "-_ ").strip().replace(" ", "-")[:48] or "vaos-project"
-    return Response(content=content, media_type="application/vnd.vaos.project+zip", headers={"Content-Disposition": f'attachment; filename="{safe_name}.vaosproject"', "X-VAOS-Project-SHA256": manifest["project_sha256"]})
+    return Response(content=content, media_type="application/vnd.vaos.project+encrypted", headers={"Cache-Control": "no-store", "Content-Disposition": f'attachment; filename="{safe_name}.vaosproject"', "X-VAOS-Project-SHA256": manifest["project_sha256"]})
 
 
 @app.get("/api/admin/projects/{bundle_id}")
@@ -6670,11 +6701,10 @@ def get_project_bundle(bundle_id: str, _: str = Depends(require_admin)) -> dict[
 
 
 @app.post("/api/admin/projects/import")
-async def import_project_bundle(file: UploadFile = File(...), dry_run: bool = True, _: str = Depends(require_admin)) -> dict[str, Any]:
+async def import_project_bundle(file: UploadFile = File(...), passphrase: str = Form(...), dry_run: bool = True, _: str = Depends(require_admin)) -> dict[str, Any]:
     try:
-        content = await file.read(2 * 1024 * 1024 + 1)
-        if len(content) > 2 * 1024 * 1024:
-            raise BundleError("Choose a VAOS project bundle no larger than 2 MB.")
+        content = await file.read(MAX_ENCRYPTED_BYTES + 1)
+        content = await run_in_threadpool(decrypt_bundle, content, passphrase)
         inspected = inspect_bundle(content)
     except BundleError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -6928,9 +6958,20 @@ def stop_ml_training(_: str = Depends(require_admin)):
     return {"status": "stopping", "message": ml_training_state["message"]}
 
 
+def video_training_blocks(device: str) -> bool:
+    active = ml_training_lock.locked() or ml_training_state.get("status") in {"preparing", "running", "stopping"}
+    accelerator = any(word in str(ml_training_state.get("device", "")).lower() for word in ("gpu", "cuda", "mps"))
+    return bool(active and not (device == "cpu" and accelerator and ml_training_state.get("status") == "running"))
+
+
+@app.get("/api/admin/video-review/availability", include_in_schema=False)
+def video_review_availability(_: str = Depends(require_admin)):
+    return {"cpu_available": not video_training_blocks("cpu")}
+
+
 @app.post("/api/admin/video-review/sessions")
 def create_video_review_session(payload: dict[str, Any], _: str = Depends(require_admin)):
-    if ml_training_lock.locked() or ml_training_state.get("status") in {"preparing", "running", "stopping"}:
+    if video_training_blocks(str(payload.get("analysis_device", "auto"))):
         raise HTTPException(status_code=409, detail="Video analysis is paused while model training is active so it does not compete for GPU or CPU resources.")
     if str(payload.get("source_type", "")) != "local_video":
         raise HTTPException(status_code=400, detail="For automated analysis, choose a local video file that you have permission to use.")
@@ -6947,7 +6988,7 @@ def create_video_review_session(payload: dict[str, Any], _: str = Depends(requir
 
 @app.post("/api/admin/video-review/sessions/{session_id}/frame")
 async def analyze_video_review_frame(session_id: str, request: Request, _: str = Depends(require_admin)):
-    if ml_training_lock.locked() or ml_training_state.get("status") in {"preparing", "running", "stopping"}:
+    if video_training_blocks(request.headers.get("x-analysis-device", "auto")):
         raise HTTPException(status_code=409, detail="Video analysis paused because model training is active.")
     with db_connection() as db:
         session = db.execute("SELECT token FROM cameras WHERE token=? AND source_type='local_video'", (session_id,)).fetchone()
@@ -6965,7 +7006,10 @@ async def analyze_video_review_frame(session_id: str, request: Request, _: str =
     frame_processing_started = time.perf_counter()
     try:
         save_samples = request.headers.get("x-save-samples", "1") == "1"
-        result = await run_in_threadpool(process_video_review_frame, session_id, content, source_time, save_samples)
+        analysis_device = request.headers.get("x-analysis-device", "auto")
+        if analysis_device not in {"auto", "cpu"}:
+            raise ValueError("Choose automatic or CPU video analysis.")
+        result = await run_in_threadpool(process_video_review_frame, session_id, content, source_time, save_samples, analysis_device)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except RuntimeError as exc:

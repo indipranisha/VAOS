@@ -41,3 +41,5 @@ See [creator and community credits](CREDITS.md) for the creator's role and profi
 - [License](../LICENSE) and [creator citation](../CITATION.cff)
 
 This documentation describes the source tree and marks untested or incomplete behavior explicitly. It is not evidence that every feature has been released or tested on a live camera or GPU.
+
+Current documentation release: **1.2.18**. See the main documentation index and release knowledgebase for current product behavior. Historical validation records retain their original versions.

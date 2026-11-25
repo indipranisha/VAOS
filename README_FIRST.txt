@@ -1,12 +1,12 @@
 START HERE
 ==========
-VAOS 1.0.0 — Video Analytics Operating System
+VAOS 1.2.18 — Video Analytics Operating System
 
 1. Extract the folder.
 2. Install Python 3.12 if needed (python.org; enable Add Python to PATH).
 3. Double-click start_windows.bat.
 4. Open http://127.0.0.1:8000 on the PC (private dashboard).
-5. Use username admin. The five-digit numeric password is printed in the terminal, saved in data\admin_password.txt, and shown at the top of the private dashboard after sign-in.
+5. Use username admin. Use the password in data\admin_password.txt or the configured environment credential. Staging uses its documented fixed credential.
 6. The first setup installs the NVIDIA CUDA runtime on GPU systems and downloads YOLO26m automatically when object detection first runs. The dashboard can enroll from a photo or its live camera.
 7. The launcher creates the HTTPS camera-only tunnel and opens the dashboard. Keep the launcher window open; press Enter there to stop all services.
 8. The dashboard shows camera health, model status, object activity, enrolled profiles, and sightings. Object detection uses NVIDIA GPU 0 when available, with CPU fallback.
@@ -14,3 +14,5 @@ VAOS 1.0.0 — Video Analytics Operating System
 
 Face templates and profile photos are sensitive biometric data. Use only with informed consent and appropriate authorization. See README.md for production deployment, privacy and operations guidance.
 
+
+Current release guide: docs/KNOWLEDGEBASE.md and docs/RELEASE_NOTES_1.2.18.md.

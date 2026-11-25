@@ -16,6 +16,8 @@
   let sessionId;
   let activeRun;
   let trainingActive = false;
+  let cpuAvailable = false;
+  const trainingBlocked = () => trainingActive && !(byId("video-analysis-device").value === "cpu" && cpuAvailable);
   let detectorEnabled = true;
   let detectorStatus = "Checking detector";
   let queueCount = 0;
@@ -45,12 +47,13 @@
 
   function updateControls() {
     const ready = videoReady();
-    startButton.disabled = !ready || Boolean(activeRun) || trainingActive || !detectorEnabled;
+    startButton.disabled = !ready || Boolean(activeRun) || trainingBlocked() || !detectorEnabled;
     stopButton.disabled = !activeRun;
     filePicker.disabled = Boolean(activeRun);
+    byId("video-analysis-device").disabled = Boolean(activeRun);
     byId("local-video-state").textContent = ready ? "Video ready" : file?.name || "No file selected";
     let note = "Select a local video file to enable analysis.";
-    if (trainingActive) note = "Analysis is available when model training finishes.";
+    if (trainingBlocked()) note = "Analysis is available when model training finishes.";
     else if (!detectorEnabled) note = "Turn on object detection in Settings to enable analysis.";
     else if (ready) note = "Choose a speed and sampling interval.";
     else if (video.error || (file && video.readyState >= HTMLMediaElement.HAVE_METADATA)) {
@@ -65,10 +68,12 @@
     try {
       const status = await videoApi("/api/admin/status");
       trainingActive = activeTraining.has(status.services?.training);
+      cpuAvailable = !trainingActive;
+      if (trainingActive) cpuAvailable = (await videoApi("/api/admin/video-review/availability")).cpu_available === true;
       detectorEnabled = status.services?.object_detection !== "stopped";
-      detectorStatus = trainingActive ? "Training active · video paused" :
+      detectorStatus = trainingBlocked() ? "Training active · video paused" :
         !detectorEnabled ? "Object detection is off" : "Object detection enabled";
-      if (activeRun && (trainingActive || !detectorEnabled)) {
+      if (activeRun && (trainingBlocked() || !detectorEnabled)) {
         stopAnalysis(
           trainingActive ? "Analysis paused while model training is active." :
             "Object detection was turned off. Enable it in Settings and try again.",
@@ -178,7 +183,7 @@
         const session = await videoApi("/api/admin/video-review/sessions", {
           method: "POST", signal,
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ source_type: "local_video", file_name: file.name })
+          body: JSON.stringify({ source_type: "local_video", file_name: file.name, analysis_device: byId("video-analysis-device").value })
         });
         if (run !== activeRun) return;
         sessionId = session.session_id;
@@ -186,7 +191,7 @@
       const saveSamples = byId("save-video-samples").checked;
       const result = await videoApi("/api/admin/video-review/sessions/" + encodeURIComponent(sessionId) + "/frame", {
         method: "POST", signal, body: blob,
-        headers: { "Content-Type": "image/jpeg", "X-Video-Time": String(sourceTime), "X-Save-Samples": saveSamples ? "1" : "0" }
+        headers: { "Content-Type": "image/jpeg", "X-Video-Time": String(sourceTime), "X-Save-Samples": saveSamples ? "1" : "0", "X-Analysis-Device": byId("video-analysis-device").value }
       });
       if (run !== activeRun) return;
       const saved = Number(result.samples_saved || 0);
@@ -227,6 +232,11 @@
     }
     if (video.paused || video.seeking || video.readyState < HTMLMediaElement.HAVE_CURRENT_DATA) return;
     const interval = Number(byId("video-sample-interval").value);
+    const speed = Number(byId("local-video-speed").value);
+    if (speed > 16 && run.lastSampleTime !== null && video.currentTime - run.lastSampleTime < interval) {
+      video.currentTime = Math.min(video.duration, video.currentTime + (speed - 16) * 0.1);
+      return;
+    }
     if (run.lastSampleTime === null || video.currentTime < run.lastSampleTime ||
         video.currentTime - run.lastSampleTime >= interval) {
       void analyzeFrame(run);
@@ -242,9 +252,9 @@
     activeRun = run;
     updateCounts(run);
     video.currentTime = 0;
-    video.playbackRate = Number(byId("local-video-speed").value);
+    video.playbackRate = Math.min(16, Number(byId("local-video-speed").value));
     updateControls();
-    byId("video-progress-state").textContent = "Analyzing at " + video.playbackRate + "×";
+    byId("video-progress-state").textContent = "Analyzing at " + byId("local-video-speed").value + "×";
     showMessage("Waiting for the first sampled frame…");
     try {
       await video.play();
@@ -298,9 +308,10 @@
     if (activeRun && !activeRun.busy) finishAnalysis(activeRun);
   });
   byId("local-video-speed").addEventListener("change", event => {
-    video.playbackRate = Number(event.target.value);
-    if (activeRun) byId("video-progress-state").textContent = "Analyzing at " + video.playbackRate + "×";
+    video.playbackRate = Math.min(16, Number(event.target.value));
+    if (activeRun) byId("video-progress-state").textContent = "Analyzing at " + byId("local-video-speed").value + "×";
   });
+  byId("video-analysis-device").addEventListener("change", updateControls);
   startButton.addEventListener("click", startAnalysis);
   stopButton.addEventListener("click", () => stopAnalysis("Analysis stopped. Saved crops remain in Review detections."));
 

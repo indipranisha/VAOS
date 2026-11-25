@@ -25,7 +25,7 @@
         <div class="section-title-row"><div><h3>Choose a local video</h3></div><span id="local-video-state" class="subtle-tag">No file selected</span></div>
         <label class="video-file-picker" for="local-video-file"><span class="video-file-icon" aria-hidden="true">▣</span><span><strong>Select video file</strong><small>Choose an MP4 (H.264), WebM, or another file your browser can play.</small></span><input id="local-video-file" type="file" accept="video/*,.mp4,.webm,.mov,.m4v,.avi,.mkv"></label>
         <video id="local-video" class="local-video-player" controls playsinline preload="auto"></video>
-        <div class="video-playback-controls"><label for="local-video-speed">Playback</label><select id="local-video-speed"><option value="1">1×</option><option value="2" selected>2× fast</option><option value="4">4× fast</option></select><label for="video-sample-interval">Sample every</label><select id="video-sample-interval"><option value="1">1 video second</option><option value="2" selected>2 video seconds</option><option value="5">5 video seconds</option><option value="10">10 video seconds</option></select><label class="video-capture-toggle"><input id="save-video-samples" type="checkbox" checked><span>Save detected crops for review</span></label></div>
+        <div class="video-playback-controls"><label for="video-analysis-device">Analysis device</label><select id="video-analysis-device"><option value="auto">Automatic accelerator</option><option value="cpu">CPU · all available threads</option></select><label for="local-video-speed">Playback</label><select id="local-video-speed"><option value="1">1×</option><option value="2" selected>2× fast</option><option value="4">4× fast</option><option value="8">8× fast</option><option value="16">16× fast</option><option value="32">32× scan</option><option value="64">64× scan</option></select><label for="video-sample-interval">Sample every</label><select id="video-sample-interval"><option value="1">1 video second</option><option value="2" selected>2 video seconds</option><option value="5">5 video seconds</option><option value="10">10 video seconds</option></select><label class="video-capture-toggle"><input id="save-video-samples" type="checkbox" checked><span>Save detected crops for review</span></label></div>
         <div class="video-actions"><button id="start-video-analysis" class="button button-primary" type="button" aria-describedby="video-speed-note" disabled>Start fast analysis</button><button id="stop-video-analysis" class="button button-danger" type="button" disabled>Stop analysis</button><span id="video-speed-note" class="helper" role="status">Select a local video file to enable analysis.</span></div>
         <div class="video-progress"><div class="video-progress-label"><strong id="video-progress-state">Waiting for video</strong><span id="video-time-label">— / —</span></div><progress id="video-progress-bar" max="100" value="0"></progress></div>
         <p id="video-analysis-message" class="result-box" role="status" aria-live="polite">Choose a local video. VAOS will sample it by video time and pause briefly while each frame is analyzed.</p>
@@ -38,10 +38,10 @@
         <a class="button button-secondary video-review-link" href="/training#review-detections">Open Review detections ↗</a>
       </section>
     </div>
-    <p class="footer-note">Analysis pauses during model training. Your browser sends sampled frames to VAOS for detection. VAOS saves only detection crops when sampling is enabled.</p>
+    <p class="footer-note">CPU mode uses all available inference threads; actual utilization depends on decoding and model workload. 32×/64× use fast seeking, skip frames and may miss brief objects. CPU analysis can run alongside GPU training; both share memory and may slow each other down. Analysis pauses during CPU training and model preparation. Your browser sends sampled frames to VAOS for detection. VAOS saves only detection crops when sampling is enabled.</p>
       {% include "_creator_attribution.html" %}
   </main>
 
-<script defer src="/static/video_review.js?v=4"></script>
+<script defer src="/static/video_review.js?v=6"></script>
 </body>
 </html>

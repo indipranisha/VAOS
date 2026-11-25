@@ -38,6 +38,7 @@ ENGINE_INTEGER_SETTINGS = {
     "object_image_size": {"values": {320, 416, 512, 640, 768}},
     "camera_frame_interval_ms": {"values": {250, 500, 750, 1000, 1500}},
     "camera_max_dimension": {"values": {480, 640, 800, 960, 1280}},
+    "training_status_refresh_seconds": {"min": 1, "max": 10},
 }
 ENGINE_SETTING_KEYS = ENGINE_BOOLEAN_SETTINGS | set(ENGINE_NUMERIC_SETTINGS) | set(ENGINE_INTEGER_SETTINGS)
 
@@ -215,3 +216,50 @@ def inspect_bundle(data: bytes) -> dict[str, Any]:
         "project_sha256": manifest["project_sha256"],
     }
     return {"manifest": manifest, "project": validate_project(raw_project_value), "archive_sha256": hashlib.sha256(data).hexdigest()}
+
+
+# VAOS envelope v1: fixed parameters prevent untrusted KDF resource requests.
+ENVELOPE_MAGIC = b"VAOS-SEALED-1\n"
+MAX_ENCRYPTED_BYTES = 3 * 1024 * 1024
+
+
+def validate_passphrase(passphrase: str) -> None:
+    if not isinstance(passphrase, str) or not re.fullmatch(r"[A-Za-z0-9]{8}", passphrase):
+        raise BundleError("Enter exactly 8 alphanumeric characters (A–Z, a–z, 0–9).")
+
+
+def _bundle_key(passphrase: str, salt: bytes) -> bytes:
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    return Scrypt(salt=salt, length=32, n=32768, r=8, p=1).derive(passphrase.encode("ascii"))
+
+
+def encrypt_bundle(data: bytes, passphrase: str) -> bytes:
+    """Seal the validated ZIP in a versioned, base64-encoded AES-256-GCM envelope."""
+    import base64
+    import os
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    validate_passphrase(passphrase)
+    inspect_bundle(data)
+    salt, nonce = os.urandom(16), os.urandom(12)
+    ciphertext = AESGCM(_bundle_key(passphrase, salt)).encrypt(nonce, data, ENVELOPE_MAGIC)
+    return ENVELOPE_MAGIC + base64.b64encode(salt + nonce + ciphertext)
+
+
+def decrypt_bundle(data: bytes, passphrase: str) -> bytes:
+    """Authenticate before parsing; never fall back to an unencrypted upload."""
+    import base64
+    import binascii
+    from cryptography.exceptions import InvalidTag
+    from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+    validate_passphrase(passphrase)
+    if len(data) > MAX_ENCRYPTED_BYTES or not data.startswith(ENVELOPE_MAGIC):
+        raise BundleError("Choose an encrypted VAOS bundle exported by this version. Legacy ZIP uploads are not supported.")
+    try:
+        raw = base64.b64decode(data[len(ENVELOPE_MAGIC):], validate=True)
+        if len(raw) < 45 or len(raw) > MAX_ARCHIVE_BYTES + 44:
+            raise ValueError("Invalid envelope size")
+        plaintext = AESGCM(_bundle_key(passphrase, raw[:16])).decrypt(raw[16:28], raw[28:], ENVELOPE_MAGIC)
+    except (InvalidTag, ValueError, binascii.Error) as exc:
+        raise BundleError("Could not unlock bundle: incorrect passphrase or damaged file.") from exc
+    inspect_bundle(plaintext)
+    return plaintext

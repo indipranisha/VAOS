@@ -1,4 +1,4 @@
-# VAOS 1.2.6
+# VAOS 1.2.18
 
 **VAOS — Video Analytics Operating System** is a self-hosted video analytics application. Camera processing, face templates, reviewed samples, model files and event records are stored on the VAOS host.
 
@@ -122,3 +122,5 @@ For staging, launch with `VAOS_ENV=staging ./.venv/bin/python start_vaos.py --da
 ### Software update checks
 
 VAOS checks published stable GitHub releases and shows a dismissible update notice. About includes release notes, issue reporting and a manual check. Installation remains manual in this first stage. See [software update behavior](docs/SOFTWARE_UPDATES.md) for offline handling, opt-out and safe upgrade guidance.
+
+Current documentation release: **1.2.18**. See [knowledgebase](docs/KNOWLEDGEBASE.md) and [release notes](docs/RELEASE_NOTES_1.2.18.md).

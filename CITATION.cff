@@ -1,7 +1,7 @@
-cff-version: 1.2.6
+cff-version: 1.2.18
 message: "If you use VAOS in research, please cite the project and retain its license notices."
 title: "VAOS — Video Analytics Operating System"
-version: 1.2.6
+version: 1.2.18
 license: AGPL-3.0-only
 repository-code: "https://github.com/indipranisha/VAOS"
 url: "https://prateekdubey.in"

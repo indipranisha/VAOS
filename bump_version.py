@@ -16,7 +16,9 @@ def set_version(version: str) -> None:
     previous = metadata['version']
     # Keep current version consumers synchronized; historical release notes stay intact.
     for name in ('VAOS_PROJECT_METADATA.json', 'project_metadata.py', 'pyproject.toml',
-                 'CITATION.cff', 'main.py', 'vaos_cli.py', 'observability_siem.py'):
+                 'CITATION.cff', 'main.py', 'vaos_cli.py', 'observability_siem.py',
+                 'README_FIRST.txt', 'docs/README.md', 'docs/KNOWLEDGEBASE.md',
+                 'tests/fixtures/README.md'):
         path = ROOT / name
         data = path.read_bytes()
         path.write_bytes(data.replace(previous.encode(), version.encode()))

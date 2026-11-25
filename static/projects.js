@@ -46,7 +46,12 @@
     status.textContent = 'Preparing a configuration-only bundle…';
     try {
       const name = $('project-export-name').value.trim() || 'VAOS project';
-      const response = await fetch(`/api/admin/projects/export?name=${encodeURIComponent(name)}`, {credentials:'same-origin'});
+      const passphrase = $('project-export-passphrase').value;
+      if (!/^[A-Za-z0-9]{8}$/.test(passphrase)) throw new Error('Enter exactly 8 letters or digits for the passphrase.');
+      const response = await fetch('/api/admin/projects/export', {method:'POST', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name, passphrase})});
+      if (response.status === 405) {
+        throw new Error('The running VAOS service has not loaded encrypted export yet. After training finishes, restart VAOS and refresh this page. No bundle was exported.');
+      }
       if (!response.ok) {
         let message = `Request failed (${response.status})`;
         try { const body = await response.json(); message = body.detail || message; } catch (_) {}
@@ -58,7 +63,8 @@
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      status.textContent = 'Bundle downloaded. It contains settings and local resource names only.';
+      $('project-export-passphrase').value = '';
+      status.textContent = 'Encrypted bundle downloaded. It contains settings and local resource names only.';
     } catch (error) { status.textContent = `Export failed: ${error.message}`; }
   });
 
@@ -72,7 +78,7 @@
     status.textContent = 'Checking the bundle without changing settings…';
     save.disabled = true; save.classList.add('hidden'); preview.classList.add('hidden'); previewFile = null;
     try {
-      const form = new FormData(); form.append('file', file, file.name);
+      const form = new FormData(); form.append('file', file, file.name); form.append('passphrase', $('project-import-passphrase').value);
       const result = await request('/api/admin/projects/import?dry_run=true', {method:'POST', body:form});
       preview.innerHTML = summarizePreview(result.preview);
       preview.classList.remove('hidden');
@@ -84,7 +90,7 @@
   $('project-save-import')?.addEventListener('click', async () => {
     if (!previewFile) return;
     const status = $('project-import-status');
-    const form = new FormData(); form.append('file', previewFile, previewFile.name);
+    const form = new FormData(); form.append('file', previewFile, previewFile.name); form.append('passphrase', $('project-import-passphrase').value);
     status.textContent = 'Saving the reviewed configuration bundle…';
     try {
       const result = await request('/api/admin/projects/import?dry_run=false', {method:'POST', body:form});
@@ -93,6 +99,10 @@
       $('project-import-form').reset(); await refreshBundles();
     } catch (error) { status.textContent = `Bundle was not saved: ${error.message}`; }
   });
+
+  for (const id of ['project-file', 'project-import-passphrase']) {
+    $(id).addEventListener('input', () => { previewFile = null; $('project-save-import').disabled = true; $('project-save-import').classList.add('hidden'); $('project-preview').classList.add('hidden'); });
+  }
 
   $('project-refresh')?.addEventListener('click', refreshBundles);
   $('project-list')?.addEventListener('click', async (event) => {
