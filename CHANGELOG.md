@@ -2,6 +2,13 @@
 
 This file records work in the current source tree. It does not imply a tagged release or that the running services have loaded these changes.
 
+## v1.3.3 — stable · 2026-11-26
+
+- Renamed the full-width detector training card to **ML TRAINING**.
+- Released Daksh-AI engine controls, supervision, calibration/history learning and API/MCP contracts, plus the dedicated Detection workflow.
+- Synchronized stable version metadata and refreshed guides, FRS/SRS, release notes and wiki.
+- See [release notes](docs/RELEASE_NOTES_1.3.3.md) and [validation](docs/VALIDATION_1.3.3.md) for upgrade instructions and evidence limits.
+
 ## v1.2.6 — 2026-11-24
 
 - Reviewed-sample class distribution now opens in a searchable modal with CSV/JSON exports, separate model counts, explicit refresh and unavailable states.

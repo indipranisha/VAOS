@@ -40,6 +40,10 @@ from hardware_intelligence import build_hardware_report
 import observability_store
 import observability_reports
 import observability_siem
+from daksh_ai import Daksh, DakshError
+from daksh_runtime import Runtime as DakshRuntime, host_snapshot as daksh_host, digest_file as daksh_digest
+from daksh_worker import signature as daksh_signature
+from daksh_schemas import Preflight as DakshPreflight, JobRequest as DakshJobRequest, ScheduleRequest as DakshScheduleRequest
 from project_bundles import BundleError, build_bundle, inspect_bundle, encrypt_bundle, decrypt_bundle, MAX_ENCRYPTED_BYTES
 from project_metadata import PROJECT_METADATA, load_project_metadata
 from release_updates import check_release
@@ -101,7 +105,7 @@ MODEL_SHA256 = {
     "sface": "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79",
 }
 
-APP_VERSION = "1.2.18"
+APP_VERSION = "1.3.3"
 PRODUCTION_MODE = os.getenv("VAOS_ENV", "development").strip().casefold() == "production"
 LOCAL_WINDOWS_LAUNCHER = os.name == "nt"
 PUBLIC_CAMERA_URL = os.getenv("VAOS_PUBLIC_CAMERA_URL", "").strip().rstrip("/")
@@ -1412,6 +1416,8 @@ def get_api_settings() -> dict[str, Any]:
 
 def _api_request_group(path: str) -> str:
     normalized = path.split("?", 1)[0]
+    if "/training-adviser" in normalized:
+        return "training"
     if "/mcp-approvals/" in normalized:
         return "settings"
     if normalized.startswith(("/api/admin/observability/integrations", "/api/v1/admin/observability/integrations")):
@@ -1440,6 +1446,8 @@ def _api_request_group(path: str) -> str:
         return "tunnels"
     if "/video-review" in normalized:
         return "video"
+    if "/training-adviser" in normalized:
+        return "training"
     if "/projects" in normalized:
         return "projects"
     if "/services/" in normalized:
@@ -1493,6 +1501,8 @@ def _api_mcp_sensitive_action(method: str, path: str) -> bool:
     if normalized.startswith("/api/admin/tracking/rules") and method in {"POST", "PATCH", "DELETE"}:
         return True
     if normalized.startswith("/api/admin/observability/integrations/") and method in {"PUT", "PATCH", "DELETE"}:
+        return True
+    if "/training-adviser" in normalized and method not in {"GET", "HEAD", "OPTIONS"}:
         return True
     if method != "POST":
         return False
@@ -2940,6 +2950,11 @@ def mcp_settings_guide() -> Response:
         raise HTTPException(status_code=404, detail="The MCP Settings guide is not installed in this build.") from exc
 
 
+@app.get("/detection", response_class=HTMLResponse)
+def detection_page(request: Request, _: str = Depends(require_admin)):
+    return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "detection_only": True, "project": PROJECT_METADATA})
+
+
 @app.get("/training", response_class=HTMLResponse)
 def ml_training_page(request: Request, _: str = Depends(require_admin)):
     return templates.TemplateResponse(request, "training.html", {"version": APP_VERSION, "admin_password": "" if PRODUCTION_MODE else ADMIN_PASSWORD, "project": PROJECT_METADATA})
@@ -3811,6 +3826,242 @@ def observability_integration_test(destination_id: str, _: str = Depends(require
     except sqlite3.Error as exc:
         logger.exception("Could not test SIEM destination")
         raise HTTPException(status_code=503, detail="The test could not be fully recorded or completed. It may already have been sent; check the receiver before retrying.") from exc
+
+
+_daksh_runtime = None
+_daksh_video_activity = 0.0
+_daksh_runtime_lock = threading.Lock()
+
+
+def daksh_runtime():
+    global _daksh_runtime
+    with _daksh_runtime_lock:
+        if _daksh_runtime is None or _daksh_runtime.root != DATA_DIR / "daksh":
+            def audit(event, details, event_id):
+                return observability_siem.record_security_event_resilient(DB_PATH, event_type="daksh."+event, outcome="recorded", component="daksh", actor_ref="supervisor", details=details, event_id=event_id)
+            _daksh_runtime = DakshRuntime(DATA_DIR / "daksh", host=daksh_host,
+                busy=lambda: ml_training_lock.locked() or time.monotonic()-_daksh_video_activity < 30, audit=audit)
+        return _daksh_runtime
+
+
+def daksh_service():
+    return daksh_runtime().service
+
+
+def daksh_error(exc):
+    raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def daksh_resolve_job(payload):
+    allowed={"source", "initial_model", "device", "batches", "image_size", "timeout_seconds", "precision"}
+    if not isinstance(payload, dict) or set(payload)-allowed:
+        raise DakshError("Unsupported calibration fields.")
+    source=payload.get("source", "")
+    dataset=load_public_dataset_imports().get(str(source).removeprefix("dataset:"))
+    if not dataset or not Path(str(dataset.get("data_yaml", ""))).is_file():
+        raise DakshError("Choose a registered, validated local dataset.")
+    model_id=payload.get("initial_model", "best.pt")
+    if model_id == "best.pt": model=ML_DATA_DIR / "active" / "best.pt"
+    else:
+        models=list_ml_model_sources("admin").get("sources", [])
+        found=next((m for m in models if m.get("id")==model_id),None)
+        if not found: raise DakshError("Select a registered local detector.")
+        model=Path(str(found.get("path", "")))
+    if not model.is_file() or model.suffix != ".pt":raise DakshError("Detector weights must already be available locally.")
+    device=payload.get("device", "cpu")
+    if not isinstance(device,str) or not re.fullmatch(r"cpu|mps|cuda:[0-9]",device):raise DakshError("Choose cpu, mps or cuda:0–9.")
+    batches=payload.get("batches",[1,2,4])
+    if not isinstance(batches,list) or not batches or len(batches)>10 or any(type(v) is not int or not 1<=v<=10 for v in batches):raise DakshError("Calibration batches must be integers 1–10.")
+    size=payload.get("image_size",640);timeout=payload.get("timeout_seconds",300)
+    if type(size) is not int or size not in {320,416,512,640,768}:raise DakshError("Unsupported image size.")
+    if type(timeout) is not int or not 30<=timeout<=300:raise DakshError("Calibration duration must be 30–300 seconds.")
+    precision=payload.get("precision","fp32")
+    if precision not in {"fp32","amp"}:raise DakshError("Choose fp32 or amp.")
+    return {**payload,"model_path":str(model.resolve()),"data_path":str(Path(dataset['data_yaml']).resolve()),"backend":device.split(":")[0],"device":device,
+            "batches":sorted(set(batches)),"image_size":size,"timeout_seconds":timeout,"precision":precision}
+
+
+@app.get("/api/admin/training-adviser/settings")
+def daksh_settings(_: str = Depends(require_admin)):
+    return {**daksh_service().settings(),"supervisor":daksh_runtime().config()}
+
+
+@app.patch("/api/admin/training-adviser/settings")
+def daksh_configure(payload: dict[str, Any], _: str = Depends(require_admin)):
+    try:
+        supervisor=payload.get("supervisor")
+        base={k:v for k,v in payload.items() if k!="supervisor"}
+        # Validate both objects before persistence to avoid partial invalid updates.
+        if supervisor is not None:
+            original=daksh_runtime().config()
+            unknown=set(supervisor)-set(original) if isinstance(supervisor,dict) else {"invalid"}
+            if unknown:raise DakshError("Unsupported supervisor fields.")
+        if supervisor is not None:daksh_runtime().configure(supervisor,validate_only=True)
+        if base:daksh_service().configure(base)
+        if supervisor is not None:daksh_runtime().configure(supervisor)
+        daksh_runtime().emit("policy_updated",{"fields":sorted(payload)})
+        return daksh_settings(_)
+    except (DakshError,TypeError,ValueError) as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from exc
+
+
+@app.post("/api/admin/training-adviser/engine/start")
+def daksh_engine_start(_: str = Depends(require_admin)):
+    try:return daksh_runtime().control_engine(True,lambda: dict(ml_training_state),daksh_request_stop)
+    except DakshError as exc:daksh_error(exc)
+
+
+@app.post("/api/admin/training-adviser/engine/stop")
+def daksh_engine_stop(_: str = Depends(require_admin)):
+    return daksh_runtime().control_engine(False,lambda: dict(ml_training_state),daksh_request_stop)
+
+
+@app.post("/api/admin/training-adviser/preflight")
+def daksh_preflight(payload: DakshPreflight, _: str = Depends(require_admin)):
+    payload=payload.model_dump(exclude_unset=True)
+    try:
+        rt=daksh_runtime();host={**get_system_metrics(),**daksh_host()}
+        model_path=ML_DATA_DIR/"active"/"best.pt"
+        response=rt.recommend({**payload,"_daksh_actor":_},host,ml_training_lock.locked() or bool(rt.leased()) or bool(rt.unmanaged()),model_path)
+        response["capabilities"]={"learned_predictor":any(v["active"] for v in rt.versions()),"calibration":True,"scheduled_jobs":True,"checkpoint_resume":True}
+        rt.emit("recommendation_created",{"recommendation_id":response['recommendation_id'],"requested_batch":response['requested_batch_size'],"effective_batch":response['effective_batch_size']})
+        return response
+    except (DakshError,ValueError) as exc:
+        raise HTTPException(status_code=400,detail=str(exc)) from exc
+
+
+@app.get("/api/admin/training-adviser/status")
+def daksh_status(_: str = Depends(require_admin)):
+    rt=daksh_runtime()
+    return {"name":"Daksh-AI","engine":rt.engine_status(),"stage":APP_VERSION,"settings":daksh_settings(_),"incidents":rt.service.incidents(),
+            "leases":rt.leased(),"unmanaged_training_pids":rt.unmanaged(),"monitor_running":bool(rt.thread and rt.thread.is_alive()),"supervisor_error":rt.last_error,
+            "capabilities":{"learned_predictor":any(v['active'] for v in rt.versions()),"calibration":True,"scheduled_jobs":True,"checkpoint_resume":True},
+            "limitations":"Learned recommendations need validated local benchmarks. Cross-platform telemetry is capability dependent; calibration is opt-in."}
+
+
+@app.get("/api/admin/training-adviser/history")
+def daksh_history_status(_: str = Depends(require_admin)):
+    from daksh_history import summary
+    return summary(daksh_runtime())
+
+
+@app.post("/api/admin/training-adviser/history/retrain")
+def daksh_history_retrain(_: str = Depends(require_admin)):
+    from daksh_history import import_history
+    rt=daksh_runtime()
+    report=import_history(rt,ML_DATA_DIR)
+    from daksh_history import summary
+    retained=summary(rt)
+    if retained["epochs"]<20 or retained["runs"]<2:
+        raise HTTPException(status_code=400,detail="Import needs at least 20 completed epochs from two historical training runs. No adviser job was queued.")
+    job=rt.create_job("retraining",{"timeout_seconds":300,"history_only":True},"history-"+secrets.token_hex(16))
+    return {"import":report,"job":job,"note":"Queued until the engine is running and training hardware is idle. Missing historical memory labels prevent safety-predictor promotion."}
+
+
+@app.get("/api/admin/training-adviser/jobs")
+def daksh_jobs(_: str = Depends(require_admin)):
+    return {"jobs":daksh_runtime().jobs()}
+
+
+@app.post("/api/admin/training-adviser/jobs")
+def daksh_create_job(payload: DakshJobRequest, _: str = Depends(require_admin)):
+    payload=payload.model_dump()
+    try:
+        kind=payload.get("kind");config=payload.get("configuration",{})
+        if kind=="calibration":config=daksh_resolve_job(config)
+        elif kind=="retraining":
+            if config:raise DakshError("Retraining accepts no arbitrary configuration.")
+            config={"timeout_seconds":300}
+        else:raise DakshError("Choose calibration or retraining.")
+        return daksh_runtime().create_job(kind,config,payload.get("idempotency_key"))
+    except (DakshError,TypeError,ValueError) as exc:daksh_error(exc)
+
+
+@app.get("/api/admin/training-adviser/jobs/{job_id}")
+def daksh_job(job_id: str, _: str = Depends(require_admin)):
+    try:return daksh_runtime().job(job_id)
+    except DakshError as exc:raise HTTPException(status_code=404,detail=str(exc)) from exc
+
+
+@app.post("/api/admin/training-adviser/jobs/{job_id}/cancel")
+def daksh_cancel_job(job_id: str, _: str = Depends(require_admin)):
+    try:return daksh_runtime().cancel(job_id)
+    except DakshError as exc:daksh_error(exc)
+
+
+@app.get("/api/admin/training-adviser/schedules")
+def daksh_schedules(_: str = Depends(require_admin)):
+    items=daksh_runtime().schedules()
+    for item in items:
+        item['spec']['payload']={k:v for k,v in item['spec'].get('payload',{}).items() if k not in {'model_path','data_path'}}
+    return {"schedules":items}
+
+
+def daksh_save_schedule(payload, ident=None):
+    payload=dict(payload)
+    if payload.get('kind')=='calibration':payload['payload']=daksh_resolve_job(payload.get('payload',{}))
+    elif payload.get('kind')=='retraining':
+        if payload.get('payload'):raise DakshError('Retraining schedule takes no workload fields.')
+        payload['payload']={'timeout_seconds':300}
+    return {"schedule_id":daksh_runtime().schedule(payload,ident)}
+
+
+@app.post("/api/admin/training-adviser/schedules")
+def daksh_create_schedule(payload: DakshScheduleRequest, _: str = Depends(require_admin)):
+    payload=payload.model_dump()
+    try:return daksh_save_schedule(payload)
+    except (DakshError,ValueError,TypeError) as exc:daksh_error(exc)
+
+
+@app.patch("/api/admin/training-adviser/schedules/{schedule_id}")
+def daksh_update_schedule(schedule_id: str,payload: DakshScheduleRequest, _: str = Depends(require_admin)):
+    payload=payload.model_dump()
+    if not any(s['id']==schedule_id for s in daksh_runtime().schedules()):raise HTTPException(status_code=404,detail="Schedule not found.")
+    try:return daksh_save_schedule(payload,schedule_id)
+    except (DakshError,ValueError,TypeError) as exc:daksh_error(exc)
+
+
+@app.delete("/api/admin/training-adviser/schedules/{schedule_id}")
+def daksh_delete_schedule(schedule_id: str, _: str = Depends(require_admin)):
+    daksh_runtime().remove_schedule(schedule_id);return {"ok":True}
+
+
+@app.post("/api/admin/training-adviser/records/restore")
+def daksh_restore_records(payload: dict[str,Any], _: str = Depends(require_admin)):
+    try:return daksh_runtime().restore_records(payload.get('backup_id'))
+    except (DakshError,ValueError,KeyError,OSError) as exc:daksh_error(exc)
+
+
+@app.get("/api/admin/training-adviser/versions")
+def daksh_versions(_: str = Depends(require_admin)):
+    return {"versions":daksh_runtime().versions()}
+
+
+@app.post("/api/admin/training-adviser/versions/{version_id}/promote")
+def daksh_promote(version_id: str, _: str = Depends(require_admin)):
+    try:daksh_runtime().promote(version_id);return {"ok":True}
+    except DakshError as exc:daksh_error(exc)
+
+
+@app.post("/api/admin/training-adviser/versions/{version_id}/rollback")
+def daksh_rollback(version_id: str, _: str = Depends(require_admin)):
+    try:daksh_runtime().promote(version_id,True);return {"ok":True}
+    except DakshError as exc:daksh_error(exc)
+
+
+@app.get("/api/admin/training-adviser/incidents")
+def daksh_incidents(_: str = Depends(require_admin)):
+    return {"incidents":daksh_service().incidents()}
+
+
+@app.get("/api/admin/training-adviser/records")
+def daksh_records(_: str = Depends(require_admin)):
+    return {"records":daksh_runtime().export_records(),"limit":5000}
+
+
+@app.delete("/api/admin/training-adviser/records")
+def daksh_clear_records(_: str = Depends(require_admin)):
+    return daksh_runtime().delete_records()
 
 
 @app.get("/api/admin/engine-settings")
@@ -5500,6 +5751,27 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
         if launcher_progress["batch"] >= current_batch and launcher_progress["batches"] >= current_total:
             training_state.update(launcher_progress)
             training_state["progress_source"] = "launcher_output"
+    stats = dict(training_state.get("stats") or {})
+    host = get_system_metrics()
+    for source, target in {"cpu_percent": "cpu_percent", "memory_used_gb": "system_memory_gb", "memory_total_gb": "system_memory_total_gb", "memory_percent": "system_memory_percent", "gpu_utilization_percent": "gpu_utilization_percent", "gpu_memory_used_mb": "gpu_memory_used_mb", "gpu_memory_total_mb": "gpu_memory_total_mb"}.items():
+        if host.get(source) is not None:
+            stats[target] = host[source]
+    # New Ultralytics versions expose named loss dictionaries; completed-epoch
+    # CSV metrics remain a fallback for an already-running older callback.
+    if not any(stats.get(key) is not None for key in ("box_loss", "class_loss")):
+        try:
+            import csv
+            run_id = training_state.get("run_id", "")
+            if run_id and Path(run_id).name == run_id:
+                with (ML_DATA_DIR / "runs" / run_id / "results.csv").open() as source:
+                    last = list(csv.DictReader(source))[-1]
+                for column, key in {"train/box_loss": "box_loss", "train/cls_loss": "class_loss", "train/dfl_loss": "dfl_loss", "train/l1_loss": "l1_loss"}.items():
+                    if last.get(column):
+                        stats[key] = float(last[column])
+                stats["loss_source"] = "last completed epoch"
+        except (OSError, ValueError, IndexError):
+            pass
+    training_state["stats"] = stats
     reviewable_total = sum(int(row["n"]) for row in totals if row["review_state"] in {"pending", "later"})
     return {"samples": [dict(row) for row in rows], "counts": {row["review_state"]: row["n"] for row in totals}, "reviewable_total": reviewable_total, "filtered_reviewable_total": filtered_reviewable_total, "review_offset": offset, "review_limit": limit, "reviewable_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in reviewable_class_counts], "confirmed_class_counts": [{"label": row["label"], "count": int(row["n"])} for row in confirmed_class_counts], "confirmed_classes": [row["label"] for row in confirmed_labels], "training_maturity": maturity, "capture_enabled": bool(setting and setting["value"] == "1"), "sample_total": int(collection_stats["total"] or 0), "sample_latest_at": collection_stats["latest"], "sample_limit": MAX_ML_SAMPLES, "training_epoch_options": list(TRAINING_EPOCH_OPTIONS), "supports_custom_training_epochs": True, "live_camera_count": live_camera_count, "live_object_types": live_object_types, "training": training_state, "training_logs": read_training_log(), "dataset_imports": list(load_public_dataset_imports().values()), "dataset_catalog": local_dataset_catalog(), "dataset_import": dict(ml_dataset_import_state), "dataset_prepare": dict(ml_dataset_prepare_state), "coco_dataset_ready": coco_dataset_layout_ready(), "training_devices": training_device_inventory(), "trained_model": {"installed": model_installed, "path": str(trained_path) if model_installed else "", "metadata": training_info}, "live_model": live_model}
 
@@ -6188,16 +6460,24 @@ def batch_review_ml_samples(payload: dict[str, Any], _: str = Depends(require_ad
     return {"ok": True, "updated": cur.rowcount, "label": label if choice == "change_label" else None}
 
 
-def run_ml_training(device_choice: str, dataset_source: str, initial_model: str = "auto", resource_mode: bool = False, requested_epochs: int | None = None) -> None:
+def run_ml_training(device_choice: str, dataset_source: str, initial_model: str = "auto", resource_mode: bool = False, requested_epochs: int | None = None, requested_batch: int | None = None, resume_record: dict | None = None, training_options: dict | None = None) -> None:
     global ml_training_state
     job_started = time.monotonic()
     run_name = f"vaos_objects_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(3)}"
     ml_training_state.update({"run_id": run_name})
     write_training_log("INFO", "Training worker started", run_id=run_name, source=dataset_source, requested_device=device_choice)
     try:
+        if daksh_runtime().unmanaged():
+            raise RuntimeError("Unmanaged training detected. Stop it before starting another job.")
+        daksh_runtime().acquire(run_name)
         default_epochs = 20 if dataset_source.startswith("dataset:") or dataset_source in {"uvh26_combined", "combined_vehicle", "combined_kaggle"} else 10 if dataset_source in {"coco2017", "combined"} else 30
         epochs_total = int(requested_epochs) if requested_epochs is not None else default_epochs
-        if dataset_source.startswith("dataset:"):
+        if resume_record:
+            yaml_path=Path(resume_record['dataset_path'])
+            if daksh_digest(yaml_path)!=resume_record['data_sha256'] or daksh_digest(resume_record['path'])!=resume_record['checkpoint_sha256']:
+                raise RuntimeError("Dataset or checkpoint changed; resume refused.")
+            labels=resume_record.get('classes',[]);sample_count=resume_record.get('samples',0);dataset_name=resume_record.get('dataset_name','Checkpoint dataset')
+        elif dataset_source.startswith("dataset:"):
             dataset_id = dataset_source.split(":", 1)[1]
             imported = load_public_dataset_imports().get(dataset_id)
             if not imported or imported.get("managed_local_dataset") is not True or not Path(str(imported.get("data_yaml", ""))).is_file():
@@ -6326,7 +6606,9 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             raise RuntimeError("Optional object-detection training packages are missing. Install a PyTorch build for this OS and accelerator, then install requirements-object-detection.txt and the supported Ultralytics version from the platform setup guide.") from exc
         custom_checkpoint = ML_DATA_DIR / "active" / "best.pt"
         base_checkpoint = MODEL_DIR / "yolo26m.pt"
-        if initial_model == "yolo26m":
+        if resume_record:
+            model_path=Path(resume_record["path"])
+        elif initial_model == "yolo26m":
             model_path = base_checkpoint if base_checkpoint.is_file() else Path("yolo26m.pt")
         elif initial_model == "best.pt":
             if not custom_checkpoint.is_file():
@@ -6357,6 +6639,9 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         job_kind = "enrichment" if resource_mode else "training"
         ml_training_state = {"status": "running", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "data_yaml": str(yaml_path), "message": f"Training on {device_label} with {sample_count:,} {dataset_name} images and {len(labels)} object types.", "samples": sample_count, "classes": labels, "epoch": 0, "epochs": epochs_total, "progress": 0, "batch": 0, "batches": 0, "stats": {}, "elapsed_seconds": 0, "eta_seconds": None, "device": device_label}
         write_training_log("INFO", "Training dataset resolved", source=dataset_source, dataset_name=dataset_name, images=sample_count, classes=len(labels), epochs=epochs_total, device=device_label)
+        ml_training_state.update({"backend": "cuda" if device_kind=="gpu" else device_kind,
+                                  "model_signature":daksh_signature(model_file,"cuda" if device_kind=="gpu" else device_kind,640) if Path(model_file).is_file() else "",
+                                  "model_mb":Path(model_file).stat().st_size/1024**2 if Path(model_file).is_file() else 0})
         model = YOLO(model_file)
         def scalar(value: Any) -> float | None:
             try:
@@ -6383,7 +6668,20 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             losses = getattr(trainer, "tloss", None)
             if losses is not None:
                 try:
+                    if isinstance(losses, dict):
+                        for key, value in losses.items():
+                            name = {"box": "box_loss", "cls": "class_loss", "dfl": "dfl_loss", "l1": "l1_loss"}.get(str(key).replace("_loss", ""))
+                            parsed = scalar(value)
+                            try:
+                                if not bool(torch.isfinite(value).all()) if hasattr(value,"detach") else not math.isfinite(float(value)):
+                                    stats["loss_nonfinite"] = True
+                            except (TypeError,ValueError):
+                                pass
+                            if name and parsed is not None:
+                                stats[name] = parsed
+                        losses = []
                     if hasattr(losses, "detach"):
+                        if not bool(torch.isfinite(losses).all()):stats["loss_nonfinite"]=True
                         losses = losses.detach().float().flatten().cpu().tolist()
                     elif not isinstance(losses, (list, tuple)):
                         losses = [losses]
@@ -6471,8 +6769,41 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             write_training_log("INFO", "Training epoch completed", epoch=epoch, epochs=epochs_total, stats=stats, elapsed_seconds=int(elapsed))
             if stop_requested:
                 trainer.stop = True
+        def set_phase(phase):
+            return lambda trainer: ml_training_state.update({"phase":phase})
+        model.add_callback("on_fit_epoch_end",lambda trainer: ml_training_state.update({"validation_epoch":int(trainer.epoch)+1,"stats":{**ml_training_state.get("stats",{}),**current_stats(trainer)}}))
+        model.add_callback("on_val_start",set_phase("validation"))
+        model.add_callback("on_val_end",set_phase("training"))
+        model.add_callback("on_train_batch_start",set_phase("training"))
         model.add_callback("on_train_batch_end", update_batch)
         model.add_callback("on_train_epoch_end", update_epoch)
+        def preserve_checkpoint(trainer):
+            if not ml_training_state.get("stop_requested"):return
+            source=Path(trainer.last)
+            if not source.is_file():raise RuntimeError("Checkpoint stop requested but last checkpoint is missing.")
+            directory=DATA_DIR/"daksh"/"checkpoints"/run_name
+            directory.mkdir(parents=True,exist_ok=True)
+            destination=directory/"last.pt"
+            shutil.copyfile(source,destination)
+            saved=torch.load(destination,map_location="cpu",weights_only=False)
+            if saved.get("optimizer") is None or int(saved.get("epoch",-1))!=int(trainer.epoch):
+                raise RuntimeError("Saved checkpoint lacks resumable optimizer/epoch state.")
+            saved_model=saved.get("ema") or saved.get("model")
+            if saved_model is None or any(not bool(torch.isfinite(parameter).all()) for parameter in saved_model.parameters()):
+                raise RuntimeError("Checkpoint contains non-finite model weights; resume is unsafe.")
+            del saved,saved_model
+            import random
+            rng={"python":random.getstate(),"numpy":[np.random.get_state()[0],np.random.get_state()[1].tolist(),*np.random.get_state()[2:]],"torch":torch.get_rng_state().tolist()}
+            if device_kind=='gpu' and torch.cuda.is_available():rng['cuda']=[value.tolist() for value in torch.cuda.get_rng_state_all()]
+            if device_kind=='mps' and hasattr(torch.backends,'mps') and torch.backends.mps.is_available() and hasattr(torch.mps,'get_rng_state'):rng['mps']=torch.mps.get_rng_state().tolist()
+            (directory/"rng.json").write_text(json.dumps(rng))
+            meta={"run_id":run_name,"epoch":int(trainer.epoch)+1,"epochs":epochs_total,"source":dataset_source,"device":device_choice,
+                  "batch_size":int(trainer.args.batch),"data_sha256":daksh_digest(yaml_path),"checkpoint_sha256":daksh_digest(destination),"image_size":int(trainer.args.imgsz),
+                  "path":str(destination),"dataset_path":str(yaml_path),"resume_supported":int(trainer.epoch)+1<epochs_total,"classes":labels,"samples":sample_count,"dataset_name":dataset_name}
+            with daksh_runtime().db() as db:db.execute('INSERT OR REPLACE INTO checkpoints VALUES(?,?,?)',(run_name,time.time(),json.dumps(meta)))
+            ml_training_state.update({"checkpoint_id":run_name,"checkpoint_saved":True,"phase":"checkpointing"})
+            daksh_runtime().emit("checkpoint_saved",{"run_id":run_name,"epoch":meta['epoch']})
+        model.add_callback("on_model_save",preserve_checkpoint)
         write_training_log("INFO", "Model fit started", model=Path(model_file).name, device=ml_training_state["device"], images=sample_count, epochs=epochs_total)
         run_dir = ML_DATA_DIR / "runs" / run_name
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -6495,10 +6826,34 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             resource_mode=resource_mode,
         )
         training_workers = int(profile["workers"])
+        if training_options:
+            training_workers=min(training_workers,training_options["workers"])
         training_batch = int(profile["batch"])
-        if device_kind == "gpu" and resource_mode and cuda_device_count > 1:
+        if requested_batch is not None:
+            # Conservative headroom estimate; this is not a model-specific OOM guarantee.
+            ram_cap = 1 if available_ram_gb is None else max(1, min(10, int(max(0, available_ram_gb - 6) / 1.5)))
+            hardware_cap = ram_cap
+            try:
+                import psutil
+                if psutil.virtual_memory().percent >= 85:
+                    hardware_cap = min(hardware_cap, 2)
+                if device_kind == "gpu":
+                    free_vram, _ = torch.cuda.mem_get_info(gpu_device_indices[0])
+                    hardware_cap = min(hardware_cap, max(1, int(max(0, free_vram / 1024**3 - 2) / 1.5)))
+            except Exception:
+                hardware_cap = min(hardware_cap, 2)
+            training_batch = min(requested_batch, hardware_cap)
+            ml_training_state.update({"requested_batch_size": requested_batch, "effective_batch_size": training_batch,
+                                      "batch_adjustment_reason": "Reduced for available RAM/VRAM and operating-system headroom." if training_batch < requested_batch else "Requested batch fits the conservative memory estimate."})
+            write_training_log("INFO", "Batch size selected", requested_batch=requested_batch, effective_batch=training_batch, available_ram_gb=available_ram_gb)
+        if requested_batch is None and device_kind == "gpu" and resource_mode and cuda_device_count > 1:
             training_batch = max(cuda_device_count, training_batch * cuda_device_count)
-        training_image_size = int(profile["image_size"])
+        training_image_size = int(resume_record["image_size"]) if resume_record else int(profile["image_size"])
+        if training_options and not resume_record:
+            training_image_size=min(training_image_size,training_options["image_size"])
+        if training_options and training_options.get("daksh_accepted") and (training_batch!=requested_batch or training_image_size!=training_options["image_size"] or training_workers!=training_options["workers"]):
+            raise RuntimeError("Resource conditions changed after Daksh acceptance. Run preflight again; training was not started.")
+        ml_training_state.update({"image_size":training_image_size,"workers":training_workers})
         write_training_log(
             "INFO", "Training resources configured", device=device_label,
             accelerator=device_kind, gpu_count=cuda_device_count,
@@ -6507,7 +6862,19 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             memory_available_gb=round(available_ram_gb, 2) if available_ram_gb is not None else None,
             image_size=training_image_size, profile=profile["profile"],
         )
-        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=training_image_size, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False, plots=False)
+        resume_options={"resume":str(model_path),"save_dir":str(run_dir)} if resume_record else {}
+        if resume_record:
+            import random
+            rng=json.loads(model_path.with_name("rng.json").read_text())
+            def restore_rng(trainer):
+                def tuples(value):return tuple(tuples(x) for x in value) if isinstance(value,list) else value
+                random.setstate(tuples(rng['python']))
+                n=rng['numpy'];np.random.set_state((n[0],np.array(n[1],dtype=np.uint32),n[2],n[3],n[4]))
+                torch.set_rng_state(torch.tensor(rng['torch'],dtype=torch.uint8))
+                if device_kind=='gpu' and rng.get('cuda') and torch.cuda.is_available():torch.cuda.set_rng_state_all([torch.tensor(value,dtype=torch.uint8) for value in rng['cuda']])
+                if device_kind=='mps' and rng.get('mps') and torch.backends.mps.is_available() and hasattr(torch.mps,'set_rng_state'):torch.mps.set_rng_state(torch.tensor(rng['mps'],dtype=torch.uint8))
+            model.add_callback("on_train_start",restore_rng)
+        result = model.train(data=str(yaml_path), epochs=epochs_total, imgsz=training_image_size, batch=training_batch, device=train_device, workers=training_workers, cache=False, project=str(ML_DATA_DIR / "runs"), name=run_name, exist_ok=True, verbose=False, plots=False, amp=(training_options or {}).get("precision","fp32")=="amp", **resume_options)
         best = Path(result.save_dir) / "weights" / "best.pt"
         stopped_early = bool(ml_training_state.get("stop_requested"))
         if stopped_early and not best.is_file():
@@ -6516,7 +6883,6 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
             raise RuntimeError("Training ended without producing a best.pt model file.")
         active = ML_DATA_DIR / "active"
         active.mkdir(parents=True, exist_ok=True)
-        import shutil
         if (active / "best.pt").is_file():
             backup_dir = active / "backups"
             backup_dir.mkdir(parents=True, exist_ok=True)
@@ -6540,6 +6906,8 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         metadata_tmp.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         metadata_tmp.replace(active / "metadata.json")
         ml_training_state = {"status": "stopped" if stopped_early else "complete", "job_kind": job_kind, "source": dataset_source, "dataset_name": dataset_name, "dataset_id": dataset_source.split(":", 1)[1] if dataset_source.startswith("dataset:") else "", "run_id": run_name, "initial_model": Path(model_file).name, "progress": int(ml_training_state.get("progress", 100)) if stopped_early else 100, "epoch": int(ml_training_state.get("epoch", epochs_total)) if stopped_early else epochs_total, "epochs": epochs_total, "batch": ml_training_state.get("batch", 0), "batches": ml_training_state.get("batches", 0), "elapsed_seconds": int(time.monotonic() - job_started), "eta_seconds": 0, "stats": ml_training_state.get("stats", {}), "device": device_label, "message": "Training stopped safely at the epoch boundary. The saved checkpoint is now your custom model; restart VAOS to load it." if stopped_early else "Training finished. Restart VAOS to load your custom detector.", "samples": sample_count, "classes": labels, "model": str(active / "best.pt"), "metrics": final_metrics}
+        if stopped_early:
+            ml_training_state.update({"checkpoint_id":run_name,"checkpoint_saved":(DATA_DIR/"daksh"/"checkpoints"/run_name/"last.pt").is_file()})
         elapsed_seconds = int(time.monotonic() - job_started)
         annotation_count = sum(class_counts.values()) if invalid_class_ids == 0 else None
         write_training_log("INFO", "Training finished", run_id=run_name, source=dataset_source, dataset_name=dataset_name, epochs=epochs_total, status=ml_training_state["status"], model=str(active / "best.pt"), metrics=final_metrics, elapsed_seconds=elapsed_seconds, annotations=annotation_count)
@@ -6549,17 +6917,33 @@ def run_ml_training(device_choice: str, dataset_source: str, initial_model: str 
         write_training_log("ERROR", "Training failed", run_id=run_name, source=dataset_source, dataset_name=ml_training_state.get("dataset_name", ""), initial_model=ml_training_state.get("initial_model", initial_model), error=error_message, error_type=exc.__class__.__name__, elapsed_seconds=int(time.monotonic() - job_started))
         ml_training_state = {"status": "error", "job_kind": "enrichment" if resource_mode else "training", "source": dataset_source, "dataset_name": ml_training_state.get("dataset_name", ""), "dataset_id": ml_training_state.get("dataset_id", ""), "run_id": ml_training_state.get("run_id", ""), "epochs": ml_training_state.get("epochs", requested_epochs or 0), "message": error_message, "progress": int(ml_training_state.get("progress", 0)), "epoch": ml_training_state.get("epoch", 0), "stats": ml_training_state.get("stats", {}), "device": ml_training_state.get("device", device_choice.upper())}
     finally:
+        daksh_runtime().release(run_name)
         ml_training_lock.release()
 
 
 @app.post("/api/admin/ml/train")
 def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
+    if payload.get("daksh_recommendation_id"):
+        original = {key: value for key, value in payload.items() if key not in {"daksh_recommendation_id", "daksh_mode"}}
+        try:
+            chosen = daksh_service().accept(str(payload["daksh_recommendation_id"]), {**original,"_daksh_actor":_}, get_system_metrics(), payload.get("daksh_mode", "recommended"),return_settings=True)
+            payload = {**payload, **chosen}
+        except DakshError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
     device_choice = str(payload.get("device", "cpu:1"))
     resource_mode = bool(payload.get("resource_mode", False))
     try:
         requested_epochs = int(payload.get("epochs", 20))
     except (TypeError, ValueError):
         raise HTTPException(status_code=400, detail="Choose an epoch count from 10 to 50 in steps of five.")
+    options={"image_size":payload.get("image_size",640),"workers":payload.get("workers",2),"precision":payload.get("precision","fp32")}
+    if type(options['image_size']) is not int or options['image_size'] not in {320,416,512,640,768} or type(options['workers']) is not int or not 0<=options['workers']<=4 or options['precision'] not in {'fp32','amp'}:
+        raise HTTPException(status_code=400,detail="Choose supported image size, workers 0–4 and precision fp32/amp.")
+    options["daksh_accepted"] = bool(payload.get("daksh_recommendation_id"))
+    requested_batch = payload.get("batch_size")
+    if requested_batch is not None:
+        if type(requested_batch) is not int or not 1 <= requested_batch <= 10:
+            raise HTTPException(status_code=400, detail="Choose a batch size from 1 to 10 images, or null for Automatic.")
     if requested_epochs not in TRAINING_EPOCH_OPTIONS:
         raise HTTPException(status_code=400, detail="Choose an epoch count from 10, 15, 20, 25, 30, 35, 40, 45, or 50.")
     if not (device_choice.startswith("cpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and not (device_choice.startswith("gpu:") and (device_choice.split(":", 1)[1].isdigit() or (resource_mode and device_choice.endswith(":all")))) and device_choice != "mps":
@@ -6612,7 +6996,7 @@ def start_ml_training(payload: dict[str, Any], _: str = Depends(require_admin)):
     ml_training_state.update({"status": "preparing", "source": dataset_source, "dataset_id": dataset_source.split(":", 1)[1] if is_registered_dataset else "", "dataset_name": dataset_name, "epochs": requested_epochs, "data_yaml": str(active_record.get("data_yaml", "")), "message": f"Training request accepted · {dataset_name} · {requested_epochs} epochs. Preparing the selected data and model; the first progress update can take a few minutes.", "stop_requested": False, "progress": 0, "epoch": 0, "batch": 0, "batches": 0, "stats": {}, "device": device_choice.upper().replace(":", " · "), "elapsed_seconds": 0, "eta_seconds": None})
     write_training_log("INFO", "Training requested", source=dataset_source, dataset_name=dataset_name, epochs=requested_epochs, device=device_choice, checkpoint=initial_model, resource_mode=resource_mode)
     try:
-        _start_context_preserving_thread(run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode, requested_epochs), name="vaos-ml-training")
+        _start_context_preserving_thread(run_ml_training, args=(device_choice, dataset_source, initial_model, resource_mode, requested_epochs, requested_batch, None, options), name="vaos-ml-training")
     except Exception as exc:
         ml_training_lock.release()
         ml_training_state.update({"status": "error", "message": f"Could not launch the training worker: {exc}"})
@@ -6948,7 +7332,15 @@ def start_ml_enrichment(payload: dict[str, Any], _: str = Depends(require_admin)
 
 
 @app.post("/api/admin/ml/train/stop")
-def stop_ml_training(_: str = Depends(require_admin)):
+def stop_ml_training(payload: dict[str,Any] | None = None, _: str = Depends(require_admin)):
+    if payload and payload.get('run_id') and payload['run_id']!=ml_training_state.get('run_id'):
+        raise HTTPException(status_code=409,detail="The training run changed; review its current identity before stopping.")
+    if ml_training_state.get('stop_requested') and ml_training_state.get('status') in {'preparing','running','stopping'}:
+        return {"status":"stopping","message":"Checkpoint stop already requested."}
+    external=daksh_runtime().external_state()
+    if ml_training_state.get('status') not in {'preparing','running'} and external:
+        daksh_runtime().request_external_stop(external['run_id'])
+        return {"status":"stopping","message":"Checkpoint stop requested for managed standalone training."}
     if ml_training_state.get("status") not in {"preparing", "running"}:
         write_training_log("WARNING", "Stop request rejected", reason="No active training job")
         raise HTTPException(status_code=409, detail="There is no active model training run to stop.")
@@ -6958,13 +7350,55 @@ def stop_ml_training(_: str = Depends(require_admin)):
     return {"status": "stopping", "message": ml_training_state["message"]}
 
 
+@app.get("/api/admin/ml/train/checkpoints")
+def daksh_checkpoints(_: str = Depends(require_admin)):
+    with daksh_runtime().db() as db:rows=db.execute('SELECT id,created,body FROM checkpoints ORDER BY created DESC LIMIT 50').fetchall()
+    return {"checkpoints":[{"id":r['id'],"created":r['created'],**{k:v for k,v in json.loads(r['body']).items() if k not in {'path','dataset_path'}}} for r in rows]}
+
+
+@app.post("/api/admin/ml/train/resume")
+def daksh_resume(payload: dict[str,Any], _: str = Depends(require_admin)):
+    ident=payload.get('checkpoint_id')
+    with daksh_runtime().db() as db:row=db.execute('SELECT body FROM checkpoints WHERE id=?',(ident,)).fetchone()
+    if not row:raise HTTPException(status_code=404,detail="Checkpoint not found.")
+    meta=json.loads(row[0])
+    if not meta.get('resume_supported'):raise HTTPException(status_code=409,detail="This run has completed its planned epochs.")
+    if not payload.get('daksh_recommendation_id'):raise HTTPException(status_code=409,detail="Run Daksh preflight and accept resume settings first.")
+    original={k:v for k,v in payload.items() if k not in {'daksh_recommendation_id','daksh_mode'}}
+    try:batch=daksh_service().accept(payload['daksh_recommendation_id'],{**original,'_daksh_actor':_},{**get_system_metrics(),**daksh_host()},payload.get('daksh_mode','recommended'))
+    except DakshError as exc:daksh_error(exc)
+    device=payload.get('device',meta['device'])
+    inventory=training_device_inventory()
+    if not isinstance(device,str) or not re.fullmatch(r"mps|cpu:[1-9][0-9]*|gpu:[0-9]",device):raise HTTPException(status_code=400,detail="Unsupported resume device.")
+    if device=='mps' and not inventory.get('mps_available'):raise HTTPException(status_code=409,detail="MPS unavailable.")
+    if ml_training_lock.locked() or daksh_runtime().leased() or daksh_runtime().unmanaged():raise HTTPException(status_code=409,detail="Another training/calibration job is active.")
+    if not ml_training_lock.acquire(blocking=False):raise HTTPException(status_code=409,detail="Training is busy.")
+    ml_training_state.update({"status":"preparing","stop_requested":False,"message":"Resuming verified checkpoint.","source":meta['source'],"epochs":meta['epochs'],"resumed_from":ident})
+    try:_start_context_preserving_thread(run_ml_training,args=(device,meta['source'],'best.pt',True,meta['epochs'],batch,meta),name='daksh-resume')
+    except Exception:
+        ml_training_lock.release();raise
+    daksh_runtime().emit('checkpoint_resume_requested',{'checkpoint_id':ident,'batch_size':batch,'device':device})
+    return {"status":"preparing","checkpoint_id":ident,"effective_batch_size":batch,"note":"Batch changes can affect optimization; original epoch target and optimizer/scheduler state are resumed."}
+
+
+def daksh_request_stop(run_id):
+    if ml_training_state.get("run_id") == run_id and ml_training_state.get("status") == "running":
+        ml_training_state["stop_requested"] = True
+        ml_training_state["message"] = "Daksh requested a checkpoint-safe stop."
+        return True
+    daksh_runtime().request_external_stop(run_id)
+    return False
+
+
 def video_training_blocks(device: str) -> bool:
+    if _daksh_runtime is not None and any(x["owner"] in _daksh_runtime.processes for x in _daksh_runtime.leased()):
+        return True
     active = ml_training_lock.locked() or ml_training_state.get("status") in {"preparing", "running", "stopping"}
     accelerator = any(word in str(ml_training_state.get("device", "")).lower() for word in ("gpu", "cuda", "mps"))
     return bool(active and not (device == "cpu" and accelerator and ml_training_state.get("status") == "running"))
 
 
-@app.get("/api/admin/video-review/availability", include_in_schema=False)
+@app.get("/api/admin/video-review/availability")
 def video_review_availability(_: str = Depends(require_admin)):
     return {"cpu_available": not video_training_blocks("cpu")}
 
@@ -7003,6 +7437,8 @@ async def analyze_video_review_frame(session_id: str, request: Request, _: str =
     if not 0 <= source_time <= 86_400:
         raise HTTPException(status_code=400, detail="The video timestamp is outside the supported range.")
     content = await request.body()
+    global _daksh_video_activity
+    _daksh_video_activity = time.monotonic()
     frame_processing_started = time.perf_counter()
     try:
         save_samples = request.headers.get("x-save-samples", "1") == "1"
@@ -7471,6 +7907,7 @@ def _stop_observability_lifecycle() -> None:
 
 @app.on_event("startup")
 def announce_startup():
+    daksh_runtime().start(lambda: dict(ml_training_state), daksh_request_stop)
     threading.Thread(target=check_release, args=(APP_VERSION,), daemon=True, name="release-check").start()
     global observability_training_recovery_started
     _start_observability_lifecycle()
@@ -7512,4 +7949,6 @@ def announce_startup():
 
 @app.on_event("shutdown")
 def record_clean_shutdown():
+    if _daksh_runtime is not None:
+        _daksh_runtime.close()
     _stop_observability_lifecycle()

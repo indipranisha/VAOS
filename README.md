@@ -1,4 +1,6 @@
-# VAOS 1.2.18
+# VAOS 1.3.3
+
+Stable release: [v1.3.3](https://github.com/indipranisha/VAOS/releases/tag/v1.3.3). [Release notes](docs/RELEASE_NOTES_1.3.3.md) · [Validation](docs/VALIDATION_1.3.3.md).
 
 **VAOS — Video Analytics Operating System** is a self-hosted video analytics application. Camera processing, face templates, reviewed samples, model files and event records are stored on the VAOS host.
 
@@ -18,7 +20,7 @@
 
 ### v1.1.0 scope decision
 
-**AI Model Arena** and **Ready-to-Run Vision Applications** are not part of VAOS v1.1.0. This release will not include an Arena comparison workflow or a ready-made application/template gallery. Existing model selection, training, inference, and the separate Video Review workflow remain available. See [current project status](docs/PROJECT_STATUS.md) for the release scope and validation state.
+**AI Model Arena** and **Ready-to-Run Vision Applications** are outside the current VAOS scope. The current release does not include an Arena comparison workflow or a ready-made application/template gallery. Existing model selection, training, inference, and the separate Video Review workflow remain available. See [current project status](docs/PROJECT_STATUS.md) for the release scope and validation state.
 
 Face templates are sensitive biometric data. Use only with informed consent and appropriate authorization. Validate accuracy for the intended setting, restrict administrator access, define retention/deletion practices, and meet applicable privacy and biometric requirements before operational use. This release uses one administrator account and one instance of each service; do not horizontally scale without first moving runtime state and training coordination into shared infrastructure.
 
@@ -123,4 +125,10 @@ For staging, launch with `VAOS_ENV=staging ./.venv/bin/python start_vaos.py --da
 
 VAOS checks published stable GitHub releases and shows a dismissible update notice. About includes release notes, issue reporting and a manual check. Installation remains manual in this first stage. See [software update behavior](docs/SOFTWARE_UPDATES.md) for offline handling, opt-out and safe upgrade guidance.
 
-Current documentation release: **1.2.18**. See [knowledgebase](docs/KNOWLEDGEBASE.md) and [release notes](docs/RELEASE_NOTES_1.2.18.md).
+Current documentation release: **1.3.3**. See [knowledgebase](docs/KNOWLEDGEBASE.md) and [release notes](docs/RELEASE_NOTES_1.3.3.md).
+
+API/MCP feature coverage and upgrade limits: docs/API.md, docs/MCP.md and docs/KNOWLEDGEBASE.md (see current feature contracts).
+
+Daksh-AI **1.3.3**: see [Daksh capabilities and limitations](docs/DAKSH_AI.md). The stable release includes supervision, calibration/retraining jobs and schedules, adviser promotion/rollback and verified checkpoint resume; see the guide for hardware validation limits.
+
+VAOS **1.3.3** adds persistent Daksh engine Start/Stop in Settings, historical checkpoint-metric learning, a dedicated Detection workspace and full-width ML TRAINING workspace. See [release notes](docs/RELEASE_NOTES_1.3.3.md) for behavior, rationale and validation limits.

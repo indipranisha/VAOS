@@ -37,6 +37,14 @@ class ReleaseChecks(unittest.TestCase):
                 self.assertEqual(updates.check_release('1.2.5')['status'],expected)
                 updates.check_release('1.2.5')
                 request.assert_called_once()
+    def test_beta_installation_uses_stable_channel_without_downgrade(self):
+        with patch.object(updates.urllib.request,'urlopen',return_value=self.response('v1.2.18')):
+            self.assertFalse(updates.check_release('1.3.0-beta.2')['update_available'])
+            self.assertFalse(updates.check_release('1.3.0-beta.2')['update_available'])
+        updates._cached=None
+        with patch.object(updates.urllib.request,'urlopen',return_value=self.response('v1.3.0')):
+            self.assertTrue(updates.check_release('1.3.0-beta.2')['update_available'])
+
     def test_opt_out(self):
         with patch.dict('os.environ',{'VAOS_UPDATE_CHECK':'0'}),patch.object(updates.urllib.request,'urlopen') as request:
             self.assertEqual(updates.check_release('1.2.5')['status'],'disabled')

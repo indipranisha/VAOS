@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>VAOS · Video Analytics - Operating System</title>
-  <link rel="stylesheet" href="/static/style.css?settings-layout=2&amp;v=vaos-1.1.0-host-telemetry">
+  <link rel="stylesheet" href="/static/style.css?settings-layout=3&amp;v=vaos-1.1.0-host-telemetry">
   <link rel="icon" type="image/png" href="/static/vaos-logo.png?v=1">
 </head>
 <body class="training-shell dashboard-shell{% if settings_only|default(false) %} settings-page{% endif %}">
@@ -17,7 +17,7 @@
   </header>
 
   <main id="app-main" tabindex="-1" class="page-wrap dashboard-page">
-    {% if settings_only %}<section class="intro-row settings-heading"><div><p class="eyebrow">CONFIGURATION</p><h1>Settings</h1><p class="lead">Configure detection, manage models and people, and control application access. Choose a section below.</p></div></section><nav class="settings-jump-nav settings-only" aria-label="Settings sections"><a href="#engine-settings"><strong>Detection</strong><small>Accuracy, tracking and camera processing</small></a><a href="#system-settings"><strong>Models &amp; services</strong><small>Active model, service status and access</small></a><a href="#enrollment-settings"><strong>People &amp; enrollment</strong><small>Invitations and enrolled participants</small></a><a href="#settings"><strong>Enrolled participants</strong><small>Review existing profiles and records</small></a><a href="#api-mcp-settings"><strong>API &amp; AI agents</strong><small>Permissions, tokens and approvals</small></a><a href="#model-enrichment"><strong>Custom detector</strong><small>Model sources and training workflow</small></a></nav><p class="helper settings-only settings-save-note">Each section has its own save or action button. Changes to engine controls and integration permissions are saved separately.</p>{% endif %}
+    {% if settings_only %}<section class="intro-row settings-heading"><div><p class="eyebrow">CONFIGURATION</p><h1>Settings</h1><p class="lead">Configure detection, manage models and people, and control application access. Choose a section below.</p></div></section><nav class="settings-jump-nav settings-only" aria-label="Settings sections"><a href="#daksh-settings"><strong>Daksh-AI</strong><small>Training advice, supervision and schedules</small></a><a href="#engine-settings"><strong>Detection</strong><small>Accuracy, tracking and camera processing</small></a><a href="#system-settings"><strong>Models &amp; services</strong><small>Active model, service status and access</small></a><a href="#enrollment-settings"><strong>People &amp; enrollment</strong><small>Invitations and enrolled participants</small></a><a href="#settings"><strong>Enrolled participants</strong><small>Review existing profiles and records</small></a><a href="#api-mcp-settings"><strong>API &amp; AI agents</strong><small>Permissions, tokens and approvals</small></a><a href="#model-enrichment"><strong>ML training</strong><small>Model sources and training workflow</small></a></nav><p class="helper settings-only settings-save-note">Each section has its own save or action button. Changes to engine controls and integration permissions are saved separately.</p>{% endif %}
     <section class="intro-row dashboard-only">
       <div>
         <p class="eyebrow">CONTROL ROOM</p>
@@ -107,6 +107,47 @@
       <div id="participant-list" class="empty-state">Loading enrolled participants…</div>
     </section>
 
+    <section id="daksh-settings" class="panel section-panel settings-only" aria-labelledby="daksh-title">
+      <h3 id="daksh-title">Daksh-AI · training adviser &amp; supervisor</h3>
+      <p class="helper">Recommendations use measured calibration and validated predictors when available, with conservative memory safeguards. Manual overrides cannot bypass resource limits.</p>
+      <fieldset class="settings-control-group"><legend>Engine controls</legend><p id="daksh-engine-state" role="status" aria-live="polite">Checking engine…</p><div class="inline-actions"><button id="daksh-engine-start" type="button" class="button button-primary">Start Daksh-AI</button><button id="daksh-engine-stop" type="button" class="button button-secondary">Stop Daksh-AI</button></div><p class="helper">Stopping pauses supervision and scheduled adviser jobs. Detector training continues. Your engine choice is remembered after restart; preflight safety checks remain available.</p></fieldset>
+      <form id="daksh-policy-form"><fieldset class="settings-control-group"><legend>Supervision and resource policy</legend><div class="settings-control-grid">
+        <label><input id="daksh-enabled" type="checkbox"> Enable adviser monitoring</label>
+        <label><input id="daksh-auto-stop" type="checkbox"> Request checkpoint stop on sustained critical pressure or invalid loss</label>
+        <label class="engine-control">RAM reserve (GiB)<input id="daksh-reserve" type="number" min="6" max="64" value="6" required></label>
+        <label class="engine-control">Warning memory %<input id="daksh-pressure" type="number" min="70" max="95" value="85" required></label>
+        <label class="engine-control">Persistence (seconds)<input id="daksh-persistence" type="number" min="10" max="300" value="30" required></label>
+        <label class="engine-control">Sample every (seconds)<input id="daksh-sampling" type="number" min="1" max="10" value="5" required></label>
+        <label class="engine-control">Alert cooldown (seconds)<input id="daksh-cooldown" type="number" min="30" max="3600" value="300" required></label>
+      </div></fieldset><details class="settings-control-group"><summary>Advanced supervision and data retention</summary><div class="settings-control-grid"><label class="engine-control">Swap growth warning (MiB)<input id="daksh-swap" type="number" min="128" max="4096" value="512" required></label><label class="engine-control">Throughput drop warning (%)<input id="daksh-speed-drop" type="number" min="10" max="80" value="30" required></label><label class="engine-control">Batch-stall warning (seconds)<input id="daksh-stall" type="number" min="60" max="3600" value="180" required></label><label class="engine-control">Validation decline (epochs)<input id="daksh-validation-patience" type="number" min="3" max="20" value="3" required></label><label class="engine-control">Record retention (days)<input id="daksh-retention" type="number" min="1" max="365" value="90" required></label><label class="engine-control">Maximum benchmark records<input id="daksh-record-limit" type="number" min="100" max="50000" value="50000" required></label><label class="engine-control">Benchmark payload budget (MiB)<input id="daksh-data-limit" type="number" min="1" max="1024" value="100" required></label></div><p class="helper">Numeric record limits exclude checkpoint, calibration workspace and recovery snapshot files. Inspect host storage before large calibration jobs.</p></details><p class="helper">Automatic mode requests a checkpoint-safe stop; it never force-kills detector training. A stalled process may be unable to save. Advisory mode is the default.</p><button id="daksh-save" type="submit" class="button button-secondary">Save Daksh settings</button></form>
+      <div class="settings-control-grid" style="margin-top:20px">
+        <fieldset class="settings-control-group"><legend>Calibration workload and manual jobs</legend>
+          <label class="engine-control">Registered dataset<select id="daksh-dataset" aria-label="Daksh calibration dataset"></select></label>
+          <label class="engine-control">Detector<select id="daksh-model"><option value="best.pt">Current best.pt</option></select></label>
+          <label class="engine-control">Device<select id="daksh-device"><option value="cpu">CPU</option><option value="mps">Apple MPS (if supported)</option><option value="cuda:0">CUDA 0 (if supported)</option></select></label>
+          <label class="engine-control">Maximum batch<input id="daksh-max-batch" type="number" min="1" max="10" value="4"></label>
+          <label class="engine-control">Time limit (seconds)<input id="daksh-duration" type="number" min="30" max="300" value="120"></label>
+          <p class="helper">Calibration uses up to 32 copied training images and temporary model state. It does not change active weights. Jobs wait until training and video analysis are idle.</p>
+          <div class="inline-actions"><button id="daksh-calibrate" class="button button-secondary" type="button">Calibrate hardware now</button><button id="daksh-history-train" type="button" class="button button-secondary">Import previous training history &amp; train Daksh</button><p id="daksh-history-status" class="helper" role="status">Historical checkpoints use recorded metrics; missing memory data is excluded from safety learning.</p><button id="daksh-retrain" class="button button-secondary" type="button">Retrain adviser now</button></div>
+        </fieldset>
+        <fieldset class="settings-control-group"><legend>Independent schedules</legend>
+          <form id="daksh-schedule-form">
+            <label class="engine-control">Job<select id="daksh-schedule-kind"><option value="calibration">Hardware calibration</option><option value="retraining">Adviser retraining</option></select></label>
+            <label class="engine-control">Frequency<select id="daksh-frequency"><option value="daily">Daily</option><option value="weekly">Weekly · Monday</option></select></label>
+            <label class="engine-control">Local time<input id="daksh-time" type="time" value="08:00" required></label>
+            <label class="engine-control">IANA timezone<input id="daksh-timezone" value="Asia/Kolkata" required></label>
+            <label><input id="daksh-schedule-enabled" type="checkbox"> Enable this schedule</label>
+            <p class="helper">Schedules default off. Busy periods defer up to two hours, then skip. Missed executions do not run in a burst. Adviser promotion always requires a separate decision.</p>
+            <button class="button button-secondary" type="submit">Add schedule</button>
+          </form><div id="daksh-schedules" aria-live="polite"></div>
+        </fieldset>
+      </div>
+      <h4>Jobs and calibration history</h4><div id="daksh-jobs" aria-live="polite"></div>
+      <h4>Adviser versions and rollback</h4><p class="helper">Resource-safety retraining requires at least 100 benchmark windows from six independent runs/calibrations. Historical duration candidates use at least 20 epochs from two runs; they remain experimental and cannot be promoted as safety predictors. A candidate must pass held-out evaluation before promotion; unfamiliar hardware uses rules.</p><div id="daksh-versions" aria-live="polite"></div>
+      <h4>Incidents</h4><div id="daksh-incidents" aria-live="polite"></div>
+      <div class="inline-actions"><button id="daksh-refresh" type="button" class="button button-secondary">Refresh Daksh status</button><button id="daksh-export" type="button" class="button button-secondary">Export benchmark records</button><button id="daksh-clear" type="button" class="button button-secondary">Clear retained records (recoverable)</button><button id="daksh-restore" type="button" class="button button-secondary">Restore benchmark records</button></div>
+      <p id="daksh-status" role="status" aria-live="polite">Loading Daksh-AI…</p><p class="helper"><a href="/docs/DAKSH_AI.md" target="_blank" rel="noopener">Daksh-AI guide and limits</a></p>
+    </section>
     <section class="panel section-panel engine-settings-panel settings-only" id="engine-settings">
       <div class="section-title-row"><div><p class="eyebrow">SETTINGS · CORE ENGINE</p><h3>Detection and processing controls</h3></div><span class="subtle-tag">Saved locally · next frame</span></div>
       <p class="helper">These controls tune the live engine. Turning a detector off stops that analysis path; training samples and existing profiles remain intact.</p>
@@ -119,7 +160,7 @@
         <label class="engine-control"><span>Event cooldown <strong>seconds</strong></span><small>Per person and camera · 15–3,600 sec</small><input id="setting-cooldown" type="number" min="15" max="3600" step="15"></label>
         </div></fieldset><fieldset class="settings-control-group"><legend>3 · Processing and performance</legend><div class="settings-control-grid"><label class="engine-control"><span>Object inference size</span><small>Larger can help detail and uses more GPU/RAM</small><select id="setting-image-size"><option value="320">320 · fastest</option><option value="416">416</option><option value="512">512 · balanced</option><option value="640">640 · more detail</option><option value="768">768 · highest load</option></select></label>
         <label class="engine-control"><span>Analysis interval</span><small>Applies when camera page opens or refreshes</small><select id="setting-frame-interval"><option value="250">250 ms · higher rate</option><option value="500">500 ms · balanced</option><option value="750">750 ms</option><option value="1000">1 sec · lower load</option><option value="1500">1.5 sec · lowest load</option></select></label>
-        <label class="engine-control"><span>Training status refresh</span><small>How often the Custom detector section checks training progress</small><select id="setting-training-refresh"><option value="1">1 second</option><option value="2">2 seconds</option><option value="3">3 seconds</option><option value="4">4 seconds</option><option value="5">5 seconds</option><option value="6">6 seconds</option><option value="7">7 seconds</option><option value="8">8 seconds</option><option value="9">9 seconds</option><option value="10">10 seconds</option></select></label>
+        <label class="engine-control"><span>Training status refresh</span><small>How often the ML TRAINING section checks training progress</small><select id="setting-training-refresh"><option value="1">1 second</option><option value="2">2 seconds</option><option value="3">3 seconds</option><option value="4">4 seconds</option><option value="5">5 seconds</option><option value="6">6 seconds</option><option value="7">7 seconds</option><option value="8">8 seconds</option><option value="9">9 seconds</option><option value="10">10 seconds</option></select></label>
         <label class="engine-control"><span>Camera frame size</span><small>Maximum image width sent for analysis</small><select id="setting-frame-size"><option value="480">480 px · lower load</option><option value="640">640 px · balanced</option><option value="800">800 px</option><option value="960">960 px · more detail</option><option value="1280">1280 px · highest load</option></select></label>
         </div></fieldset><div class="engine-settings-actions"><button class="button button-primary" type="submit">Save engine controls</button><button class="button button-secondary" type="button" id="engine-settings-reset">Restore defaults</button><span id="engine-settings-status" class="helper" aria-live="polite">Loading saved settings…</span></div>
       </form>
@@ -507,7 +548,7 @@ $('engine-settings-reset').addEventListener('click',()=>{if(!confirm('Restore VA
 async function loadDiagnostics() {
   const data = await api('/api/admin/status');
   updateServiceLights(data);
-  updateDashboardMetrics(data);
+  if(!document.body.classList.contains('settings-page'))updateDashboardMetrics(data);
 }
 $('refresh-btn').addEventListener('click', async () => { try { await refreshAll(); } catch (err) { alert(err.message); } });
 $('clear-events-btn').addEventListener('click', async () => {
@@ -533,12 +574,13 @@ async function refreshAll() { await Promise.all([loadCameras(), loadParticipants
 async function bootDashboard(){await Promise.all([refreshTunnelUrl(),refreshAdminTunnel()]);await refreshAll();}
 bootDashboard().catch(err => { document.querySelectorAll('.empty-state').forEach(e => e.textContent = err.message); });
 async function refreshSightingsLoop() { try { await loadEvents(); } catch { $('sighting-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshSightingsLoop, 5000); } }
-async function refreshObjectsLoop() { try { await loadDiagnostics(); } catch { $('object-refresh-status').textContent = 'Refresh delayed · retrying'; } finally { setTimeout(refreshObjectsLoop, 5000); } }
+async function refreshObjectsLoop() { try { await loadDiagnostics(); } catch { const target=$('object-refresh-status');if(target)target.textContent='Refresh delayed · retrying'; } finally { setTimeout(refreshObjectsLoop, 5000); } }
 setTimeout(refreshSightingsLoop, 5000);
 setTimeout(refreshObjectsLoop, 5000);
 setInterval(refreshTunnelUrl, 3000);
 setInterval(refreshAdminTunnel, 3000);
 setInterval(loadMcpApprovals, 10000);
 </script>
+<script src="/static/daksh.js?v=1.3.3"></script>
 </body>
 </html>

@@ -67,3 +67,7 @@ Apple unified memory is shared by the OS, GPU and other apps. VAOS reports wheth
 ## Verification policy
 
 Platform support is recorded only for an OS/runtime/device combination actually exercised. Unit tests with mocked device inventory verify selection logic, not drivers, kernels, throughput, accuracy, or memory stability. See [the release status](PROJECT_STATUS.md) and [the validation log](observability/validation.md) for dated evidence and open gates.
+
+## Daksh-AI beta coverage
+
+The 1.3.0-beta.2 source provides portable CPU coordination, SQLite jobs/schedules, IANA timezone handling (tzdata on Windows), bounded calibration workers and CPU-only adviser learning. CPU checkpoint stop/resume and calibration were exercised on Apple Silicon macOS with generated data. Native Windows/Linux execution and CUDA/MPS resume continuity are pending platform-specific validation. These are release evidence gaps, not claims of unsupported hardware being tested. Unknown telemetry stays unavailable; unrelated GPU workloads are detected only where recognizable.

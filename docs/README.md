@@ -42,4 +42,19 @@ See [creator and community credits](CREDITS.md) for the creator's role and profi
 
 This documentation describes the source tree and marks untested or incomplete behavior explicitly. It is not evidence that every feature has been released or tested on a live camera or GPU.
 
-Current documentation release: **1.2.18**. See the main documentation index and release knowledgebase for current product behavior. Historical validation records retain their original versions.
+Current documentation release: **1.3.3**. See the main documentation index and release knowledgebase for current product behavior. Historical validation records retain their original versions.
+
+API/MCP feature coverage and upgrade limits: docs/API.md, docs/MCP.md and docs/KNOWLEDGEBASE.md (see current feature contracts).
+
+## Daksh-AI — training adviser and supervisor
+
+- [Functional requirements (FRS)](TRAINING_ADVISER_FRS.md)
+- [Software requirements (SRS)](TRAINING_ADVISER_SRS.md)
+
+The FRS/SRS baseline is implemented in the 1.3.3 stable source. See [capabilities and guide](DAKSH_AI.md) and [validation](VALIDATION_1.3.3.md) for activation and platform limits.
+
+Daksh-AI **1.3.3**: see [Daksh capabilities and API contracts](DAKSH_AI.md). The stable release includes supervision, calibration/retraining jobs and schedules, adviser promotion/rollback and verified checkpoint resume; see the guide for hardware validation limits.
+
+VAOS **1.3.3** adds persistent Daksh engine Start/Stop in Settings, historical checkpoint-metric learning, a dedicated Detection workspace and full-width ML TRAINING workspace. See [release notes](RELEASE_NOTES_1.3.3.md) for behavior, rationale and validation limits.
+
+[1.3.3 acceptance evidence](VALIDATION_1.3.3.md) records the test results, historical model evaluation and deployment limits.

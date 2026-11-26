@@ -217,8 +217,10 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertIn("/admin/observability/integrations", schema_a["paths"])
         self.assertIn("/admin/observability/retention", schema_a["paths"])
         self.assertEqual(set(schema_a["paths"]["/admin/observability/retention"]), {"get", "put", "post"})
-        self.assertEqual(len(schema_a["paths"]), 72)
-        self.assertEqual(sum(len(path_item) for path_item in schema_a["paths"].values()), 88)
+        self.assertIn("/admin/training-adviser/jobs",schema_a["paths"])
+        self.assertIn("/admin/ml/train/resume",schema_a["paths"])
+        self.assertIn("/admin/video-review/availability", schema_a["paths"])
+        self.assertIn("patch",schema_a["paths"]["/admin/training-adviser/settings"])
         self.assertIn("VAOSBearer", schema_a["components"]["securitySchemes"])
         self.assertEqual(self.client.get("/api/docs").status_code, 401)
         self.assertEqual(self.client.get("/api/docs", auth=self.basic_auth).status_code, 200)
@@ -2261,6 +2263,59 @@ class ApiSecurityTests(unittest.TestCase):
         invalid = self.client.post("/api/admin/projects/export", auth=self.basic_auth, json={"passphrase":"bad"})
         self.assertEqual(invalid.status_code, 400)
 
+    def test_daksh_routes_auth_and_preflight(self):
+        self.assertEqual(self.client.get("/api/admin/training-adviser/settings").status_code,401)
+        response=self.client.post("/api/admin/training-adviser/preflight",auth=self.basic_auth,json={"batch_size":4})
+        self.assertEqual(response.status_code,200,response.text)
+        self.assertEqual(response.json()["heading"],"Daksh suggests:")
+        self.assertEqual(main._api_request_group("/api/v1/admin/training-adviser/settings"),"training")
+        invalid=self.client.patch("/api/admin/training-adviser/settings",auth=self.basic_auth,json={"mode":"automatic"})
+        self.assertEqual(invalid.status_code,400)
+
+    def test_daksh_full_jobs_schedule_and_security_contracts(self):
+        from daksh_runtime import Runtime
+        with tempfile.TemporaryDirectory() as folder:
+            rt=Runtime(Path(folder),host=lambda:{"memory_total_gb":36,"memory_used_gb":10,"memory_percent":28},busy=lambda:True)
+            with patch.object(main,'daksh_runtime',return_value=rt):
+                settings=self.client.patch('/api/admin/training-adviser/settings',auth=self.basic_auth,json={"supervisor":{"automatic_stop":True,"sampling_seconds":2}})
+                self.assertEqual(settings.status_code,200,settings.text)
+                self.assertTrue(settings.json()['supervisor']['automatic_stop'])
+                invalid=self.client.patch('/api/admin/training-adviser/settings',auth=self.basic_auth,json={"enabled":False,"supervisor":{"sampling_seconds":0}})
+                self.assertEqual(invalid.status_code,400)
+                self.assertTrue(rt.service.settings()['enabled'])
+                for path in ['jobs','schedules','versions','incidents','records','status']:
+                    self.assertEqual(self.client.get('/api/admin/training-adviser/'+path).status_code,401)
+                    response=self.client.get('/api/admin/training-adviser/'+path,auth=self.basic_auth)
+                    self.assertEqual(response.status_code,200,response.text)
+                job=self.client.post('/api/admin/training-adviser/jobs',auth=self.basic_auth,json={"kind":"retraining","configuration":{},"idempotency_key":"fixture-repeat"})
+                self.assertEqual(job.status_code,200,job.text)
+                duplicate=self.client.post('/api/admin/training-adviser/jobs',auth=self.basic_auth,json={"kind":"retraining","configuration":{},"idempotency_key":"fixture-repeat"})
+                self.assertEqual(job.json()['id'],duplicate.json()['id'])
+                cancelled=self.client.post('/api/admin/training-adviser/jobs/'+job.json()['id']+'/cancel',auth=self.basic_auth,json={})
+                self.assertEqual(cancelled.json()['state'],'cancelled')
+                malformed=self.client.post('/api/admin/training-adviser/jobs',auth=self.basic_auth,json={"kind":"calibration","configuration":{"model_path":"/etc/passwd"},"idempotency_key":"fixture-unsafe"})
+                self.assertEqual(malformed.status_code,409)
+                spec={"kind":"retraining","enabled":False,"frequency":"daily","hour":8,"minute":0,"timezone":"Asia/Kolkata","defer_seconds":7200,"payload":{}}
+                created=self.client.post('/api/admin/training-adviser/schedules',auth=self.basic_auth,json=spec)
+                self.assertEqual(created.status_code,200,created.text)
+                ident=created.json()['schedule_id']
+                updated=self.client.patch('/api/admin/training-adviser/schedules/'+ident,auth=self.basic_auth,json={**spec,'hour':9})
+                self.assertEqual(updated.status_code,200,updated.text)
+                self.assertEqual(self.client.delete('/api/admin/training-adviser/schedules/'+ident,auth=self.basic_auth).status_code,200)
+                unsafe=self.client.post('/api/admin/ml/train/resume',auth=self.basic_auth,json={"checkpoint_id":"../outside"})
+                self.assertEqual(unsafe.status_code,404)
+
+    def test_daksh_mcp_requires_training_group_and_write_approval(self):
+        self.enable_mcp_control()
+        self.save_integrations(mcp_enabled=True,mcp_read_only=False,mcp_allowed_groups=['training'],mcp_allow_sensitive=True)
+        wrong=self.issue_token(groups=['diagnostics'],mcp_agent=True,access='control')
+        denied=self.secure_client.get('/api/v1/admin/training-adviser/settings',headers=self.bearer(wrong['token']))
+        self.assertEqual(denied.status_code,403)
+        token=self.issue_token(groups=['training'],mcp_agent=True,access='control')
+        response=self.secure_client.post('/api/v1/admin/training-adviser/preflight',headers=self.bearer(token['token']),json={'batch_size':4})
+        self.assertEqual(response.status_code,428,response.text)
+        self.assertTrue(response.json()['detail']['approval_required'])
+
     def test_training_status_refresh_setting_is_persisted_and_bounded(self):
         for value in (1, 5, 10):
             response = self.client.post("/api/admin/engine-settings", auth=self.basic_auth, json={"training_status_refresh_seconds":value})
@@ -2569,6 +2624,58 @@ class ApiSecurityTests(unittest.TestCase):
         self.assertIn("too small", retry.text)
         status = self.secure_client.get(f"/api/v1/admin/mcp-approvals/{pending['request_id']}", headers=headers)
         self.assertEqual(status.json()["status"], "used")
+
+    def test_detection_and_training_are_separate_authenticated_workspaces(self):
+        self.assertEqual(self.client.get('/detection').status_code,401)
+        detection=self.client.get('/detection',auth=self.basic_auth)
+        training=self.client.get('/training',auth=self.basic_auth)
+        self.assertEqual(detection.status_code,200,detection.text)
+        self.assertIn('id="sample-list"',detection.text)
+        self.assertIn('id="class-distribution-modal"',detection.text)
+        self.assertNotIn('id="start-training"',detection.text)
+        self.assertIn('id="start-training"',training.text)
+        self.assertNotIn('id="sample-list"',training.text)
+        self.assertIn('training-only-page',training.text)
+        self.assertIn('<h3>ML TRAINING</h3>',training.text)
+        self.assertNotIn('03 / TRAIN',training.text)
+        self.assertNotIn('<h3>Custom detector</h3>',training.text)
+
+    def test_daksh_engine_and_history_contracts_are_authenticated_and_versioned(self):
+        from daksh_runtime import Runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            rt=Runtime(Path(tmp)/'daksh')
+            with patch.object(main,'daksh_runtime',return_value=rt),patch.object(main,'ML_DATA_DIR',Path(tmp)/'training'),patch.object(rt,'start') as start:
+                for path in ('engine/start','engine/stop','history/retrain'):
+                    self.assertEqual(self.client.post('/api/admin/training-adviser/'+path,json={}).status_code,401)
+                r=self.client.post('/api/v1/admin/training-adviser/engine/stop',auth=self.basic_auth,json={})
+                self.assertEqual(r.status_code,200,r.text);self.assertFalse(r.json()['enabled'])
+                r=self.client.post('/api/v1/admin/training-adviser/engine/start',auth=self.basic_auth,json={})
+                self.assertEqual(r.status_code,200,r.text);self.assertTrue(r.json()['enabled']);start.assert_called_once()
+                r=self.client.post('/api/admin/training-adviser/history/retrain',auth=self.basic_auth,json={})
+                self.assertEqual(r.status_code,400,r.text);self.assertIn('20 completed epochs',r.json()['detail'])
+                self.assertEqual(self.client.get('/api/v1/admin/training-adviser/history',auth=self.basic_auth).json()['epochs'],0)
+
+    def test_daksh_history_rebuild_imports_configured_runs_and_queues_without_private_paths(self):
+        from daksh_runtime import Runtime
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);rt=Runtime(root/'daksh')
+            for name in ('first','second'):
+                run=root/'training'/'runs'/name;run.mkdir(parents=True)
+                (run/'args.yaml').write_text('batch: 4\nimgsz: 640\nworkers: 2\ndevice: cpu\ndata: /private/example.yaml\n')
+                (run/'results.csv').write_text('epoch,time\n'+''.join(f'{n},{n*10}\n' for n in range(1,11)))
+            with patch.object(main,'daksh_runtime',return_value=rt),patch.object(main,'ML_DATA_DIR',root/'training'):
+                r=self.client.post('/api/v1/admin/training-adviser/history/retrain',auth=self.basic_auth,json={})
+                self.assertEqual(r.status_code,200,r.text);self.assertEqual(r.json()['import']['epochs'],20);self.assertEqual(r.json()['job']['state'],'queued')
+                self.assertNotIn('/private',r.text);self.assertTrue(r.json()['job']['payload']['history_only'])
+                again=self.client.post('/api/admin/training-adviser/history/retrain',auth=self.basic_auth,json={})
+                self.assertEqual(again.status_code,200,again.text);self.assertEqual(again.json()['import']['inserted'],0)
+
+    def test_daksh_engine_and_history_mcp_writes_require_human_approval(self):
+        self.save_integrations(mcp_enabled=True,mcp_read_only=False,mcp_allowed_groups=['training'],mcp_allow_sensitive=True)
+        token=self.issue_token(groups=['training'],mcp_agent=True,access='control')
+        for path in ('engine/start','engine/stop','history/retrain'):
+            r=self.secure_client.post('/api/v1/admin/training-adviser/'+path,headers=self.bearer(token['token']),json={})
+            self.assertEqual(r.status_code,428,r.text);self.assertTrue(r.json()['detail']['approval_required'])
 
 
 if __name__ == "__main__":

@@ -52,7 +52,7 @@ class ObservabilityFrontendSafetyTests(unittest.TestCase):
         self.assertIn(".training-sidebar .nav-link { display: grid; grid-template-columns: 16px minmax(0,1fr)", phone_rules.group(1))
         shared_navigation = (Path(__file__).resolve().parents[1] / "templates" / "_admin_navigation.html").read_text(encoding="utf-8")
         nav_links = re.findall(r'<a class="nav-link[^\"]*"[^>]*>(.*?)</a>', shared_navigation, flags=re.DOTALL)
-        self.assertEqual(len(nav_links), 12)
+        self.assertEqual(len(nav_links), 13)
         self.assertTrue(all('class="nav-label"' in item for item in nav_links))
         self.assertIn(".training-sidebar .nav-label { display: block; width: 100%; min-width: 0; max-width: 100%", phone_rules.group(1))
         self.assertIn("style.css?v=vaos-1.1.0-ui-accessibility", page)

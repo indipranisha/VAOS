@@ -115,3 +115,22 @@ VAOS uses the official [Model Context Protocol Python SDK](https://github.com/mo
 
 
 The HTTP bridge refuses redirects rather than forwarding the bearer token to a redirected host. File and binary tools reject an encoded payload over the 100 MB request limit before decoding, and their JSON metadata is capped at 64 KiB. JSON request bodies are size-checked before parsing. A VAOS API endpoint that requires a redirect should be addressed through its canonical API origin instead.
+
+## Stable 1.2.x feature contracts
+
+- Settings: GET/POST `/api/v1/admin/engine-settings`, field `training_status_refresh_seconds` integer 1–10, default 5.
+- Training: POST `/api/v1/admin/ml/train`, optional `batch_size`: null (automatic), or any integer 1–10. The worker clamps requested batches using available RAM/VRAM and memory pressure at startup, reserving OS headroom. Requested/effective values and adjustment reason are reported in training status. This is a conservative estimate, not an OOM guarantee. This starts a new run; active-run batch mutation and checkpoint resume are not exposed.
+- Review: POST `/api/v1/admin/ml/samples/{id}/review` with `choice` correct, reject, incorrect, dont_know or later; incorrect requires label. Sample listing includes stored bbox metadata.
+- Video frames: binary POST accepts `X-Analysis-Device: auto|cpu`, `X-Video-Time`, `X-Save-Samples`. CPU may run alongside accelerator training, subject to server checks.
+- Projects: POST `/api/v1/admin/projects/export` with JSON name/passphrase. Response is encrypted binary; MCP returns data_base64. Multipart import uses file and passphrase, with dry_run=true for preview. Never place passphrases in URLs.
+- UI playback speeds, image zoom/navigation and recent-speed ETA displays are browser features; they do not require separate mutation endpoints.
+
+MCP uses `vaos_api_request` for JSON operations, `vaos_upload_file` with fields_json containing passphrase for imports, and `vaos_send_binary` with headers_json for CPU/automatic video frames. Existing capability groups, sensitive-read rules, read-only restrictions and exact-request human approvals continue to apply. A token needs matching projects/training/settings/review/video groups as appropriate. Retrying approved writes must preserve all input fields.
+
+Upgrade the backend and restart the MCP host to load new contracts. Do this after active training finishes. The installed source version can differ from the running service version. System RAM is used/total host memory, not Python RSS; Apple GPU memory shares physical RAM and must not be added to host RAM as separate memory. YOLO26 records L1 loss rather than DFL; completed-epoch fallback values are labeled.
+
+Daksh-AI **1.3.3**: see [Daksh capabilities and API contracts](DAKSH_AI.md). The stable release includes supervision, calibration/retraining jobs and schedules, adviser promotion/rollback and verified checkpoint resume; see the guide for hardware validation limits.
+
+### Daksh engine/history operations · 1.3.3
+
+The OpenAPI-discovered Training tool group includes `GET /admin/training-adviser/history`, `POST /admin/training-adviser/history/retrain`, and `POST /admin/training-adviser/engine/start` / `stop`. Use the same `/api/v1` base and policy as other adviser operations. These writes are sensitive actions and MCP-bound control tokens require exact-request human approval; read-only tokens cannot invoke them. Stop targets Daksh supervision and its adviser workers, not detector training. Historical candidates never bypass calibrated safety promotion requirements. The Detection page uses the unchanged Samples group operations; moving the UI does not widen token access.

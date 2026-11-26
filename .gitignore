@@ -18,3 +18,8 @@ weights/
 *.zip
 VAOS/
 tools/cloudflared.exe
+
+# Generated Python package/build outputs
+build/
+dist/
+*.egg-info/

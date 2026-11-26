@@ -1,6 +1,6 @@
 START HERE
 ==========
-VAOS 1.2.18 — Video Analytics Operating System
+VAOS 1.3.3 — Video Analytics Operating System
 
 1. Extract the folder.
 2. Install Python 3.12 if needed (python.org; enable Add Python to PATH).
@@ -15,4 +15,6 @@ VAOS 1.2.18 — Video Analytics Operating System
 Face templates and profile photos are sensitive biometric data. Use only with informed consent and appropriate authorization. See README.md for production deployment, privacy and operations guidance.
 
 
-Current release guide: docs/KNOWLEDGEBASE.md and docs/RELEASE_NOTES_1.2.18.md.
+Current release guide: docs/KNOWLEDGEBASE.md and docs/RELEASE_NOTES_1.3.3.md.
+
+API/MCP feature coverage and upgrade limits: docs/API.md, docs/MCP.md and docs/KNOWLEDGEBASE.md (see current feature contracts).

@@ -22,6 +22,16 @@ def version_tuple(value):
     return tuple(int(part) for part in value.lstrip('v').split('.'))
 
 
+def _newer(latest, installed):
+    def key(value):
+        match=re.fullmatch(r'v?(\d+)\.(\d+)\.(\d+)(?:-beta\.?(\d+))?',value or '')
+        if not match:raise ValueError('Unsupported version')
+        major,minor,patch,beta=match.groups()
+        return (int(major),int(minor),int(patch),1 if beta is None else 0,int(beta or 0))
+    try:return key(latest)>key(installed)
+    except (ValueError,TypeError):return False
+
+
 def check_release(installed):
     """Cache successes and failures for one hour; send no credentials or local data."""
     global _cached, _checked
@@ -29,7 +39,7 @@ def check_release(installed):
         return {'status': 'disabled', 'installed': installed}
     with _lock:
         if _cached is not None and time.monotonic() - _checked < 3600:
-            return {**_cached, 'installed': installed, 'update_available': bool(_cached.get('latest') and version_tuple(_cached['latest']) > version_tuple(installed))}
+            return {**_cached, 'installed': installed, 'update_available': bool(_cached.get('latest') and _newer(_cached['latest'],installed))}
         result = {'status': 'unavailable', 'update_available': False,
                   'releases_url': REPOSITORY + '/releases',
                   'checked_at': datetime.now(timezone.utc).isoformat()}
@@ -47,7 +57,7 @@ def check_release(installed):
             # Build our own link: untrusted response URLs never become UI links.
             result.update(status='ok', latest=latest.lstrip('v'),
                           release_url=REPOSITORY + '/releases/tag/' + latest,
-                          update_available=version_tuple(latest) > version_tuple(installed))
+                          update_available=_newer(latest,installed))
         except urllib.error.HTTPError as error:
             if error.code == 404:
                 result['status'] = 'no_release'

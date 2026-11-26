@@ -2,6 +2,7 @@
 {% set training_activity = current_path == '/training' and request.query_params.get('view') == 'activity' %}
 <nav class="primary-nav" aria-label="Main navigation">
   <a class="nav-link{% if current_path == '/' %} active{% endif %}" href="/"{% if current_path == '/' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">⌂</span><span class="nav-label">Control room</span></a>
+  <a class="nav-link{% if current_path == '/detection' %} active{% endif %}" href="/detection"{% if current_path == '/detection' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">◎</span><span class="nav-label">Detection</span></a>
   <a class="nav-link{% if current_path == '/training' and not training_activity %} active{% endif %}" href="/training"{% if current_path == '/training' and not training_activity %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▦</span><span class="nav-label">ML training</span></a>
   <a class="nav-link{% if current_path == '/video-review' %} active{% endif %}" href="/video-review"{% if current_path == '/video-review' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▶</span><span class="nav-label">Video review</span></a>
   <a class="nav-link{% if current_path == '/datasets' %} active{% endif %}" href="/datasets"{% if current_path == '/datasets' %} aria-current="page"{% endif %}><span class="nav-icon" aria-hidden="true">▧</span><span class="nav-label">Dataset preparation</span></a>

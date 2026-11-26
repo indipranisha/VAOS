@@ -1526,3 +1526,24 @@ body.vaos-dark .training-page .dataset-prepare-row strong { color:var(--ml-text)
 #crop-zoom-actions{flex-wrap:wrap;justify-content:center;flex-shrink:0}
 .crop-zoom-modal .crop-zoom-viewport{max-height:45vh}
 .crop-zoom-modal .crop-zoom-viewport img{max-height:45vh}
+
+/* Daksh Settings: bounded fields and wrapping job/schedule action rows. */
+#daksh-settings>.settings-control-grid{grid-template-columns:repeat(2,minmax(0,1fr));align-items:start}
+#daksh-settings .settings-control-group{min-width:0}
+#daksh-settings .api-setting-toggle{display:flex;flex-wrap:wrap;gap:8px;min-width:0}
+#daksh-settings .api-setting-toggle>span{flex:1 1 100%;overflow-wrap:anywhere}
+#daksh-settings input:not([type=checkbox]),#daksh-settings select{max-width:100%;min-width:0;box-sizing:border-box}
+#daksh-settings .settings-control-grid>label{min-width:0;overflow-wrap:anywhere}
+@media(max-width:760px){#daksh-settings>.settings-control-grid{grid-template-columns:minmax(0,1fr)}}
+
+/* Detection and training each own their full workspace. */
+.training-only-page .ml-workspace,.training-only-page .ml-steps,.detection-page .ml-workspace,.detection-page .ml-steps {display:grid;grid-template-columns:minmax(0,1fr);width:100%;min-width:0}
+.training-only-page .ml-train {grid-column:1 / -1;width:100%;min-width:0}
+.training-only-page .ml-dashboard-top {grid-template-columns:repeat(2,minmax(0,1fr))}
+.detection-page .ml-dashboard-top {grid-template-columns:minmax(0,1fr)}
+.detection-page .ml-confirm,.detection-page .ml-collect {grid-column:1 / -1;min-width:0}
+@media(max-width:760px){.training-only-page .ml-dashboard-top{grid-template-columns:minmax(0,1fr)}}
+
+.training-page.training-center-page.training-only-page > .ml-dashboard-top {grid-template-columns:repeat(2,minmax(0,1fr))}
+.training-page.training-center-page.detection-page > .ml-dashboard-top {grid-template-columns:minmax(0,1fr)}
+@media(max-width:760px){.training-page.training-center-page.training-only-page > .ml-dashboard-top {grid-template-columns:minmax(0,1fr)}}

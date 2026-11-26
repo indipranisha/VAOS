@@ -94,6 +94,13 @@ class McpBridgeTests(unittest.TestCase):
                     "POST", "/api/v1/admin/mcp-approvals/abc/decision"
                 )
 
+    def test_daksh_routes_are_training_and_sensitive_writes(self):
+        for suffix in ['settings','preflight','jobs','schedules','versions','incidents','status','records']:
+            path='/api/v1/admin/training-adviser/'+suffix
+            self.assertEqual(self.bridge._infer_group(path),'training')
+            self.assertTrue(self.bridge._is_sensitive_action('PATCH',path))
+            self.assertFalse(self.bridge._is_sensitive_action('GET',path))
+
     def test_integration_destination_update_is_sensitive(self):
         self.assertTrue(self.bridge._is_sensitive_action("PUT", "/api/v1/admin/observability/integrations/destination-fixture"))
 

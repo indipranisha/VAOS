@@ -1,3 +1,9 @@
+# Current release: VAOS 1.3.3 stable
+
+The maintained release record is [1.3.3 release notes](RELEASE_NOTES_1.3.3.md), with current [acceptance evidence](VALIDATION_1.3.3.md). The assessments below describe earlier development snapshots; they do not describe the current source version. Native hardware limitations still apply as documented for 1.3.3.
+
+---
+
 # VAOS project status
 
 ## Current owner-selected scope checkpoint (2026-11-18)

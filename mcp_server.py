@@ -337,7 +337,7 @@ def _api_request(method: str, path: str, body: bytes | None = None, content_type
         headers["Content-Type"] = content_type
     for name, value in (extra_headers or {}).items():
         normalized = name.casefold()
-        if normalized not in {"x-video-time", "x-save-samples", "x-vaos-mcp-approval-id"}:
+        if normalized not in {"x-video-time", "x-save-samples", "x-analysis-device", "x-vaos-mcp-approval-id"}:
             raise ValueError(f"Header {name} is not supported by the VAOS MCP bridge.")
         if len(name) > 80 or len(value) > 2000:
             raise ValueError("A request header is too long.")
@@ -561,7 +561,7 @@ def _infer_group(path: str) -> str:
         return "diagnostics"
     checks = (
         ("/cameras", "cameras"), ("/camera/", "cameras"), ("/enrollment-links", "cameras"),
-        ("/projects", "projects"),
+        ("/projects", "projects"), ("/training-adviser", "training"),
         ("/mcp-approvals/", "settings"),
         ("/participants", "people"), ("/enroll/", "people"), ("/events", "events"),
         ("/tracking/rules", "events"), ("/tracking/events", "events"),
@@ -601,6 +601,8 @@ def _is_sensitive_action(method: str, path: str) -> bool:
         return True
     if method in {"PUT", "PATCH", "DELETE"} and path.startswith("/api/v1/admin/observability/integrations/"):
         return True
+    if "/training-adviser" in path and method not in {"GET", "HEAD", "OPTIONS"}:
+        return True
     if method != "POST":
         return False
     if "/projects/import" in path or ("/projects/" in path and path.endswith("/apply")):
@@ -615,7 +617,7 @@ def _is_sensitive_action(method: str, path: str) -> bool:
 
 @_instrument_tool("vaos_api_request")
 def vaos_api_request(method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"], path: str, body_json: str = "{}", approval_id: str = "") -> str:
-    """Call one documented VAOS v1 API operation. For writes, JSON must match its OpenAPI schema."""
+    """Call one documented VAOS v1 API operation. Supports training batch_size, settings refresh interval, review actions and encrypted project export. For writes, JSON must match its OpenAPI schema. Binary exports return data_base64."""
     if method.upper() not in {"GET", "HEAD", "OPTIONS"}:
         _validate_bounded_text_size(body_json, "body_json", MAX_REQUEST_BYTES)
     try:

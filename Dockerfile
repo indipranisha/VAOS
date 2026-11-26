@@ -11,6 +11,7 @@ ARG INSTALL_OBJECT_DETECTION=true
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 COPY requirements.txt requirements-object-detection.txt ./
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
 RUN python -m pip install --no-cache-dir --upgrade pip \
     && pip install --no-cache-dir -r requirements.txt \
     && if [ "$INSTALL_OBJECT_DETECTION" = "true" ]; then \
@@ -22,7 +23,7 @@ RUN python -m pip install --no-cache-dir --upgrade pip \
     && mkdir -p /var/lib/vaos/models /var/lib/vaos/ultralytics \
     && chown -R vaos:vaos /var/lib/vaos
 
-COPY --chown=vaos:vaos main.py camera_service.py check_gpu_runtime.py apple_gpu_metrics.py host_telemetry.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py release_updates.py observability_store.py observability_reports.py observability_siem.py VAOS_PROJECT_METADATA.json LICENSE CONTRIBUTING.md ./
+COPY --chown=vaos:vaos main.py daksh_ai.py daksh_runtime.py daksh_worker.py daksh_schemas.py daksh_history.py camera_service.py check_gpu_runtime.py apple_gpu_metrics.py host_telemetry.py hardware_intelligence.py runtime_compat.py tracking_rules.py project_bundles.py project_metadata.py release_updates.py observability_store.py observability_reports.py observability_siem.py VAOS_PROJECT_METADATA.json LICENSE CONTRIBUTING.md ./
 COPY --chown=vaos:vaos templates ./templates
 COPY --chown=vaos:vaos static ./static
 COPY --chown=vaos:vaos docs ./docs
