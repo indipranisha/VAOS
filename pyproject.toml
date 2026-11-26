@@ -13,4 +13,4 @@ license = { text = "AGPL-3.0-only" }
 vaos = "vaos_cli:main"
 
 [tool.setuptools]
-py-modules = ["vaos_cli"]
+py-modules = ["vaos_cli", "safe_http"]

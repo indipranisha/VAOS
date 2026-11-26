@@ -11,6 +11,8 @@ Release date: 2026-11-26. Tag: `v1.3.3`. Source release branch: `work/mac-m3max`
 - This release includes the pending training progress, loss/resource display, batch-selection safeguards, API/MCP contracts and documentation updates from the local 1.2.x/1.3 beta development work since v1.2.18.
 - Version **1.3.3** is synchronized across runtime/admin/camera metadata, package, CLI, telemetry, About fallback, citation application version and maintained documentation. The citation format version remains 1.2.0, as required by CFF.
 
+- Incorporates existing upstream Windows fixes for bounded SQLite counter contention, serialized fallback writes, storage-cap rollback and restored private-file ACLs. First failed logins are audited even during the first minute of host uptime. Credentialed CLI/internal-service HTTP calls reject redirects so tokens are not forwarded to another endpoint.
+
 ## Upgrade
 
 Finish active training and video-analysis jobs before restarting services. Back up the configured data directory and preserve local changes. Install from the `v1.3.3` tag or its source archive, refresh Python dependencies, and use the existing launcher. Optional object-detection/MCP dependencies retain their separate installation steps. Verify the dashboard's running version after restart. Existing running processes may retain an older backend version until restarted.

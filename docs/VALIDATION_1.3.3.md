@@ -4,12 +4,16 @@ Date: 2026-11-26. Local platform: macOS / Apple Silicon. This record describes t
 
 ## Local results
 
-- **383 Python tests passed** in 23.702 seconds (`/tmp/vaos-133-python.log`). This includes API/security, MCP policy/bridge/stdio host, release discovery, adviser orchestration/history/native model evaluation, existing application contracts and rendered page separation.
-- **8 JavaScript tests passed** (`/tmp/vaos-133-js.log`) for adviser dialogs and class-distribution behavior.
+- **387 Python tests passed** in 30.479 seconds (`/tmp/vaos-133-final-python.log`). This includes API/security, MCP policy/bridge/stdio host, release discovery, adviser orchestration/history/native model evaluation, existing application contracts and rendered page separation.
+- **8 JavaScript tests passed** (`/tmp/vaos-133-final-js.log`) for adviser dialogs and class-distribution behavior.
 - The authenticated training-page regression asserts `<h3>ML TRAINING</h3>` and absence of the old `03 / TRAIN` and `Custom detector` card labels. Detection retains its review DOM; ML Training retains its training controls.
 - Compilation of runtime/adviser/CLI/version modules, JavaScript syntax and CRLF-aware whitespace checks passed.
 - Stable version 1.3.3 is synchronized in runtime, project metadata, package, CLI, SIEM agent, static About fallback, citation application version, maintained README/knowledgebase and UI asset references. CFF schema version remains 1.2.0.
 - Existing historical [1.3.1-beta1 evidence](VALIDATION_1.3.1-beta1.md) records the manual browser workflow, 223-epoch historical CPU adviser rebuild, and its evaluation limits. It is retained as historical evidence rather than relabeled as a new manual run.
+
+## CI-discovered corrections
+
+The initial Linux run exposed a first-minute host-uptime audit coalescing bug. Its existing upstream fix is included with a direct early-monotonic-clock regression. Previous Windows evidence identified bounded SQLite counter/fallback contention and restored-file ACL problems; the existing upstream persistence fixes and storage-cap rollback regression are included. Credential-bearing HTTP operations now reject redirects, covered by loopback tests. The complete local suite was rerun after these changes. The rebuilt CLI wheel contains both its entry point and the redirect-safe HTTP helper.
 
 ## Publishing and data boundaries
 

@@ -13,6 +13,7 @@ import os
 import re
 import sqlite3
 import threading
+import time
 import uuid
 from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
@@ -129,7 +130,11 @@ def _connection(path: Path, *, timeout_seconds: float = 15) -> Iterator[sqlite3.
         yield connection
         connection.commit()
     except Exception:
-        connection.rollback()
+        # BEGIN IMMEDIATE can fail before a transaction exists. Calling
+        # rollback in that case can wait on the same busy database again,
+        # effectively doubling a caller's configured lock ceiling.
+        if connection.in_transaction:
+            connection.rollback()
         raise
     finally:
         connection.close()
@@ -209,6 +214,12 @@ def _restrict_private_path(path: Path, *, directory: bool) -> None:
     if not sid:
         raise RuntimeError("Could not determine the current Windows account SID for the migration backup ACL.")
     inherited = "(OI)(CI)F" if directory else "F"
+    reset = subprocess.run(
+        ["icacls", str(path), "/reset"],
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    if reset.returncode != 0:
+        raise RuntimeError("Could not reset inherited Windows ACLs on the migration backup path.")
     result = subprocess.run(
         ["icacls", str(path), "/inheritance:r", "/grant:r", f"*{sid}:{inherited}", f"*S-1-5-18:{inherited}"],
         capture_output=True, text=True, timeout=10, check=False,
@@ -680,10 +691,10 @@ def buffer_counter_delta(
     bucket_epoch -= bucket_epoch % seconds
     bucket_start = datetime.fromtimestamp(bucket_epoch, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
     path = Path(db_path).expanduser().resolve()
-    # Counter writes are on request/frame paths, but a quarter-second window
-    # was too short when independent admin/camera workers briefly contended.
-    # Keep a finite bound; callers retain their existing fallback on failure.
-    with _connection(path, timeout_seconds=1.0) as db:
+    # Counter writes are on request/frame paths, but a two-second SQLite
+    # busy window still flaked under four independent Windows workers in CI.
+    # Keep contention bounded; callers retain their durable fallback on failure.
+    with _connection(path, timeout_seconds=5.0) as db:
         db.execute(
             "INSERT INTO observability_counter_buffer(buffer_id,metric_key,bucket_start,dimensions_json,delta,updated_at) VALUES(?,?,?,?,?,?) "
             "ON CONFLICT(metric_key,bucket_start,dimensions_json) DO UPDATE SET delta=observability_counter_buffer.delta+excluded.delta,updated_at=excluded.updated_at",
@@ -750,16 +761,64 @@ def counter_fallback_database_path(db_path: str | Path) -> Path:
 
 
 @contextmanager
-def _fallback_connection(path: Path, *, timeout_seconds: float = 0.25) -> Iterator[sqlite3.Connection]:
-    with _connection(path, timeout_seconds=timeout_seconds) as db:
+def _fallback_process_lock(path: Path, *, timeout_seconds: float = 5.0) -> Iterator[None]:
+    """Serialize cooperating processes before they contend on the fallback SQLite file."""
+    lock_path = path.with_name(path.name + ".lock")
+    if lock_path.is_symlink():
+        raise RuntimeError("Refusing to use a linked VAOS observability fallback lock.")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a+b") as lock_file:
+        deadline = time.monotonic() + max(0.1, float(timeout_seconds))
+        if os.name == "nt":
+            import msvcrt
+
+            while True:
+                lock_file.seek(0)
+                try:
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_NBLCK, 1)
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the VAOS observability fallback lock.")
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+
+            while True:
+                try:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError("Timed out waiting for the VAOS observability fallback lock.")
+                    time.sleep(0.01)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+@contextmanager
+def _fallback_connection(path: Path, *, timeout_seconds: float = 0.75) -> Iterator[sqlite3.Connection]:
+    with _fallback_process_lock(path), _connection(path, timeout_seconds=timeout_seconds) as db:
         db.execute("PRAGMA synchronous=FULL")
         page_size = max(1, int(db.execute("PRAGMA page_size").fetchone()[0]))
         configured_page_limit = max(1, FALLBACK_COUNTER_MAX_BYTES // page_size)
-        page_limit = int(db.execute(f"PRAGMA max_page_count={configured_page_limit}").fetchone()[0])
         page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
-        if page_limit > configured_page_limit or page_count > configured_page_limit:
+        if page_count > configured_page_limit:
             raise RuntimeError("The VAOS observability fallback queue exceeded its SQLite page limit.")
         yield db
+        # Enforce the configured storage cap within the write transaction. The
+        # old per-connection PRAGMA max_page_count write contended with every
+        # fallback writer and could exceed the intended bounded lock wait.
+        page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
+        if page_count > configured_page_limit:
+            raise RuntimeError("The VAOS observability fallback queue exceeded its SQLite page limit.")
 
 
 def initialize_counter_fallback_store(db_path: str | Path) -> Path:

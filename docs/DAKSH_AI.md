@@ -41,7 +41,7 @@ Minimum data gate: 100 numeric windows across six independent runs/calibrations,
 
 LightGBM trains in a CPU-only isolated worker (one thread). The API/training process evaluates exported native tree JSON without importing LightGBM, avoiding a second OpenMP runtime beside PyTorch. Artifact hashes, feature schema/order and observed ranges are checked. Unknown signatures or inputs outside coverage use rules.
 
-Policy v1 requires relative throughput error ≤30%, improvement over a constant baseline, and memory underprediction rate ≤5% after a 10% margin. These are beta evaluation gates, not proof of safety. Promotion is always a separate authorized human decision; automatic promotion is disabled. Previous promoted versions can be rolled back after hash verification. Combined adviser artifact target is ≤10 MiB; no arbitrary pickle/joblib upload is accepted.
+Policy v1 requires relative throughput error ≤30%, improvement over a constant baseline, and memory underprediction rate ≤5% after a 10% margin. These are local evaluation gates, not proof of safety. Promotion is always a separate authorized human decision; automatic promotion is disabled. Previous promoted versions can be rolled back after hash verification. Combined adviser artifact target is ≤10 MiB; no arbitrary pickle/joblib upload is accepted.
 
 Retention defaults: 90 days, 50,000 records and 100 MiB serialized payload. API export is bounded to the latest 5,000 records. Clear writes a full local recovery JSONL snapshot before deleting active records; restore requires its returned recovery identifier. Recovery snapshots are sensitive local files; manage them under the host's data-directory backup/retention policy. Calibration workspaces, checkpoint artifacts and recovery snapshots have separate disk costs from numeric records.
 
@@ -80,7 +80,7 @@ Dedicated decision, schedule, job, incident, promotion and checkpoint events ent
 
 Install updated requirements.txt (includes LightGBM), restart VAOS and the MCP host after active training finishes, then refresh pages. Docker includes the new modules and OpenMP runtime package. The currently running old service cannot load these changes without restart.
 
-macOS CPU stop/resume, calibration and synthetic adviser training have been exercised. Windows/Linux, CUDA/MPS resume continuity and representative hardware stress tests require their own release evidence. This beta is not certified as universally validated or guaranteed to avoid OS memory exhaustion. See [validation and traceability](DAKSH_AI_BETA_VALIDATION.md).
+macOS CPU stop/resume, calibration and synthetic adviser training have been exercised. Windows/Linux, CUDA/MPS resume continuity and representative hardware stress tests require their own release evidence. This release is not certified as universally validated or guaranteed to avoid OS memory exhaustion. See [validation and traceability](VALIDATION_1.3.3.md).
 
 ## Engine controls and Detection workspace
 

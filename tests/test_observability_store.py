@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import traceback
 import unittest
 from unittest.mock import patch
 from contextlib import closing
@@ -61,7 +62,7 @@ def _write_counter_batch_from_process(db_path: str, worker_id: int, ready, start
             )
         result.put((worker_id, "ok", ""))
     except Exception as exc:  # reported back to the parent test process
-        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}"))
+        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
 
 
 def _write_fallback_counter_from_process(db_path: str, worker_id: int, ready, start, result) -> None:
@@ -79,7 +80,7 @@ def _write_fallback_counter_from_process(db_path: str, worker_id: int, ready, st
             )
         result.put((worker_id, "ok", ""))
     except Exception as exc:  # reported back to the parent test process
-        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}"))
+        result.put((worker_id, "error", f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"))
 
 
 def _write_security_fallback_from_process(db_path: str, worker_id: int, ready, start, result) -> None:
@@ -1189,6 +1190,29 @@ print("VAOS_RESTORE_STATE=" + json.dumps(state, sort_keys=True))
         self.assertLessEqual(sum(path.stat().st_size for path in fallback.parent.iterdir() if path.is_file()), store.FALLBACK_COUNTER_MAX_BYTES)
         self.assertEqual(overview(self.database)["kpis"]["api_requests"]["value"], 80)
 
+    def test_fallback_write_rolls_back_when_configured_page_cap_is_exceeded(self):
+        initialize_database(self.database)
+        store.initialize_counter_fallback_store(self.database)
+        fallback = store.counter_fallback_database_path(self.database)
+        with closing(sqlite3.connect(fallback)) as db:
+            page_size = int(db.execute("PRAGMA page_size").fetchone()[0])
+            initial_pages = int(db.execute("PRAGMA page_count").fetchone()[0])
+
+        with patch.object(store, "FALLBACK_COUNTER_MAX_BYTES", page_size * initial_pages):
+            with self.assertRaisesRegex(RuntimeError, "exceeded its SQLite page limit"):
+                for index in range(100):
+                    store.buffer_counter_fallback(
+                        self.database,
+                        metric_key="api.requests",
+                        dimensions={"route": f"/api/v1/page-cap-{index:03d}-" + ("x" * 90), "method": "GET", "status": 200},
+                        timestamp="2026-11-13T13:00:03Z",
+                    )
+
+        with closing(sqlite3.connect(fallback)) as db:
+            page_size = int(db.execute("PRAGMA page_size").fetchone()[0])
+            page_count = int(db.execute("PRAGMA page_count").fetchone()[0])
+        self.assertLessEqual(page_size * page_count, page_size * initial_pages)
+
     def test_fallback_sidecar_busy_wait_is_bounded(self):
         initialize_database(self.database)
         store.initialize_counter_fallback_store(self.database)
@@ -1204,7 +1228,10 @@ print("VAOS_RESTORE_STATE=" + json.dumps(state, sort_keys=True))
                 )
             elapsed = (datetime.now(timezone.utc) - started).total_seconds()
             blocker.rollback()
-        self.assertLess(elapsed, 1.5)
+        # Hosted macOS runners measured 1.94-2.06 s for the same bounded
+        # SQLITE_BUSY result, while Windows stayed below 1.5 s. Keep enough
+        # headroom for the observed platform difference without allowing a hang.
+        self.assertLess(elapsed, 3.0)
 
     def test_fallback_counter_sidecar_preserves_concurrent_process_writes(self):
         initialize_database(self.database)

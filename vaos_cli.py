@@ -15,7 +15,8 @@ from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit
-from urllib.request import Request, urlopen
+from urllib.request import Request
+from safe_http import open_without_redirect
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 EXIT_USAGE = 2
@@ -85,7 +86,7 @@ class Client:
             headers["Content-Type"] = "application/json"
         request = Request(url, data=body, headers=headers, method=method.upper())
         try:
-            with urlopen(request, timeout=20) as response:
+            with open_without_redirect(request, timeout=20) as response:
                 data = response.read()
                 if binary:
                     return data, response.headers

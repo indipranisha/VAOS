@@ -481,6 +481,18 @@ class ApiSecurityTests(unittest.TestCase):
         with main.admin_auth_lock:
             self.assertTrue(main.authorization_denial_audit_last)
 
+    def test_first_failed_login_is_audited_during_first_minute_of_host_uptime(self):
+        request=main.Request({'type':'http','method':'GET','path':'/','headers':[], 'client':('192.0.2.133',12345),'server':('127.0.0.1',8000),'scheme':'http','query_string':b''})
+        with main.admin_auth_lock:
+            main.admin_auth_audit_last.pop('192.0.2.133',None)
+            main.admin_auth_failures.pop('192.0.2.133',None)
+        with patch.object(main.time,'monotonic',return_value=1.0),patch.object(main,'_record_observability_security_event',return_value=True) as record:
+            for _ in range(2):
+                with self.assertRaises(main.HTTPException) as exc:
+                    main.require_basic_admin(request,main.HTTPBasicCredentials(username='admin',password='invalid'))
+                self.assertEqual(exc.exception.status_code,401)
+            self.assertEqual(record.call_count,1)
+
     def test_failed_login_audit_does_not_suppress_retry(self):
         with main.admin_auth_lock:
             main.admin_auth_audit_last.clear()

@@ -22,6 +22,7 @@ import hashlib
 import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.request
+from safe_http import open_without_redirect
 import zipfile
 from collections import deque
 from copy import deepcopy
@@ -1306,7 +1307,8 @@ def require_basic_admin(request: Request, credentials: HTTPBasicCredentials | No
                 raise HTTPException(status_code=429, detail="Too many sign-in attempts. Wait 15 minutes and try again.", headers={"Retry-After": "900"})
             attempts.append(now)
             admin_auth_failures[client_key] = attempts
-            if now - admin_auth_audit_last.get(client_key, 0.0) >= 60:
+            previous_failure = admin_auth_audit_last.get(client_key)
+            if previous_failure is None or now - previous_failure >= 60:
                 admin_auth_audit_last[client_key] = now
                 audit_failure = True
             if len(admin_auth_audit_last) > 512:
@@ -3102,7 +3104,7 @@ def diagnostics(_: str = Depends(require_admin)):
             headers={"X-VAOS-Internal-Token": internal_token},
         )
         try:
-            with urllib.request.urlopen(request, timeout=0.8) as response:
+            with open_without_redirect(request, timeout=0.8) as response:
                 worker_status = json.loads(response.read().decode("utf-8"))
             if isinstance(worker_status, dict) and isinstance(worker_status.get("models"), list):
                 runtime = worker_status
@@ -3150,7 +3152,7 @@ def hardware_intelligence(_: str = Depends(require_admin)) -> dict[str, Any]:
             headers={"X-VAOS-Internal-Token": internal_token},
         )
         try:
-            with urllib.request.urlopen(request, timeout=0.8) as response:
+            with open_without_redirect(request, timeout=0.8) as response:
                 worker_status = json.loads(response.read().decode("utf-8"))
             if isinstance(worker_status, dict) and isinstance(worker_status.get("models"), list):
                 runtime = worker_status
@@ -5707,7 +5709,7 @@ def list_ml_samples(label: str = "", limit: int = 250, offset: int = 0, _: str =
     if internal_token:
         request = urllib.request.Request(f"{CAMERA_INTERNAL_URL}/internal/model-status", headers={"X-VAOS-Internal-Token": internal_token})
         try:
-            with urllib.request.urlopen(request, timeout=1.0) as response:
+            with open_without_redirect(request, timeout=1.0) as response:
                 worker = json.loads(response.read().decode("utf-8"))
             object_model = next((item for item in worker.get("models", []) if item.get("name") == "yolo26m"), {})
             live_model = {"available": True, "loaded": bool(worker.get("object_model_loaded")), "custom_model_active": bool(worker.get("custom_model_active")), "path": object_model.get("path", ""), "classes": object_model.get("classes", []), "device": worker.get("device", ""), "error": object_model.get("error")}
