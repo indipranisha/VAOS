@@ -3,6 +3,7 @@
 No learned predictor is enabled until validated benchmark coverage exists.
 """
 from __future__ import annotations
+from contextlib import contextmanager
 import hashlib
 import json
 import math
@@ -26,10 +27,17 @@ class Daksh:
             CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY,run TEXT,condition TEXT,started REAL,updated REAL,active INTEGER,body TEXT);
             CREATE UNIQUE INDEX IF NOT EXISTS active_condition ON incidents(run,condition) WHERE active=1;''')
 
+    @contextmanager
     def db(self):
         db = sqlite3.connect(self.path, timeout=5)
         db.row_factory = sqlite3.Row
-        return db
+        try:
+            with db:
+                yield db
+        finally:
+            # sqlite3's transaction context commits/rolls back but does not close.
+            # Explicit closure releases Windows file handles and bounds resources.
+            db.close()
 
     def settings(self):
         with self.db() as db:

@@ -4,6 +4,7 @@ import json
 import math
 import os
 from pathlib import Path
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,15 @@ class RuntimeTests(unittest.TestCase):
   self.host={'memory_total_gb':36,'memory_used_gb':16,'memory_percent':44,'timestamp':1000,'swap_used_bytes':0,'cpu_count':8}
   self.events=[];self.rt=Runtime(Path(self.tmp.name),host=lambda:self.host,audit=lambda *v:self.events.append(v))
  def spec(self):return {'kind':'retraining','enabled':True,'frequency':'daily','hour':8,'minute':0,'timezone':'Asia/Kolkata','defer_seconds':7200,'payload':{}}
+ def test_database_context_closes_handles_on_success_and_rollback(self):
+  with self.rt.db() as db:db.execute('CREATE TABLE close_probe(value INTEGER)')
+  with self.assertRaises(sqlite3.ProgrammingError):db.execute('SELECT 1')
+  with self.assertRaisesRegex(ValueError,'rollback probe'):
+   with self.rt.db() as failed:
+    failed.execute('INSERT INTO close_probe VALUES(1)')
+    raise ValueError('rollback probe')
+  with self.assertRaises(sqlite3.ProgrammingError):failed.execute('SELECT 1')
+  with self.rt.db() as db:self.assertEqual(db.execute('SELECT count(*) FROM close_probe').fetchone()[0],0)
  def test_config_validation(self):
   for p in [{'automatic_stop':1},{'sampling_seconds':0},{'maximum_records':999999},{'unknown':True}]:
    with self.assertRaises(DakshError):self.rt.configure(p)
